@@ -47,6 +47,22 @@ sudo yum install unison bindfs lua
 
 ## Installation
 
+### Option 1: Download Script Only
+
+If you just want the script without cloning the entire repository:
+
+```bash
+# Download the script
+curl -O https://raw.githubusercontent.com/zbateson/claude-cage/main/claude-cage
+
+# Make it executable
+chmod +x claude-cage
+```
+
+You can then optionally install it to your PATH (see below).
+
+### Option 2: Clone Repository
+
 1. Clone or download this repository
 2. Make the script executable:
    ```bash

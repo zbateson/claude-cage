@@ -160,6 +160,43 @@ claude_cage {
 - **excludeRegex**: Ignore by regex pattern (e.g., `[".*\\.log$"]`)
 - **belowPath**: Ignore entire directory trees (e.g., `["build/"]` ignores everything below 'build')
 
+#### ⚠️ Important: Build Processes Can Copy Excluded Files
+
+Listen carefully. **Excluded files don't get synced** - they literally don't exist in Claude's view. But that protection only works if the files **stay** excluded.
+
+**The problem:** Build processes, bundlers, and deployment scripts can **transform or embed** excluded files into different files:
+
+```
+You exclude:     config/secrets.json (using excludePath)
+Build reads it:  webpack reads config/secrets.json
+Build writes:    webpack bundles it into dist/app.bundle.js
+Claude sees:     dist/app.bundle.js (different name, different location - not excluded!)
+```
+
+Or even worse:
+
+```
+You exclude:     .env
+Build process:   Reads .env, inlines values into dist/config.js as:
+                 export const API_KEY = "secret123"
+Claude sees:     dist/config.js (secrets are now embedded in code!)
+```
+
+**What you need to do:**
+1. **Audit your build processes** - Look at webpack configs, Docker builds, deployment scripts
+2. **Check what gets copied** - Does your bundler copy `.env` files? Does your build include credentials?
+3. **Exclude the output too** - If builds copy secrets to `dist/`, exclude `dist/` as well
+4. **Test it** - Run your build on the source side, check what appears in the sync directory
+
+**Common gotchas:**
+- Webpack copying `.env` files to output directory
+- Docker builds that `COPY` everything including secrets
+- Test fixtures that duplicate sensitive files
+- Build scripts that concatenate config files
+- CI/CD configs embedded in build artifacts
+
+**The rule:** If a file can end up in a non-excluded location through any automated process, that location needs to be excluded too. Or that process needs to be prevented from running.
+
 See "Common Exclude Patterns" section below for examples of how to keep the bad stuff out.
 
 ### Config Merging
@@ -235,6 +272,62 @@ Sandbox mode gives you:
 - **Auto-allow mode**: Bash commands run automatically inside the sandbox
 
 Learn more: [https://code.claude.com/docs/en/sandboxing](https://code.claude.com/docs/en/sandboxing)
+
+## Defense in Depth: claude-cage + Sandbox Mode
+
+Here's what you gotta understand about security - you don't rely on one lock. You use multiple locks. Each one watchin' the other's back.
+
+### How claude-cage Isolation Works
+
+**claude-cage provides OS-level user isolation** that's fundamentally different from application-level sandboxing:
+
+1. **Separate Linux User Account**
+   - Claude runs as a different user (`claude`) with its own UID/GID
+   - Even if Claude Code has a bug or escapes its sandbox, it's still constrained by Linux kernel permissions
+   - Can't access files owned by other users unless explicitly granted
+   - The OS kernel itself enforces the isolation - that's hardware-level security
+
+2. **File Exclusion at Sync Level**
+   - Files matching your exclude patterns **never get synced** to the working directory
+   - They literally don't exist in Claude's view - can't be read, can't be written, can't be accidentally leaked
+   - Source of truth stays in your directory; Claude works on a filtered copy
+
+3. **Permission Mapping**
+   - Files created by the `claude` user automatically appear as owned by you in the source
+   - No permission issues, no ownership conflicts
+   - Everything just works when files sync back
+
+4. **Independent of Claude Code**
+   - Works regardless of what software runs inside
+   - Isolation persists even if Claude Code is buggy or compromised
+   - You control the isolation mechanism at the OS level
+
+### Claude Code's Sandbox
+
+**Claude Code's sandbox (bubblewrap on Linux)** provides application-level isolation:
+
+- Filesystem restrictions within the working directory
+- Network isolation through proxy + domain allowlisting
+- Process isolation for spawned commands
+- 84% fewer permission prompts
+
+### Using Both Together (Recommended)
+
+The smart move? Use **both layers**:
+
+```
+Layer 1: OS User Isolation (claude-cage)
+    └─> Layer 2: Application Sandbox (Claude Code)
+        └─> Layer 3: Claude AI Safety Training
+```
+
+**What this gives you:**
+- If Claude Code's sandbox has a bug → Linux user permissions still contain it
+- If someone compromises the claude user → They still can't access excluded files (they were never synced)
+- If there's a privilege escalation attempt → Multiple barriers to get through
+- Each layer is independent - failure of one doesn't compromise the others
+
+**Real talk:** Defense in depth ain't paranoia. It's insurance. And when you're lettin' an AI modify your code, you want all the insurance you can get.
 
 ## How It Works
 
@@ -312,6 +405,26 @@ belowPath = {
 }
 excludeRegex = {
     ".*\\.log$"
+}
+
+-- Protecting against build processes that copy secrets
+-- If your webpack/bundler copies .env to dist/, you need to exclude BOTH
+excludePath = {
+    ".env",                    -- Source secret file
+    "dist",                    -- Build output that might contain copied secrets
+    "build",                   -- Another common build output
+    "public/config"            -- Bundled config that might include secrets
+}
+
+-- Docker project with secrets
+excludePath = {
+    ".env",
+    "secrets/",
+    "docker-compose.override.yml"
+}
+belowPath = {
+    "dist",                    -- Exclude entire build output
+    ".docker"                  -- Docker build context might copy secrets
 }
 ```
 

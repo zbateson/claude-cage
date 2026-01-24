@@ -1,0 +1,175 @@
+#!/bin/bash
+
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root (sudo)"
+    exit 1
+fi
+
+# Get the original user who ran sudo
+original_user="${SUDO_USER:-$USER}"
+
+# Check if lua is available
+if ! command -v lua >/dev/null 2>&1; then
+    echo "Error: lua is required but not installed"
+    echo "Install with: sudo apt install lua"
+    exit 1
+fi
+
+# Define config file paths
+system_config="/etc/claude-cage/config"
+user_config="${HOME}/.config/claude-cage/config"
+local_config="claude-cage.config"
+
+# Local config is required
+if [ ! -f "$local_config" ]; then
+    echo "Error: Local config file '$local_config' not found"
+    echo "This file is required to run claude-cage in this directory"
+    exit 1
+fi
+
+# Extract config values using Lua with multi-level loading
+read -r cfg_user cfg_source cfg_sync cfg_syncprepend cfg_mounted cfg_exclude < <(lua << EOF
+-- Function to merge two tables (later overrides earlier)
+local function merge_config(base, override)
+    local result = {}
+
+    -- Copy base config
+    for k, v in pairs(base) do
+        result[k] = v
+    end
+
+    -- Override with new values
+    for k, v in pairs(override) do
+        if k == "exclude" and type(v) == "table" then
+            -- Merge exclude arrays
+            result[k] = result[k] or {}
+            for _, item in ipairs(v) do
+                table.insert(result[k], item)
+            end
+        else
+            -- Override value
+            result[k] = v
+        end
+    end
+
+    return result
+end
+
+-- Define a handler for claude_cage function
+local configs = {}
+function claude_cage(tbl)
+    table.insert(configs, tbl)
+end
+
+-- Load configs in priority order (system -> user -> local)
+local config_files = {
+    "$system_config",
+    "$user_config",
+    "$local_config"
+}
+
+for _, path in ipairs(config_files) do
+    local f = io.open(path, "r")
+    if f then
+        f:close()
+        dofile(path)
+    end
+end
+
+-- Merge all configs
+local config = {}
+for _, cfg in ipairs(configs) do
+    config = merge_config(config, cfg)
+end
+
+-- Set defaults
+local user = config.user or "claude"
+local source = config.source or ""
+local sync = config.sync or ""
+local syncprepend = config.syncprepend or "claude-"
+local mounted = config.mounted or ""
+
+-- If sync is empty, use syncprepend + source
+if sync == "" and source ~= "" then
+    sync = syncprepend .. source
+end
+
+-- If mounted is empty, use source
+if mounted == "" and source ~= "" then
+    mounted = source
+end
+
+-- Build exclude arguments for unison
+local exclude_args = ""
+if config.exclude then
+    for _, item in ipairs(config.exclude) do
+        exclude_args = exclude_args .. '-ignore "Path ' .. item .. '" '
+    end
+end
+
+print(user .. " " .. source .. " " .. sync .. " " .. syncprepend .. " " .. mounted .. " " .. exclude_args)
+EOF
+)
+
+# Allow source to be provided as command-line argument
+if [ -n "$1" ]; then
+    cfg_source="$1"
+fi
+
+# Validate required config
+if [ -z "$cfg_source" ]; then
+    echo "Error: source directory not specified in config or command line"
+    exit 1
+fi
+
+if [ ! -d "$cfg_source" ]; then
+    echo "Error: source directory '$cfg_source' does not exist"
+    exit 1
+fi
+
+# Set computed values
+cfg_user="${cfg_user:-claude}"
+if [ -z "$cfg_sync" ]; then
+    cfg_syncprepend="${cfg_syncprepend:-claude-}"
+    cfg_sync="${cfg_syncprepend}${cfg_source}"
+fi
+if [ -z "$cfg_mounted" ]; then
+    cfg_mounted="$cfg_source"
+fi
+
+# Create user if it doesn't exist
+if ! id -u "$cfg_user" >/dev/null 2>&1; then
+    echo "User '$cfg_user' does not exist."
+    read -p "Create user '$cfg_user'? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        adduser --disabled-login --comment "" "$cfg_user"
+    else
+        echo "Cannot proceed without user '$cfg_user'"
+        exit 1
+    fi
+fi
+
+mount_point="/home/${cfg_user}/${cfg_mounted}"
+
+cleanup() {
+    jobs -p | xargs -r kill 2>/dev/null
+    umount "$mount_point" 2>/dev/null
+}
+trap cleanup SIGINT SIGTERM EXIT
+
+# Build unison command with exclude options
+unison_cmd="unison ./$cfg_source ./$cfg_sync -repeat watch"
+if [ -n "$cfg_exclude" ]; then
+    unison_cmd="$unison_cmd $cfg_exclude"
+fi
+
+# Run unison as the original user
+su -c "$unison_cmd" "$original_user" &
+
+# Create mount point if it doesn't exist
+mkdir -p "$mount_point"
+
+bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"
+
+su - "$cfg_user" -c "cd $cfg_mounted && claude"

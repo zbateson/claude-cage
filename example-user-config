@@ -1,0 +1,19 @@
+-- Example user config for claude-cage
+-- Place at: ~/.config/claude-cage/config
+--
+-- This file overrides system defaults with user preferences.
+-- Projects can still override these in ./claude-cage.config (required)
+
+claude_cage {
+    -- Override default sync prefix if desired
+    -- syncprepend = "my-custom-prefix-",
+
+    -- Add user-specific excludes (merged with system excludes)
+    exclude = {
+        "*.log",
+        "*.tmp"
+    }
+
+    -- You could override the user if you want to use a different account
+    -- user = "different-claude-user",
+}

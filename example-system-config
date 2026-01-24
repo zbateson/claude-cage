@@ -1,0 +1,24 @@
+-- Example system-wide config for claude-cage
+-- Place at: /etc/claude-cage/config
+--
+-- This file provides system-wide defaults for all users.
+-- Users can override these in ~/.config/claude-cage/config
+-- Projects can override these in ./claude-cage.config (required)
+
+claude_cage {
+    -- Default user to run claude as
+    user = "claude",
+
+    -- Default prefix for sync directories
+    syncprepend = "claude-",
+
+    -- Common excludes that apply to all projects
+    exclude = {
+        ".git",
+        "node_modules",
+        "target",
+        ".DS_Store",
+        "*.swp",
+        "*~"
+    }
+}

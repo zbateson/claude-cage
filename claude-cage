@@ -2,7 +2,7 @@
 
 # Important things first
 print_banner() {
-    cat << 'EOF'
+    local banner=$(cat << 'EOF'
 
 
 
@@ -34,24 +34,25 @@ print_banner() {
 
 
 EOF
+)
+
+    # Print banner line by line with a slight delay for "slide up" effect
+    while IFS= read -r line; do
+        echo "$line"
+        sleep 0.01
+    done <<< "$banner"
+    sleep 0.3
 }
 
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root (sudo)"
-    exit 1
-fi
-
-print_banner
-
-# Get the original user who ran sudo
-original_user="${SUDO_USER:-$USER}"
-
-# Check if lua is available
+# Check if lua is available early (before sudo check)
 if ! command -v lua >/dev/null 2>&1; then
     echo "Error: lua is required but not installed"
     echo "Install with: sudo apt install lua"
     exit 1
 fi
+
+# Get the original user (in case running with sudo)
+original_user="${SUDO_USER:-$USER}"
 
 # Define config file paths
 system_config="/etc/claude-cage/config"
@@ -66,13 +67,7 @@ if [ ! -f "$local_config" ]; then
 fi
 
 # Extract config values using Lua with multi-level loading
-{
-    read -r cfg_user cfg_source cfg_sync cfg_syncprepend cfg_mounted cfg_exclude
-    read -r cfg_excludePath
-    read -r cfg_excludeName
-    read -r cfg_excludeRegex
-    read -r cfg_belowPath
-} < <(lua << EOF
+lua_output=$(lua <<EOF 2>&1
 -- Function to merge two tables (later overrides earlier)
 local function merge_config(base, override)
     local result = {}
@@ -84,7 +79,7 @@ local function merge_config(base, override)
 
     -- Override with new values
     for k, v in pairs(override) do
-        local array_fields = {"excludeName", "excludePath", "excludeRegex", "belowPath"}
+        local array_fields = {"excludeName", "excludePath", "excludeRegex", "belowPath", "allowedDomains", "allowedIPs", "allowedNetworks", "blockDomains", "blockIPs", "blockNetworks"}
         local is_array_field = false
         for _, field in ipairs(array_fields) do
             if k == field then
@@ -125,7 +120,14 @@ for _, path in ipairs(config_files) do
     local f = io.open(path, "r")
     if f then
         f:close()
-        dofile(path)
+        local success, err = pcall(function()
+            dofile(path)
+        end)
+        if not success then
+            io.stderr:write("Error loading config file: " .. path .. "\n")
+            io.stderr:write(tostring(err) .. "\n")
+            os.exit(1)
+        end
     end
 end
 
@@ -136,21 +138,48 @@ for _, cfg in ipairs(configs) do
 end
 
 -- Set defaults
+local project = config.project or ""
 local user = config.user or "claude"
+local userAppend = config.userAppend or ""
+local persistUser = config.persistUser or false
 local source = config.source or ""
 local sync = config.sync or ""
-local syncprepend = config.syncprepend or "claude-"
+local syncPrepend = config.syncPrepend or "claude-"
 local mounted = config.mounted or ""
+local showBanner = config.showBanner
+if showBanner == nil then showBanner = true end
 
--- If sync is empty, use syncprepend + source
-if sync == "" and source ~= "" then
-    sync = syncprepend .. source
+-- If project is set and source is not, use project for source
+if project ~= "" and source == "" then
+    source = project
 end
 
--- If mounted is empty, use source
-if mounted == "" and source ~= "" then
-    mounted = source
+-- If project is set and userAppend is not, use project for userAppend
+if project ~= "" and userAppend == "" then
+    userAppend = project
 end
+
+-- Append to username if specified
+if userAppend ~= "" then
+    user = user .. "-" .. userAppend
+end
+
+-- If sync is empty, determine from project or source
+if sync == "" then
+    if project ~= "" then
+        sync = syncPrepend .. project
+    elseif source ~= "" then
+        sync = syncPrepend .. source
+    end
+end
+
+-- If mounted is empty, use "claude" as default
+if mounted == "" then
+    mounted = "claude"
+end
+
+-- Network configuration defaults
+local networkMode = config.networkMode or "disabled"
 
 -- Build exclude arguments for unison
 local exclude_args = ""
@@ -183,12 +212,12 @@ if config.belowPath then
     end
 end
 
--- Output basic config
-print(user .. " " .. source .. " " .. sync .. " " .. syncprepend .. " " .. mounted .. " " .. exclude_args)
+-- Output basic config (use | delimiter to preserve empty fields)
+print(user .. "|" .. source .. "|" .. sync .. "|" .. syncPrepend .. "|" .. mounted .. "|" .. tostring(persistUser) .. "|" .. exclude_args .. "|" .. tostring(showBanner))
 
 -- Output exclude patterns for validation (pipe-separated)
 local function array_to_string(arr)
-    if not arr or #arr == 0 then return "" end
+    if not arr or #arr == 0 then return "EMPTY" end
     local result = {}
     for _, item in ipairs(arr) do
         table.insert(result, item)
@@ -200,24 +229,89 @@ print(array_to_string(config.excludePath))
 print(array_to_string(config.excludeName))
 print(array_to_string(config.excludeRegex))
 print(array_to_string(config.belowPath))
+
+-- Output network configuration
+print(networkMode)
+print(array_to_string(config.allowedDomains))
+print(array_to_string(config.allowedIPs))
+print(array_to_string(config.allowedNetworks))
+print(array_to_string(config.blockDomains))
+print(array_to_string(config.blockIPs))
+print(array_to_string(config.blockNetworks))
+
+-- Output project for validation
+print(project)
 EOF
 )
+lua_exit_code=$?
 
-echo "$user_config"
-echo "Running with:"
-echo "User: $cfg_user"
-echo "Source: $cfg_source"
-echo "Sync: $cfg_synch"
-echo "Sync (prepend): $cfg_syncprepend"
-echo "Mounted: $cfg_mounted"
-echo "Exclude: $cfg_exclude"
+# Check if lua command failed BEFORE parsing output
+if [ $lua_exit_code -ne 0 ]; then
+    echo ""
+    echo "============================================"
+    echo "Error: Failed to parse configuration files"
+    echo "============================================"
+    echo ""
+    echo "$lua_output"
+    echo ""
+    exit 1
+fi
+
+# Parse the lua output (only if lua succeeded)
+{
+    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_syncPrepend cfg_mounted cfg_persistUser cfg_exclude cfg_showBanner
+    read -r cfg_excludePath
+    read -r cfg_excludeName
+    read -r cfg_excludeRegex
+    read -r cfg_belowPath
+    read -r cfg_networkMode
+    read -r cfg_allowedDomains
+    read -r cfg_allowedIPs
+    read -r cfg_allowedNetworks
+    read -r cfg_blockDomains
+    read -r cfg_blockIPs
+    read -r cfg_blockNetworks
+    read -r cfg_project
+} <<< "$lua_output"
+
+# Replace EMPTY placeholder with empty string for array values
+[ "$cfg_excludePath" = "EMPTY" ] && cfg_excludePath=""
+[ "$cfg_excludeName" = "EMPTY" ] && cfg_excludeName=""
+[ "$cfg_excludeRegex" = "EMPTY" ] && cfg_excludeRegex=""
+[ "$cfg_belowPath" = "EMPTY" ] && cfg_belowPath=""
+[ "$cfg_allowedDomains" = "EMPTY" ] && cfg_allowedDomains=""
+[ "$cfg_allowedIPs" = "EMPTY" ] && cfg_allowedIPs=""
+[ "$cfg_allowedNetworks" = "EMPTY" ] && cfg_allowedNetworks=""
+[ "$cfg_blockDomains" = "EMPTY" ] && cfg_blockDomains=""
+[ "$cfg_blockIPs" = "EMPTY" ] && cfg_blockIPs=""
+[ "$cfg_blockNetworks" = "EMPTY" ] && cfg_blockNetworks=""
+
+# Parse command line arguments
+test_mode=false
+source_arg=""
+
+for arg in "$@"; do
+    if [ "$arg" = "--test" ]; then
+        test_mode=true
+    elif [ "$arg" = "--no-banner" ]; then
+        cfg_showBanner="false"
+    else
+        source_arg="$arg"
+    fi
+done
 
 # Allow source to be provided as command-line argument
-if [ -n "$1" ]; then
-    cfg_source="$1"
+if [ -n "$source_arg" ]; then
+    cfg_source="$source_arg"
 fi
 
 # Validate required config
+if [ -z "$cfg_project" ]; then
+    echo "Error: 'project' must be specified in ./claude-cage.config"
+    echo "Example: project = \"myproject\""
+    exit 1
+fi
+
 if [ -z "$cfg_source" ]; then
     echo "Error: source directory not specified in config or command line"
     exit 1
@@ -228,14 +322,111 @@ if [ ! -d "$cfg_source" ]; then
     exit 1
 fi
 
+# Now check for root after validating config
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root (sudo)"
+    exit 1
+fi
+
+if [ "$cfg_showBanner" = "true" ]; then
+    print_banner
+fi
+
+echo "Configuration:"
+echo "  Project:       $cfg_project"
+echo "  User:          $cfg_user"
+echo "  Source:        $cfg_source"
+echo "  Sync:          $cfg_sync"
+echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
+echo "  Network mode:  $cfg_networkMode"
+echo ""
+echo "Exclusions:"
+if [ -n "$cfg_excludePath" ]; then
+    IFS='|' read -ra paths <<< "$cfg_excludePath"
+    for path in "${paths[@]}"; do
+        echo "  Path:          $path"
+    done
+fi
+if [ -n "$cfg_excludeName" ]; then
+    IFS='|' read -ra names <<< "$cfg_excludeName"
+    for name in "${names[@]}"; do
+        echo "  Name:          $name"
+    done
+fi
+if [ -n "$cfg_excludeRegex" ]; then
+    IFS='|' read -ra regexes <<< "$cfg_excludeRegex"
+    for regex in "${regexes[@]}"; do
+        echo "  Regex:         $regex"
+    done
+fi
+if [ -n "$cfg_belowPath" ]; then
+    IFS='|' read -ra belows <<< "$cfg_belowPath"
+    for below in "${belows[@]}"; do
+        echo "  Below path:    $below"
+    done
+fi
+if [ -z "$cfg_excludePath$cfg_excludeName$cfg_excludeRegex$cfg_belowPath" ]; then
+    echo "  (none)"
+fi
+echo ""
+
 # Set computed values
 cfg_user="${cfg_user:-claude}"
 if [ -z "$cfg_sync" ]; then
-    cfg_syncprepend="${cfg_syncprepend:-claude-}"
-    cfg_sync="${cfg_syncprepend}${cfg_source}"
+    cfg_syncPrepend="${cfg_syncPrepend:-claude-}"
+    cfg_sync="${cfg_syncPrepend}${cfg_source}"
 fi
 if [ -z "$cfg_mounted" ]; then
     cfg_mounted="$cfg_source"
+fi
+
+# Validate and sanitize username
+original_username="$cfg_user"
+sanitized_username="$cfg_user"
+was_truncated=false
+
+# Check for invalid characters (allowed: lowercase letters, digits, hyphens, underscores)
+# Must start with a letter or underscore
+if [[ ! "$sanitized_username" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]; then
+    # Replace invalid characters with hyphens
+    # First, ensure it starts with a valid character
+    if [[ ! "$sanitized_username" =~ ^[a-zA-Z_] ]]; then
+        sanitized_username="u-$sanitized_username"
+    fi
+    # Replace invalid characters with hyphens
+    sanitized_username=$(echo "$sanitized_username" | sed 's/[^a-zA-Z0-9_-]/-/g')
+    # Convert to lowercase for maximum compatibility
+    sanitized_username=$(echo "$sanitized_username" | tr '[:upper:]' '[:lower:]')
+fi
+
+# Remove trailing hyphens/underscores (valid but not best practice)
+if [[ "$sanitized_username" =~ [-_]+$ ]]; then
+    sanitized_username=$(echo "$sanitized_username" | sed 's/[-_]*$//')
+fi
+
+# Check username length (useradd has 32 character limit)
+if [ ${#sanitized_username} -gt 32 ]; then
+    sanitized_username="${sanitized_username:0:32}"
+    # Re-check for trailing hyphens after truncation
+    sanitized_username=$(echo "$sanitized_username" | sed 's/[-_]*$//')
+    was_truncated=true
+fi
+
+# Display warning only if username was truncated
+if [ "$was_truncated" = true ]; then
+    echo ""
+    echo "WARNING: Username exceeds 32 character limit imposed by useradd"
+    echo "Original username: $original_username (${#original_username} characters)"
+    echo "Truncated username: $sanitized_username (${#sanitized_username} characters)"
+    echo ""
+fi
+
+cfg_user="$sanitized_username"
+
+# Track if user exists before we start
+user_existed_before=false
+if id -u "$cfg_user" >/dev/null 2>&1; then
+    user_existed_before=true
 fi
 
 # Create user if it doesn't exist
@@ -245,19 +436,265 @@ if ! id -u "$cfg_user" >/dev/null 2>&1; then
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         adduser --disabled-login --comment "" "$cfg_user"
+        echo "User '$cfg_user' created."
+        if [ "$cfg_persistUser" = "true" ]; then
+            echo "User will persist after claude-cage exits (persistUser = true)"
+        else
+            echo "User will be deleted when claude-cage exits (persistUser = false)"
+        fi
     else
         echo "Cannot proceed without user '$cfg_user'"
         exit 1
     fi
+elif [ "$cfg_persistUser" = "false" ] && [ "$user_existed_before" = "true" ]; then
+    echo "Warning: User '$cfg_user' already exists and persistUser is false."
+    echo "User will NOT be deleted since it existed before this run."
 fi
 
 mount_point="/home/${cfg_user}/${cfg_mounted}"
 
+# Track iptables chain name for cleanup
+iptables_chain="CLAUDE_CAGE_$$"
+
 cleanup() {
     jobs -p | xargs -r kill 2>/dev/null
     umount -l "$mount_point" 2>/dev/null
+
+    # Clean up iptables rules if they were set
+    if iptables -L "$iptables_chain" >/dev/null 2>&1; then
+        # Remove jump rule from OUTPUT chain
+        iptables -D OUTPUT -j "$iptables_chain" 2>/dev/null
+        # Flush and delete custom chain
+        iptables -F "$iptables_chain" 2>/dev/null
+        iptables -X "$iptables_chain" 2>/dev/null
+    fi
+
+    # Delete user if persistUser is false AND user didn't exist before
+    if [ "$cfg_persistUser" = "false" ] && [ "$user_existed_before" = "false" ]; then
+        if id -u "$cfg_user" >/dev/null 2>&1; then
+            echo "Deleting user '$cfg_user'..."
+            userdel -r "$cfg_user" 2>/dev/null || userdel "$cfg_user" 2>/dev/null
+        fi
+    fi
 }
 trap cleanup SIGINT SIGTERM EXIT
+
+# Function to resolve domain to IPs
+resolve_domain() {
+    local domain="$1"
+    # Use getent to resolve domain (supports /etc/hosts and DNS)
+    getent ahosts "$domain" 2>/dev/null | awk '{print $1}' | sort -u
+}
+
+# Function to parse IP/domain:port specification
+# Returns: ip, ports (comma-separated)
+parse_ip_port() {
+    local spec="$1"
+    local ip=""
+    local ports=""
+
+    if [[ "$spec" =~ ^(.+):([0-9,]+)$ ]]; then
+        ip="${BASH_REMATCH[1]}"
+        ports="${BASH_REMATCH[2]}"
+    else
+        ip="$spec"
+        ports=""
+    fi
+
+    echo "$ip|$ports"
+}
+
+# Function to add iptables rule with optional port restriction
+add_iptables_rule() {
+    local chain="$1"
+    local action="$2"  # ACCEPT or REJECT
+    local ip="$3"
+    local ports="$4"   # Empty or comma-separated ports
+
+    if [ -z "$ports" ]; then
+        # No port restriction - allow/block all ports
+        iptables -A "$chain" -d "$ip" -j "$action"
+    else
+        # Port restriction - apply to TCP and UDP
+        if [[ "$ports" == *","* ]]; then
+            # Multiple ports - use multiport
+            iptables -A "$chain" -p tcp -d "$ip" -m multiport --dports "$ports" -j "$action"
+            iptables -A "$chain" -p udp -d "$ip" -m multiport --dports "$ports" -j "$action"
+        else
+            # Single port
+            iptables -A "$chain" -p tcp -d "$ip" --dport "$ports" -j "$action"
+            iptables -A "$chain" -p udp -d "$ip" --dport "$ports" -j "$action"
+        fi
+    fi
+}
+
+# Function to setup network restrictions
+setup_network_restrictions() {
+    local mode="$1"
+    local user_uid
+    user_uid=$(id -u "$cfg_user")
+
+    if [ "$mode" = "disabled" ]; then
+        echo "Network isolation: disabled"
+        return 0
+    fi
+
+    echo "Setting up network restrictions (mode: $mode)..."
+
+    # Create custom chain for claude-cage rules
+    iptables -N "$iptables_chain" 2>/dev/null || {
+        echo "Warning: Could not create iptables chain. Network restrictions may not work."
+        return 1
+    }
+
+    # Jump to our chain for output from cfg_user
+    iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$iptables_chain"
+
+    if [ "$mode" = "allowlist" ]; then
+        # Allow user-configured domains
+        if [ -n "$cfg_allowedDomains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+            for domain_spec in "${domains[@]}"; do
+                IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Allowing domain: $domain (ports: $ports)"
+                else
+                    echo "  Allowing domain: $domain"
+                fi
+                while IFS= read -r ip; do
+                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
+                done < <(resolve_domain "$domain")
+            done
+        fi
+
+        # Allow user-configured IPs
+        if [ -n "$cfg_allowedIPs" ]; then
+            IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+            for ip_spec in "${ips[@]}"; do
+                IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Allowing IP: $ip (ports: $ports)"
+                else
+                    echo "  Allowing IP: $ip"
+                fi
+                add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
+            done
+        fi
+
+        # Allow user-configured networks
+        if [ -n "$cfg_allowedNetworks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+            for network_spec in "${networks[@]}"; do
+                IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Allowing network: $network (ports: $ports)"
+                else
+                    echo "  Allowing network: $network"
+                fi
+                add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports"
+            done
+        fi
+
+        # Reject everything else
+        iptables -A "$iptables_chain" -j REJECT
+
+    elif [ "$mode" = "blocklist" ]; then
+        # First, allow exceptions (these rules are processed first)
+        # Allow user-configured domains
+        if [ -n "$cfg_allowedDomains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+            for domain_spec in "${domains[@]}"; do
+                IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Allowing domain (exception): $domain (ports: $ports)"
+                else
+                    echo "  Allowing domain (exception): $domain"
+                fi
+                while IFS= read -r ip; do
+                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
+                done < <(resolve_domain "$domain")
+            done
+        fi
+
+        # Allow user-configured IPs
+        if [ -n "$cfg_allowedIPs" ]; then
+            IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+            for ip_spec in "${ips[@]}"; do
+                IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Allowing IP (exception): $ip (ports: $ports)"
+                else
+                    echo "  Allowing IP (exception): $ip"
+                fi
+                add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
+            done
+        fi
+
+        # Allow user-configured networks
+        if [ -n "$cfg_allowedNetworks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+            for network_spec in "${networks[@]}"; do
+                IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Allowing network (exception): $network (ports: $ports)"
+                else
+                    echo "  Allowing network (exception): $network"
+                fi
+                add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports"
+            done
+        fi
+
+        # Then, block configured targets
+        # Block user-configured domains
+        if [ -n "$cfg_blockDomains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_blockDomains"
+            for domain_spec in "${domains[@]}"; do
+                IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Blocking domain: $domain (ports: $ports)"
+                else
+                    echo "  Blocking domain: $domain"
+                fi
+                while IFS= read -r ip; do
+                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "REJECT" "$ip" "$ports"
+                done < <(resolve_domain "$domain")
+            done
+        fi
+
+        # Block user-configured IPs
+        if [ -n "$cfg_blockIPs" ]; then
+            IFS='|' read -ra ips <<< "$cfg_blockIPs"
+            for ip_spec in "${ips[@]}"; do
+                IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Blocking IP: $ip (ports: $ports)"
+                else
+                    echo "  Blocking IP: $ip"
+                fi
+                add_iptables_rule "$iptables_chain" "REJECT" "$ip" "$ports"
+            done
+        fi
+
+        # Block user-configured networks
+        if [ -n "$cfg_blockNetworks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_blockNetworks"
+            for network_spec in "${networks[@]}"; do
+                IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
+                if [ -n "$ports" ]; then
+                    echo "  Blocking network: $network (ports: $ports)"
+                else
+                    echo "  Blocking network: $network"
+                fi
+                add_iptables_rule "$iptables_chain" "REJECT" "$network" "$ports"
+            done
+        fi
+
+        # Accept everything else
+        iptables -A "$iptables_chain" -j ACCEPT
+    fi
+
+    echo "Network restrictions applied successfully"
+}
 
 # Check for excluded files in sync directory
 if [ -d "$cfg_sync" ]; then
@@ -329,6 +766,9 @@ if [ -d "$cfg_sync" ]; then
     fi
 fi
 
+# Setup network restrictions if configured
+setup_network_restrictions "$cfg_networkMode"
+
 # Build unison command with exclude options
 unison_cmd="unison ./$cfg_source ./$cfg_sync -force ./$cfg_source -prefer ./$cfg_source -batch -confirmbigdel=false"
 if [ -n "$cfg_exclude" ]; then
@@ -345,4 +785,15 @@ mkdir -p "$mount_point"
 
 bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"
 
-su - "$cfg_user" -c "cd $cfg_mounted && claude"
+if [ "$test_mode" = true ]; then
+    echo ""
+    echo "=== TEST MODE ==="
+    echo "Everything is set up. Switching to user '$cfg_user' for testing."
+    echo "Working directory will be: $mount_point"
+    echo "To exit test mode, type 'exit'"
+    echo "================="
+    echo ""
+    su - "$cfg_user" -c "cd $cfg_mounted && exec bash"
+else
+    su - "$cfg_user" -c "cd $cfg_mounted && claude"
+fi

@@ -119,20 +119,32 @@ Create `claude-cage.config` in your project directory. Here's how:
 
 ```lua
 claude_cage {
-    -- User to run Claude Code as
-    user = "claude",
+    -- Project name (recommended - sets defaults for other options)
+    project = "myproject",
+
+    -- User to run Claude Code as (default: "claude")
+    -- user = "claude",
+
+    -- Optional: Append to username for project isolation
+    -- If not set, uses 'project' name
+    -- Creates user "claude-myproject" instead of just "claude"
+    -- userAppend = "myproject",
+
+    -- Optional: Persist user between runs (default: false)
+    -- false = user is deleted when claude-cage exits
+    -- true = user persists for future runs
+    -- persistUser = true,
 
     -- Source directory under current directory to allow reading from
     -- If not provided, source must be provided as a command-line argument
     source = "my-directory",
 
     -- Sync directory for unison to sync source with
-    -- If empty, will use syncprepend + source
-    sync = "claude-my-directory",
+    -- If empty, uses syncPrepend + project (or source if no project)
+    -- sync = "claude-myproject",
 
     -- Prefix for auto-generated sync directory name
-    -- If sync is empty, sync directory will be: syncprepend + source
-    syncprepend = "claude-",
+    -- syncPrepend = "claude-",
 
     -- Files/folders that Claude should not have access to and should not be synced
     excludePath = { "target", "dist", ".env" },
@@ -141,17 +153,32 @@ claude_cage {
     belowPath = { "node_modules" },
 
     -- Mounted directory name created under the user's home directory
-    mounted = "my-directory"
+    -- Default: "claude" (not based on source/project)
+    -- mounted = "claude"
 }
 ```
 
 ### Configuration Options
 
-- **user**: User account to run Claude Code as (default: `"claude"`)
+- **project**: Project name (**required**)
+  - Automatically used as default for `userAppend` and `sync`
+  - Example: `project = "backend"` creates user `"claude-backend"` and sync dir `"claude-backend"`
+- **user**: Base user account name to run Claude Code as (default: `"claude"`)
+- **userAppend**: String to append to username for project isolation (default: `""`, or `project` if set)
+  - If set, creates username like `"claude-myproject"`
+  - Allows different projects to run as different users
+  - If not set but `project` is set, uses `project` name
+- **persistUser**: Keep user account after exit (default: `false`)
+  - `false`: User is deleted when claude-cage exits (unless it existed before)
+  - `true`: User persists between runs
+  - Useful if you run the same project frequently
 - **source**: Source directory to sync (can be overridden via command-line)
-- **sync**: Sync directory name (auto-generated if empty)
-- **syncprepend**: Prefix for auto-generated sync directory (default: `"claude-"`)
-- **mounted**: Directory name under `/home/<user>/` where files will be mounted
+- **sync**: Sync directory name (default: auto-generated from `project` or `source`)
+  - If not set and `project` is set: `syncPrepend + project`
+  - If not set and no `project`: `syncPrepend + source`
+- **syncPrepend**: Prefix for auto-generated sync directory (default: `"claude-"`)
+- **mounted**: Directory name under `/home/<user>/` where files will be mounted (default: `"claude"`)
+  - Note: Default is `"claude"`, NOT the source directory name
 
 **Exclude Options** (all optional, all important):
 
@@ -199,6 +226,145 @@ Claude sees:     dist/config.js (secrets are now embedded in code!)
 
 See "Common Exclude Patterns" section below for examples of how to keep the bad stuff out.
 
+#### Network Restriction Options (Optional - Defense in Depth)
+
+claude-cage can add OS-level network restrictions on top of Claude Code's application-level sandbox. This provides defense in depth - if one layer fails, the other still protects you.
+
+**Three modes:**
+
+- **`networkMode = "disabled"`** (default) - No OS-level network restrictions
+- **`networkMode = "allowlist"`** - Only allow specific IPs/domains (deny everything else)
+- **`networkMode = "blocklist"`** - Block specific IPs/domains (allow everything else)
+
+**Allowlist Mode** - Lock it down tight:
+
+```lua
+claude_cage {
+    networkMode = "allowlist",
+
+    -- These domains are ALWAYS allowed in allowlist mode:
+    -- api.anthropic.com, claude.ai, statsig.anthropic.com, sentry.io
+
+    -- Add additional domains Claude can connect to
+    allowedDomains = {
+        "github.com:443",              -- Only HTTPS
+        "registry.npmjs.org:443",      -- Only HTTPS
+        "pypi.org"                     -- All ports
+    },
+
+    -- Specific IPs with optional port restrictions
+    allowedIPs = {
+        "1.2.3.4:80,443",              -- Only HTTP and HTTPS
+        "127.0.0.1:5432",              -- Localhost PostgreSQL only
+        "5.6.7.8"                      -- All ports
+    },
+
+    -- IP ranges with optional port restrictions
+    allowedNetworks = {
+        "10.0.0.0/24:443",             -- Internal network, HTTPS only
+        "192.168.1.0/24"               -- All ports
+    },
+}
+```
+
+**Blocklist Mode** - Keep Claude away from your internal infrastructure:
+
+```lua
+claude_cage {
+    networkMode = "blocklist",
+
+    -- Block internal networks (all ports or specific ports)
+    blockNetworks = {
+        "192.168.1.0/24",              -- Entire home network, all ports
+        "10.0.0.0/8:22,3389"           -- Corporate network, SSH and RDP only
+    },
+
+    -- Block specific sensitive servers
+    blockIPs = {
+        "169.254.169.254",             -- AWS metadata service, all ports
+        "192.168.1.100:5432",          -- Production database port only
+        "192.168.1.101:22"             -- Block SSH to production server
+    },
+
+    -- Block internal domains
+    blockDomains = {
+        "internal.company.com",        -- All ports
+        "vault.company.com:443",       -- HTTPS only
+        "admin.local:80,443"           -- HTTP and HTTPS
+    }
+}
+```
+
+**Blocklist Exceptions** - Allow specific connections even when blocked:
+
+You can use `allowedDomains`, `allowedIPs`, and `allowedNetworks` in blocklist mode to create exceptions. This is useful when you want to block an entire network but allow specific services.
+
+```lua
+claude_cage {
+    networkMode = "blocklist",
+
+    -- Block all localhost connections
+    blockIPs = { "127.0.0.1" },
+
+    -- Except allow PostgreSQL on port 5432
+    allowedIPs = { "127.0.0.1:5432" },
+}
+```
+
+Another example - block a private network but allow specific development servers:
+
+```lua
+claude_cage {
+    networkMode = "blocklist",
+
+    -- Block entire corporate network
+    blockNetworks = { "192.168.0.0/16" },
+
+    -- But allow specific development servers
+    allowedIPs = {
+        "192.168.1.50:3000",           -- Dev server 1
+        "192.168.1.51:8080"            -- Dev server 2
+    }
+}
+```
+
+Exceptions are processed first (as ACCEPT rules), then block rules are applied. This follows iptables rule ordering.
+
+**Port Specification:**
+
+You can optionally specify ports for fine-grained control:
+
+- **No port** - `"1.2.3.4"` - All ports (TCP and UDP)
+- **Single port** - `"1.2.3.4:443"` - Only port 443
+- **Multiple ports** - `"1.2.3.4:80,443,8080"` - Only ports 80, 443, and 8080
+
+Port restrictions apply to both TCP and UDP protocols.
+
+**Common port numbers:**
+- `80` - HTTP
+- `443` - HTTPS
+- `22` - SSH
+- `3389` - RDP (Remote Desktop)
+- `5432` - PostgreSQL
+- `3306` - MySQL
+- `27017` - MongoDB
+
+**When to use each mode:**
+
+- **disabled**: You're already using Claude Code's sandbox and trust it completely
+- **allowlist**: Maximum security - you want complete control over every connection
+- **blocklist**: Practical security - let Claude access the internet but protect specific internal resources
+
+**Important notes:**
+
+- Allowlist mode will break WebFetch, package managers, and git unless you explicitly allow those domains
+- Blocklist mode is more usable - Claude can still access docs, packages, and APIs
+- Both modes provide defense in depth alongside Claude Code's sandbox
+- Network restrictions apply to the entire `claude` user, not just one instance
+- Port restrictions work with IPs, domains, and networks
+
+See "Defense in Depth" section below for how this works with Claude Code's sandbox.
+
 ### Config Merging
 
 - **Simple values** (user, source, etc.): Later configs override earlier ones
@@ -234,6 +400,29 @@ You can override the source directory from the config. Useful if you're runnin' 
 ```bash
 cd public
 sudo claude-cage mail-mime-parser
+```
+
+### Test Mode
+
+Test mode sets up the entire environment but switches you to an interactive bash shell instead of launching Claude Code. Perfect for verifying your configuration, testing network restrictions, or debugging issues:
+
+```bash
+sudo claude-cage --test
+```
+
+This will:
+- Create the user (if needed)
+- Set up file synchronization with unison
+- Apply network restrictions
+- Mount the directory with bindfs
+- Drop you into a bash shell as the configured user
+
+When you're done testing, type `exit` to trigger cleanup (unmount, network rule cleanup, optional user deletion).
+
+You can combine `--test` with a source directory override:
+
+```bash
+sudo claude-cage --test my-project
 ```
 
 ### Excluded Files Check

@@ -5,8 +5,19 @@
 -- Projects can still override these in ./claude-cage.config (required)
 
 claude_cage {
+    -- Project name is required in local config (./claude-cage.config)
+    -- Not typically set in user config
+    -- project = "myproject",
+
     -- Override default sync prefix if desired
-    -- syncprepend = "my-custom-prefix-",
+    -- syncPrepend = "my-custom-prefix-",
+
+    -- User persistence preference
+    -- Uncomment to keep users between runs
+    -- persistUser = true,
+
+    -- Show ASCII art banner (default: true)
+    -- showBanner = false,
 
     -- Add user-specific excludes (merged with system excludes)
     -- Use excludeRegex for pattern matching
@@ -17,7 +28,39 @@ claude_cage {
     -- Use excludeName for temporary files
     excludeName = {
         "*.tmp"
-    }
+    },
+
+    -- Network restrictions (optional)
+    -- networkMode = "blocklist",
+
+    -- Block private networks by default (uncomment networkMode to enable)
+    -- NOTE: If you need to allow specific services on blocked networks,
+    -- use allowedIPs or allowedNetworks exceptions (see below)
+    blockNetworks = {
+        "127.0.0.1",             -- Localhost
+        "192.168.0.0/16",        -- Private networks
+        "10.0.0.0/8"             -- Corporate network
+    },
+
+    -- Additional blocklist options
+    -- blockDomains = {
+    --     "facebook.com",          -- Block social media
+    --     "twitter.com:443"        -- Block Twitter HTTPS only
+    -- },
+    -- blockIPs = {
+    --     "192.168.1.100:22"       -- Block SSH to your NAS
+    -- },
+
+    -- Blocklist exceptions: allow specific connections even when blocked
+    -- Example: Allow local database
+    -- allowedIPs = { "127.0.0.1:5432" },  -- Allow PostgreSQL
+
+    -- Or use allowlist for maximum security
+    -- networkMode = "allowlist",
+    -- allowedDomains = {
+    --     "github.com:443",        -- Only HTTPS to GitHub
+    --     "registry.npmjs.org:443" -- Only HTTPS to npm
+    -- }
 
     -- You could override the user if you want to use a different account
     -- user = "different-claude-user",

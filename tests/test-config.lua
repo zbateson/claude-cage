@@ -46,7 +46,7 @@ end
 print("Loading system config...")
 claude_cage {
     user = "claude",
-    syncprepend = "claude-",
+    syncPrepend = "claude-",
     excludePath = { "target", ".git" },
     excludeName = { "*.tmp" },
     belowPath = { "node_modules" }
@@ -55,7 +55,7 @@ claude_cage {
 -- Simulate user config
 print("Loading user config...")
 claude_cage {
-    syncprepend = "my-claude-",
+    syncPrepend = "my-claude-",
     excludeRegex = { ".*\\.log$" },
     excludeName = { ".DS_Store" }
 }
@@ -79,7 +79,7 @@ end
 print("\nMerged configuration:")
 print("  user: " .. (config.user or "nil"))
 print("  source: " .. (config.source or "nil"))
-print("  syncprepend: " .. (config.syncprepend or "nil"))
+print("  syncPrepend: " .. (config.syncPrepend or "nil"))
 print("  mounted: " .. (config.mounted or "nil"))
 
 local function print_array(name, arr)
@@ -100,7 +100,7 @@ print_array("belowPath", config.belowPath)
 print("\n=== Test Results ===")
 assert(config.user == "claude", "user should be 'claude'")
 assert(config.source == "my-project", "source should be 'my-project'")
-assert(config.syncprepend == "my-claude-", "syncprepend should be 'my-claude-' (overridden by user)")
+assert(config.syncPrepend == "my-claude-", "syncPrepend should be 'my-claude-' (overridden by user)")
 assert(config.mounted == "my-project", "mounted should be 'my-project'")
 assert(#config.excludePath == 3, "excludePath should have 3 items (merged from system and local)")
 assert(#config.excludeName == 3, "excludeName should have 3 items (merged from all configs)")

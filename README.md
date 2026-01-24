@@ -242,4 +242,4 @@ sudo apt install lua
 
 ## License
 
-MIT
+BSD 2-Clause

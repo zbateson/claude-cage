@@ -1,41 +1,41 @@
 # ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
-A bash script that creates a secure, bidirectional file synchronization environment for Claude Code, enabling it to work on your projects in a sandboxed directory restricted by user permissions outside the `claude` environment.
+Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight while lettin' Claude Code do its work. Three layers of protection. Three layers between your precious code and anything that might go wrong. That's how we do this right.
 
-## What It Does
+## What This Thing Does
 
-`claude-cage` sets up a three-layer architecture that allows Claude Code to safely modify files while keeping them synchronized with your original project:
+Listen up. `claude-cage` sets up a containment system - three levels of security, each one watchin' the other:
 
-1. **Source directory** - Your original project files
-2. **Sync directory** - A synchronized copy maintained by `unison`
-3. **Mounted directory** - Where Claude Code operates, with permission mapping via `bindfs`
+1. **Source directory** - That's your actual project files. Your life's work. The thing you came here to protect.
+2. **Sync directory** - A perfect copy, maintained by `unison`. Like a mirror, but better.
+3. **Mounted directory** - Where Claude Code operates. Permission-mapped through `bindfs`. Controlled. Contained.
 
-Changes made by Claude Code automatically sync back to your source directory, while protecting certain files/folders you specify.
+Every change Claude makes gets synced back to your source. But only the changes you allow. The rest? They stay on the outside where they belong.
 
-## ⚠️ Important Warning
+## ⚠️ Now Listen to Me Very Carefully
 
-**This tool uses bidirectional synchronization via `unison`.** Changes made in either directory (source or sync) will propagate to the other, **including deletions**.
+**This tool uses bidirectional synchronization.** That means what happens in one place happens in the other. **Including deletions.** You understand what I'm tellin' you? You delete somethin' on one side, it's gone on the other. Gone.
 
-**Before first use:**
-- ✅ **Commit and push all changes to git** (or your version control system)
-- ✅ **Create a backup** of your project directory
-- ✅ **Test with a non-critical project first** to understand the sync behavior
-- ✅ **Carefully configure your exclude patterns** to protect sensitive files
+**Before you even think about runnin' this:**
+- ✅ **Commit and push everything to git** - Every last change. I mean it.
+- ✅ **Make yourself a backup** - A real one. The kind that'll still be there when you need it.
+- ✅ **Test this on somethin' that don't matter first** - Learn how it works before you bet the farm.
+- ✅ **Set up your exclude patterns right** - Protect what needs protectin'.
 
-**Unison will:**
-- Synchronize file modifications bidirectionally
-- **Delete files** on one side if they're deleted on the other
-- Propagate changes immediately when using watch mode
+**Here's what unison's gonna do:**
+- Synchronize every modification you make, both ways
+- **Delete files** if they get deleted on either side
+- Propagate changes the second they happen in watch mode
 
-If you're unsure about your configuration, start with a test project or a git-committed copy of your work.
+If you ain't sure about your setup, you test it on somethin' expendable first. That ain't a suggestion.
 
 ## Prerequisites
 
 **Supported Platforms:** Linux (Ubuntu/Debian/Fedora/RHEL/CentOS)
 
-**Note:** This tool is Linux-only. While `unison` works on macOS, `bindfs` requires FUSE which is problematic on macOS and has been disabled in Homebrew since 2021.
+**Note:** This is a Linux-only operation. While `unison` works on macOS, `bindfs` needs FUSE, and that bird don't fly on Mac anymore. Homebrew shut that down back in 2021.
 
-Install the required dependencies:
+Get your dependencies installed:
 
 ```bash
 # Ubuntu/Debian
@@ -49,7 +49,7 @@ sudo yum install unison bindfs lua
 
 ### Option 1: Download Script Only
 
-If you just want the script without cloning the entire repository:
+If you just want the script - no fuss, no extras:
 
 ```bash
 # Download the script
@@ -59,11 +59,11 @@ curl -O https://raw.githubusercontent.com/zbateson/claude-cage/main/claude-cage
 chmod +x claude-cage
 ```
 
-You can then optionally install it to your PATH (see below).
+Then you can install it to your PATH if you want. See below.
 
 ### Option 2: Clone Repository
 
-1. Clone or download this repository
+1. Clone or download this whole repository
 2. Make the script executable:
    ```bash
    chmod +x claude-cage
@@ -71,50 +71,51 @@ You can then optionally install it to your PATH (see below).
 
 ### Installing to PATH (Optional)
 
-To make `claude-cage` available from anywhere:
+To make `claude-cage` available from anywhere on your system:
 
 **System-wide:**
 ```bash
 sudo cp claude-cage /usr/local/bin/
 ```
 
-After installing to PATH, you can run:
+After that, you can run it like this:
 ```bash
 sudo claude-cage
 ```
 
-**Note:** The `claude-cage.config` file must be in the directory where you run the command.
+**Note:** The `claude-cage.config` file's gotta be in the directory where you run the command. That's non-negotiable.
 
 ## Configuration
 
 ### Configuration Hierarchy
 
-`claude-cage` supports a three-tier configuration system:
+This system's got three tiers. Each one can override the one before it:
 
 1. **System config** (optional): `/etc/claude-cage/config`
-   - System-wide defaults for all users
-   - Requires root to modify
+   - System-wide defaults for everybody
+   - Requires root access to modify
 
 2. **User config** (optional): `~/.config/claude-cage/config`
-   - Per-user preferences that override system defaults
+   - Your personal preferences
+   - Overrides system defaults
 
 3. **Local config** (**required**): `./claude-cage.config`
    - Project-specific settings
-   - **Must exist** in the directory where you run the script
-   - Overrides all other configs
+   - **Has to exist** in the directory where you run this
+   - Overrides everything else
 
-**Security**: The local config requirement prevents accidentally running the script in unintended directories.
+**Security:** The local config requirement? That's there so you don't accidentally run this thing in the wrong place and mess up somethin' important.
 
 ### Global Configs (Optional)
 
 - **System config**: `/etc/claude-cage/config` - defaults for all users
 - **User config**: `~/.config/claude-cage/config` - personal preferences
 
-See `examples/example-system-config` and `examples/example-user-config` for templates.
+Check `examples/example-system-config` and `examples/example-user-config` for templates.
 
 ### Local Config (Required)
 
-Create `claude-cage.config` in your project directory:
+Create `claude-cage.config` in your project directory. Here's how:
 
 ```lua
 claude_cage {
@@ -152,38 +153,38 @@ claude_cage {
 - **syncprepend**: Prefix for auto-generated sync directory (default: `"claude-"`)
 - **mounted**: Directory name under `/home/<user>/` where files will be mounted
 
-**Exclude Options** (all are optional arrays):
+**Exclude Options** (all optional, all important):
 
 - **excludePath**: Ignore exact paths (e.g., `["target", ".env"]`)
 - **excludeName**: Ignore by name anywhere (e.g., `["*.tmp", "node_modules"]`)
 - **excludeRegex**: Ignore by regex pattern (e.g., `[".*\\.log$"]`)
-- **belowPath**: Ignore entire directory trees (e.g., `["build/"]` ignores files below 'build')
+- **belowPath**: Ignore entire directory trees (e.g., `["build/"]` ignores everything below 'build')
 
-See "Common Exclude Patterns" section below for examples.
+See "Common Exclude Patterns" section below for examples of how to keep the bad stuff out.
 
 ### Config Merging
 
 - **Simple values** (user, source, etc.): Later configs override earlier ones
-- **Arrays** (all exclude options): Values are **merged** across all config levels
+- **Arrays** (all exclude options): Values get **merged** across all config levels
 
-Example: If system config has `excludePath = [".git"]` and local config has `excludePath = ["secrets.txt"]`, the final excludePath list will be `[".git", "secrets.txt"]`.
+Example: System config has `excludePath = [".git"]` and local config has `excludePath = ["secrets.txt"]`. Final result? Both get excluded: `[".git", "secrets.txt"]`.
 
 ## Usage
 
 ### First Run
 
-On first run, if the configured user doesn't exist, the script will prompt you to create it:
+First time you run this, if the user don't exist, you'll see this:
 
 ```
 User 'claude' does not exist.
 Create user 'claude'? [y/N]
 ```
 
-The user is created with `--disabled-login` (no interactive login) but can still run processes via `su`, which is how the script launches Claude Code.
+The user gets created with `--disabled-login` - no interactive login, but can still run processes through `su`. That's how we launch Claude Code. Controlled access.
 
 ### Basic Usage
 
-Run from the directory containing your `claude-cage.config`:
+Run from the directory with your `claude-cage.config`:
 
 ```bash
 sudo claude-cage
@@ -191,7 +192,7 @@ sudo claude-cage
 
 ### Override Source Directory
 
-You can override the source directory from the config file, useful if you want to run claude-cage from a directory claude can have access to all projects under it (e.g. a public directory containing open source projects) but want it to open on a specific project:
+You can override the source directory from the config. Useful if you're runnin' claude-cage from a directory that's got access to multiple projects, but you only want to open one:
 
 ```bash
 cd public
@@ -200,11 +201,13 @@ sudo claude-cage mail-mime-parser
 
 ### Excluded Files Check
 
-When you run `claude-cage`, it automatically checks if any files in the sync directory match your current exclude patterns. This is useful when:
-- You change your exclude configuration between runs
-- Files were previously synced but should now be excluded
+When you run `claude-cage`, it checks if any files in the sync directory match your exclude patterns. Security sweep. Standard procedure.
 
-If excluded files are found, you'll see:
+This matters when:
+- You change your exclude configuration between runs
+- Files were previously synced but shouldn't be anymore
+
+If excluded files are found, you'll see this:
 ```
 WARNING: Found files/directories in sync directory that are now excluded:
   - claude-my-directory/target
@@ -216,17 +219,17 @@ They should be removed from the sync directory before continuing.
 Remove these files? [y/N]
 ```
 
-Choose `y` to automatically remove them, or `N` to exit and manually handle them.
+Choose `y` to remove 'em automatically, or `N` to exit and handle it yourself. Your call.
 
 ## Recommended: Use Sandbox Mode
 
-For additional security and reduced permission prompts, enable Claude Code's sandbox mode:
+For additional security and fewer permission prompts, enable Claude Code's sandbox mode:
 
 ```bash
 /sandbox
 ```
 
-Sandbox mode provides its own filesystem isolation but also:
+Sandbox mode gives you:
 - **Network isolation**: Claude can only connect to approved servers
 - **84% fewer permission prompts** (based on Anthropic's internal usage)
 - **Auto-allow mode**: Bash commands run automatically inside the sandbox
@@ -235,12 +238,16 @@ Learn more: [https://code.claude.com/docs/en/sandboxing](https://code.claude.com
 
 ## How It Works
 
+Here's the play-by-play:
+
 1. **Unison** runs in watch mode, continuously syncing `source` ↔ `sync` directories
 2. **Bindfs** mounts the sync directory with permission mapping:
    - Files created by the Claude user appear as owned by you
    - Ensures proper permissions when files sync back to source
 3. **Claude Code** runs in the mounted directory, working on your files
 4. **Changes sync bidirectionally** in real-time
+
+Three layers. Each one doin' its job. That's how you keep things under control.
 
 ## Example Workflow
 
@@ -259,18 +266,22 @@ Learn more: [https://code.claude.com/docs/en/sandboxing](https://code.claude.com
    ```
 
 3. Claude Code starts in `/home/claude/my-web-app`
-4. Make changes with Claude Code
+4. Make your changes with Claude Code
 5. Changes automatically appear in `./my-web-app`
+
+Simple. Effective. Controlled.
 
 ## Common Exclude Patterns
 
+Here's what you need to know about keepin' things out:
+
 ```lua
 -- Build artifacts at specific paths
--- Useful so Claude can build its own versions, and also if
--- certain private files are compiled in your version
+-- Useful so Claude can build its own versions without messin' with yours
 excludePath = { "target", "build", "dist", "out" }
 
 -- Secrets at specific locations
+-- This is important. Real important.
 excludePath = { ".env", "credentials.json" }
 
 -- IDE files at specific locations
@@ -286,6 +297,7 @@ belowPath = { "node_modules", "vendor" }
 excludeRegex = { ".*\\.log$", ".*\\.log\\..*" }
 
 -- Comprehensive example combining multiple types
+-- This is how you do it right
 excludePath = {
     "target",
     ".env",
@@ -310,6 +322,8 @@ excludeRegex = {
 - Use **belowPath** for entire directory trees (more efficient than excludePath)
 - Use **excludeRegex** for complex patterns that wildcards can't handle
 
+Each tool for its purpose. Use 'em right.
+
 ## Troubleshooting
 
 **Error: lua is required but not installed**
@@ -323,7 +337,12 @@ sudo apt install lua
 
 **Permission issues**
 - Ensure you run with `sudo`
+- This thing needs root access for bindfs mounting. That's just how it is.
 
 ## License
 
 BSD 2-Clause
+
+---
+
+*"Put... the bunny... back... in the box."* - Oh wait, wrong README. But you get the idea. Keep your files safe. Use the cage.

@@ -40,11 +40,6 @@ sudo yum install unison bindfs lua
 
 To make `claude-cage` available from anywhere:
 
-**User-specific:**
-```bash
-cp claude-cage ~/.local/bin/
-```
-
 **System-wide:**
 ```bash
 sudo cp claude-cage /usr/local/bin/

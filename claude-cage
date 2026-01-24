@@ -1,11 +1,47 @@
 #!/bin/bash
 
+# Important things first
+print_banner() {
+    cat << 'EOF'
+
+
+
+   ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
+  ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝
+  ██║     ██║     ███████║██║   ██║██║  ██║█████╗
+  ██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝
+  ╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗
+   ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝
+                  ___________
+                .'           '.
+               /  -_-    -_-   \
+              |    (_)  (_)     |
+              |                 |          ,----.
+              |      .---.      |         /||||||\
+               \    '.__.'     /         | ||||||.|
+                '.          .'           | |||||| |
+                  '-._____.-'            | |||||| |
+                      |||                |_||||||_|
+                     /|||\                 \    /
+                    / ||| \                 |  |
+
+        ██████╗ █████╗  ██████╗ ███████╗
+        ██╔════╝██╔══██╗██╔════╝ ██╔════╝
+        ██║     ███████║██║  ███╗█████╗
+        ██║     ██╔══██║██║   ██║██╔══╝
+        ╚██████╗██║  ██║╚██████╔╝███████╗
+         ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+
+
+EOF
+}
+
 if [ "$EUID" -ne 0 ]; then
     echo "Please run as root (sudo)"
     exit 1
 fi
 
-cat claude-cage.txt
+print_banner
 
 # Get the original user who ran sudo
 original_user="${SUDO_USER:-$USER}"
@@ -156,7 +192,7 @@ mount_point="/home/${cfg_user}/${cfg_mounted}"
 
 cleanup() {
     jobs -p | xargs -r kill 2>/dev/null
-    umount "$mount_point" 2>/dev/null
+    umount -l "$mount_point" 2>/dev/null
 }
 trap cleanup SIGINT SIGTERM EXIT
 

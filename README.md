@@ -1,4 +1,4 @@
-# claude-cage
+# ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
 A bash script that creates a secure, bidirectional file synchronization environment for Claude Code, enabling it to work on your projects in a sandboxed directory restricted by user permissions outside the `claude` environment.
 

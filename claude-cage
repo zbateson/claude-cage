@@ -55,7 +55,7 @@ fi
 
 # Define config file paths
 system_config="/etc/claude-cage/config"
-user_config="${HOME}/.config/claude-cage/config"
+user_config="/home/${original_user}/.config/claude-cage/config"
 local_config="claude-cage.config"
 
 # Local config is required
@@ -66,7 +66,13 @@ if [ ! -f "$local_config" ]; then
 fi
 
 # Extract config values using Lua with multi-level loading
-read -r cfg_user cfg_source cfg_sync cfg_syncprepend cfg_mounted cfg_exclude < <(lua << EOF
+{
+    read -r cfg_user cfg_source cfg_sync cfg_syncprepend cfg_mounted cfg_exclude
+    read -r cfg_excludePath
+    read -r cfg_excludeName
+    read -r cfg_excludeRegex
+    read -r cfg_belowPath
+} < <(lua << EOF
 -- Function to merge two tables (later overrides earlier)
 local function merge_config(base, override)
     local result = {}
@@ -78,8 +84,17 @@ local function merge_config(base, override)
 
     -- Override with new values
     for k, v in pairs(override) do
-        if k == "exclude" and type(v) == "table" then
-            -- Merge exclude arrays
+        local array_fields = {"excludeName", "excludePath", "excludeRegex", "belowPath"}
+        local is_array_field = false
+        for _, field in ipairs(array_fields) do
+            if k == field then
+                is_array_field = true
+                break
+            end
+        end
+
+        if is_array_field and type(v) == "table" then
+            -- Merge array fields
             result[k] = result[k] or {}
             for _, item in ipairs(v) do
                 table.insert(result[k], item)
@@ -139,15 +154,63 @@ end
 
 -- Build exclude arguments for unison
 local exclude_args = ""
-if config.exclude then
-    for _, item in ipairs(config.exclude) do
+
+-- excludeName: Ignore files/folders by name anywhere in the tree
+if config.excludeName then
+    for _, item in ipairs(config.excludeName) do
+        exclude_args = exclude_args .. '-ignore "Name ' .. item .. '" '
+    end
+end
+
+-- excludePath: Ignore exact paths relative to replica root
+if config.excludePath then
+    for _, item in ipairs(config.excludePath) do
         exclude_args = exclude_args .. '-ignore "Path ' .. item .. '" '
     end
 end
 
+-- excludeRegex: Ignore paths matching regex patterns
+if config.excludeRegex then
+    for _, item in ipairs(config.excludeRegex) do
+        exclude_args = exclude_args .. '-ignore "Regex ' .. item .. '" '
+    end
+end
+
+-- belowPath: Ignore everything below a certain path
+if config.belowPath then
+    for _, item in ipairs(config.belowPath) do
+        exclude_args = exclude_args .. '-ignore "BelowPath ' .. item .. '" '
+    end
+end
+
+-- Output basic config
 print(user .. " " .. source .. " " .. sync .. " " .. syncprepend .. " " .. mounted .. " " .. exclude_args)
+
+-- Output exclude patterns for validation (pipe-separated)
+local function array_to_string(arr)
+    if not arr or #arr == 0 then return "" end
+    local result = {}
+    for _, item in ipairs(arr) do
+        table.insert(result, item)
+    end
+    return table.concat(result, "|")
+end
+
+print(array_to_string(config.excludePath))
+print(array_to_string(config.excludeName))
+print(array_to_string(config.excludeRegex))
+print(array_to_string(config.belowPath))
 EOF
 )
+
+echo "$user_config"
+echo "Running with:"
+echo "User: $cfg_user"
+echo "Source: $cfg_source"
+echo "Sync: $cfg_synch"
+echo "Sync (prepend): $cfg_syncprepend"
+echo "Mounted: $cfg_mounted"
+echo "Exclude: $cfg_exclude"
 
 # Allow source to be provided as command-line argument
 if [ -n "$1" ]; then
@@ -196,14 +259,86 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM EXIT
 
+# Check for excluded files in sync directory
+if [ -d "$cfg_sync" ]; then
+    echo "Checking for excluded files in sync directory..."
+    excluded_files=()
+
+    # Check excludePath patterns
+    if [ -n "$cfg_excludePath" ]; then
+        IFS='|' read -ra paths <<< "$cfg_excludePath"
+        for pattern in "${paths[@]}"; do
+            if [ -e "$cfg_sync/$pattern" ]; then
+                excluded_files+=("$cfg_sync/$pattern")
+            fi
+        done
+    fi
+
+    # Check excludeName patterns
+    if [ -n "$cfg_excludeName" ]; then
+        IFS='|' read -ra names <<< "$cfg_excludeName"
+        for pattern in "${names[@]}"; do
+            while IFS= read -r -d '' file; do
+                excluded_files+=("$file")
+            done < <(find "$cfg_sync" -name "$pattern" -print0 2>/dev/null)
+        done
+    fi
+
+    # Check excludeRegex patterns
+    if [ -n "$cfg_excludeRegex" ]; then
+        IFS='|' read -ra regexes <<< "$cfg_excludeRegex"
+        for pattern in "${regexes[@]}"; do
+            while IFS= read -r -d '' file; do
+                excluded_files+=("$file")
+            done < <(find "$cfg_sync" -regextype posix-extended -regex "$cfg_sync/$pattern" -print0 2>/dev/null)
+        done
+    fi
+
+    # Check belowPath patterns
+    if [ -n "$cfg_belowPath" ]; then
+        IFS='|' read -ra paths <<< "$cfg_belowPath"
+        for pattern in "${paths[@]}"; do
+            if [ -d "$cfg_sync/$pattern" ]; then
+                excluded_files+=("$cfg_sync/$pattern")
+            fi
+        done
+    fi
+
+    # If excluded files found, prompt user
+    if [ ${#excluded_files[@]} -gt 0 ]; then
+        echo ""
+        echo "WARNING: Found files/directories in sync directory that are now excluded:"
+        for file in "${excluded_files[@]}"; do
+            echo "  - $file"
+        done
+        echo ""
+        echo "These files may have been created in a previous run with different exclude settings."
+        echo "They should be removed from the sync directory before continuing."
+        echo ""
+        read -p "Remove these files? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            for file in "${excluded_files[@]}"; do
+                rm -rf "$file"
+                echo "Removed: $file"
+            done
+        else
+            echo "Please manually remove the excluded files before running claude-cage."
+            exit 1
+        fi
+    fi
+fi
+
 # Build unison command with exclude options
-unison_cmd="unison ./$cfg_source ./$cfg_sync -repeat watch"
+unison_cmd="unison ./$cfg_source ./$cfg_sync -force ./$cfg_source -prefer ./$cfg_source -batch -confirmbigdel=false"
 if [ -n "$cfg_exclude" ]; then
     unison_cmd="$unison_cmd $cfg_exclude"
 fi
 
+echo $unison_cmd
 # Run unison as the original user
-su -c "$unison_cmd" "$original_user" &
+su -c "$unison_cmd" "$original_user"
+su -c "$unison_cmd -repeat watch" "$original_user" &
 
 # Create mount point if it doesn't exist
 mkdir -p "$mount_point"

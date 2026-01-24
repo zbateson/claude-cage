@@ -12,6 +12,23 @@ A bash script that creates a secure, bidirectional file synchronization environm
 
 Changes made by Claude Code automatically sync back to your source directory, while protecting certain files/folders you specify.
 
+## ⚠️ Important Warning
+
+**This tool uses bidirectional synchronization via `unison`.** Changes made in either directory (source or sync) will propagate to the other, **including deletions**.
+
+**Before first use:**
+- ✅ **Commit and push all changes to git** (or your version control system)
+- ✅ **Create a backup** of your project directory
+- ✅ **Test with a non-critical project first** to understand the sync behavior
+- ✅ **Carefully configure your exclude patterns** to protect sensitive files
+
+**Unison will:**
+- Synchronize file modifications bidirectionally
+- **Delete files** on one side if they're deleted on the other
+- Propagate changes immediately when using watch mode
+
+If you're unsure about your configuration, start with a test project or a git-committed copy of your work.
+
 ## Prerequisites
 
 **Supported Platforms:** Linux (Ubuntu/Debian/Fedora/RHEL/CentOS)
@@ -77,7 +94,7 @@ sudo claude-cage
 - **System config**: `/etc/claude-cage/config` - defaults for all users
 - **User config**: `~/.config/claude-cage/config` - personal preferences
 
-See `example-system-config` and `example-user-config` for templates.
+See `examples/example-system-config` and `examples/example-user-config` for templates.
 
 ### Local Config (Required)
 
@@ -101,7 +118,10 @@ claude_cage {
     syncprepend = "claude-",
 
     -- Files/folders that Claude should not have access to and should not be synced
-    exclude = { "target", "src/main/resources/application-*.properties" },
+    excludePath = { "target", "dist", ".env" },
+    excludeName = { "*.tmp", ".DS_Store" },
+    excludeRegex = { ".*\\.log$" },
+    belowPath = { "node_modules" },
 
     -- Mounted directory name created under the user's home directory
     mounted = "my-directory"
@@ -114,15 +134,23 @@ claude_cage {
 - **source**: Source directory to sync (can be overridden via command-line)
 - **sync**: Sync directory name (auto-generated if empty)
 - **syncprepend**: Prefix for auto-generated sync directory (default: `"claude-"`)
-- **exclude**: Array of paths to exclude from sync (supports wildcards)
 - **mounted**: Directory name under `/home/<user>/` where files will be mounted
+
+**Exclude Options** (all are optional arrays):
+
+- **excludePath**: Ignore exact paths (e.g., `["target", ".env"]`)
+- **excludeName**: Ignore by name anywhere (e.g., `["*.tmp", "node_modules"]`)
+- **excludeRegex**: Ignore by regex pattern (e.g., `[".*\\.log$"]`)
+- **belowPath**: Ignore entire directory trees (e.g., `["build/"]` ignores files below 'build')
+
+See "Common Exclude Patterns" section below for examples.
 
 ### Config Merging
 
 - **Simple values** (user, source, etc.): Later configs override earlier ones
-- **Arrays** (exclude): Values are **merged** across all config levels
+- **Arrays** (all exclude options): Values are **merged** across all config levels
 
-Example: If system config excludes `[".git"]` and local config excludes `["secrets.txt"]`, the final exclude list will be `[".git", "secrets.txt"]`.
+Example: If system config has `excludePath = [".git"]` and local config has `excludePath = ["secrets.txt"]`, the final excludePath list will be `[".git", "secrets.txt"]`.
 
 ## Usage
 
@@ -154,6 +182,26 @@ cd public
 sudo claude-cage mail-mime-parser
 ```
 
+### Excluded Files Check
+
+When you run `claude-cage`, it automatically checks if any files in the sync directory match your current exclude patterns. This is useful when:
+- You change your exclude configuration between runs
+- Files were previously synced but should now be excluded
+
+If excluded files are found, you'll see:
+```
+WARNING: Found files/directories in sync directory that are now excluded:
+  - claude-my-directory/target
+  - claude-my-directory/.env
+
+These files may have been created in a previous run with different exclude settings.
+They should be removed from the sync directory before continuing.
+
+Remove these files? [y/N]
+```
+
+Choose `y` to automatically remove them, or `N` to exit and manually handle them.
+
 ## Recommended: Use Sandbox Mode
 
 For additional security and reduced permission prompts, enable Claude Code's sandbox mode:
@@ -162,8 +210,7 @@ For additional security and reduced permission prompts, enable Claude Code's san
 /sandbox
 ```
 
-Sandbox mode provides:
-- **Filesystem isolation**: Claude can only access specific directories
+Sandbox mode provides its own filesystem isolation but also:
 - **Network isolation**: Claude can only connect to approved servers
 - **84% fewer permission prompts** (based on Anthropic's internal usage)
 - **Auto-allow mode**: Bash commands run automatically inside the sandbox
@@ -185,7 +232,8 @@ Learn more: [https://code.claude.com/docs/en/sandboxing](https://code.claude.com
    ```lua
    claude_cage {
        source = "my-web-app",
-       exclude = { "node_modules", ".env", "dist" }
+       excludePath = { ".env", "dist" },
+       belowPath = { "node_modules" }
    }
    ```
 
@@ -201,25 +249,50 @@ Learn more: [https://code.claude.com/docs/en/sandboxing](https://code.claude.com
 ## Common Exclude Patterns
 
 ```lua
--- Build artifacts
--- this is useful so claude can build its own versions, and also if
--- certain private files are compiled in your version, they may be
--- copied to target
-exclude = { "target", "build", "dist", "out" }
+-- Build artifacts at specific paths
+-- Useful so Claude can build its own versions, and also if
+-- certain private files are compiled in your version
+excludePath = { "target", "build", "dist", "out" }
 
--- Secrets
-exclude = { ".env", "*.key", "credentials.json" }
+-- Secrets at specific locations
+excludePath = { ".env", "credentials.json" }
 
--- IDE files
-exclude = { ".idea", ".vscode" }
+-- IDE files at specific locations
+excludePath = { ".idea", ".vscode" }
 
--- Mixed example
-exclude = {
+-- Temporary files by name anywhere in the tree
+excludeName = { "*.tmp", "*.swp", ".DS_Store" }
+
+-- Node modules or large dependency folders (ignore entire tree)
+belowPath = { "node_modules", "vendor" }
+
+-- Log files using regex
+excludeRegex = { ".*\\.log$", ".*\\.log\\..*" }
+
+-- Comprehensive example combining multiple types
+excludePath = {
     "target",
     ".env",
-    "src/main/resources/application-*.properties"
+    "src/main/resources/application-local.properties"
+}
+excludeName = {
+    "*.tmp",
+    ".DS_Store"
+}
+belowPath = {
+    "node_modules"
+}
+excludeRegex = {
+    ".*\\.log$"
 }
 ```
+
+### Choosing the Right Exclude Type
+
+- Use **excludePath** for specific files/directories at known locations
+- Use **excludeName** for files that appear in multiple places with the same name
+- Use **belowPath** for entire directory trees (more efficient than excludePath)
+- Use **excludeRegex** for complex patterns that wildcards can't handle
 
 ## Troubleshooting
 

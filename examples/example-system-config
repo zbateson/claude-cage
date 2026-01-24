@@ -13,12 +13,21 @@ claude_cage {
     syncprepend = "claude-",
 
     -- Common excludes that apply to all projects
-    exclude = {
+    -- Use excludePath for specific directories at the root
+    excludePath = {
         ".git",
-        "node_modules",
-        "target",
+        "target"
+    },
+
+    -- Use excludeName for files/folders by name anywhere
+    excludeName = {
         ".DS_Store",
         "*.swp",
         "*~"
+    },
+
+    -- Use belowPath to exclude entire directory trees
+    belowPath = {
+        "node_modules"
     }
 }

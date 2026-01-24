@@ -9,8 +9,13 @@ claude_cage {
     -- syncprepend = "my-custom-prefix-",
 
     -- Add user-specific excludes (merged with system excludes)
-    exclude = {
-        "*.log",
+    -- Use excludeRegex for pattern matching
+    excludeRegex = {
+        ".*\\.log$"
+    },
+
+    -- Use excludeName for temporary files
+    excludeName = {
         "*.tmp"
     }
 

@@ -5,6 +5,8 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+cat claude-cage.txt
+
 # Get the original user who ran sudo
 original_user="${SUDO_USER:-$USER}"
 

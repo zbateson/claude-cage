@@ -205,9 +205,9 @@ belowPath = {
 
 ### Network Restrictions (Optional)
 
-Add OS-level network controls:
+You want to add some OS-level network controls on top? Here's how you do it:
 
-**Blocklist mode** - Practical security:
+**Blocklist mode** - Keep Claude away from your infrastructure:
 ```lua
 networkMode = "blocklist"
 blockNetworks = { "192.168.1.0/24" }          -- Block home network
@@ -215,7 +215,7 @@ blockIPs = { "169.254.169.254" }              -- Block AWS metadata
 allowedIPs = { "127.0.0.1:5432" }             -- Exception for PostgreSQL
 ```
 
-**Allowlist mode** - Maximum security:
+**Allowlist mode** - Lock it down tight:
 ```lua
 networkMode = "allowlist"
 allowedDomains = { "github.com:443", "npmjs.org:443" }
@@ -226,15 +226,17 @@ allowedIPs = { "127.0.0.1:5432" }
 
 ### User Isolation Modes
 
+Now listen up. You got two ways to run this operation:
+
 **Single-user mode** (default, recommended):
-- All projects share one user (`claude`)
-- Login to Claude Code once, works everywhere
-- Simpler, easier to manage
+- All your projects share one user (`claude`)
+- Login to Claude Code once, you're done
+- Keeps it simple, keeps it clean
 
 **Per-project mode**:
 - Each project gets its own user (`claude-projectname`)
 - Complete isolation between projects
-- Requires login for each new project
+- Gotta login for each new project
 
 ```lua
 userMode = "single"        -- Default
@@ -244,7 +246,7 @@ userMode = "per-project"   -- Maximum isolation
 
 ## Defense in Depth
 
-Use `claude-cage` alongside Claude Code's sandbox for maximum security:
+Now I'm gonna tell you somethin' important. You use `claude-cage` alongside Claude Code's sandbox, you got yourself multiple layers of protection:
 
 ```
 Layer 1: OS User Isolation (claude-cage)
@@ -254,9 +256,11 @@ Layer 1: OS User Isolation (claude-cage)
 ```
 
 **What this gives you:**
-- If Claude Code's sandbox has a bug → Linux user permissions still contain it
-- If someone compromises the claude user → They still can't access excluded files
-- If there's a privilege escalation attempt → Multiple barriers to get through
+- Claude Code's sandbox got a bug? Linux user permissions still contain it.
+- Someone compromises the claude user? They still can't access your excluded files.
+- Privilege escalation attempt? Multiple barriers to get through.
+
+That's defense in depth. That's how you do this right.
 
 Enable Claude Code's sandbox for additional protection:
 ```bash
@@ -288,10 +292,12 @@ sudo claude-cage --no-banner
 
 ## Documentation
 
-- **[Configuration Reference](docs/configuration.md)** - All config options explained
-- **[Network Security](docs/network-security.md)** - Network isolation setup and examples
-- **[Examples & Workflows](docs/examples.md)** - Common patterns and use cases
-- **[Troubleshooting](docs/troubleshooting.md)** - Solutions to common problems
+You need more details? I got you covered:
+
+- **[Configuration Reference](docs/configuration.md)** - Every config option, explained
+- **[Network Security](docs/network-security.md)** - How to lock down the network
+- **[Examples & Workflows](docs/examples.md)** - Common patterns, real use cases
+- **[Troubleshooting](docs/troubleshooting.md)** - When things go wrong, start here
 
 ## Example Configurations
 
@@ -357,6 +363,8 @@ Multiple layers. Each one doin' its job. That's how you keep things under contro
 
 ## Troubleshooting Quick Reference
 
+Things ain't workin' right? Here's what you do:
+
 **Dependencies missing?**
 ```bash
 sudo apt install unison bindfs lua inotify-tools
@@ -368,8 +376,8 @@ sudo ./claude-cage  # Needs root for bindfs
 ```
 
 **Files not syncing?**
-- Check exclude patterns - file might be excluded
-- Restart: `sudo ./claude-cage`
+- Check your exclude patterns - file might be excluded
+- Try restartin': `sudo ./claude-cage`
 
 **Network rules not working?**
 ```bash

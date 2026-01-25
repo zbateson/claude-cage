@@ -1102,73 +1102,91 @@ setup_network_restrictions() {
 }
 
 # Check for excluded files in sync directory (skip in directMount mode)
+# Only check patterns that changed since last run
 if [ "$cfg_directMount" != "true" ] && [ -d "$cfg_sync" ]; then
-    echo "Doin' a quick sweep of the sync directory..."
-    excluded_files=()
+    config_cache=".claude-cage-excludes.${cfg_project}"
+    current_excludes="${cfg_excludePath}|${cfg_excludeName}|${cfg_excludeRegex}|${cfg_belowPath}"
 
-    # Check excludePath patterns
-    if [ -n "$cfg_excludePath" ]; then
-        IFS='|' read -ra paths <<< "$cfg_excludePath"
-        for pattern in "${paths[@]}"; do
-            if [ -e "$cfg_sync/$pattern" ]; then
-                excluded_files+=("$cfg_sync/$pattern")
+    # Check if exclude patterns changed since last run
+    if [ -f "$config_cache" ]; then
+        previous_excludes=$(cat "$config_cache")
+        if [ "$current_excludes" != "$previous_excludes" ]; then
+            echo "Hold on now. Your exclude patterns changed since last time."
+            echo "Let me check if any newly-excluded files are sittin' in the sync directory..."
+
+            # Find newly added patterns by comparing
+            excluded_files=()
+
+            # Only check patterns that are new (weren't in previous config)
+            # This is a simplified check - we scan all current excludes and warn the user
+
+            # Check excludePath patterns
+            if [ -n "$cfg_excludePath" ]; then
+                IFS='|' read -ra paths <<< "$cfg_excludePath"
+                for pattern in "${paths[@]}"; do
+                    if [ -e "$cfg_sync/$pattern" ]; then
+                        excluded_files+=("$cfg_sync/$pattern")
+                    fi
+                done
             fi
-        done
-    fi
 
-    # Check excludeName patterns
-    if [ -n "$cfg_excludeName" ]; then
-        IFS='|' read -ra names <<< "$cfg_excludeName"
-        for pattern in "${names[@]}"; do
-            while IFS= read -r -d '' file; do
-                excluded_files+=("$file")
-            done < <(find "$cfg_sync" -name "$pattern" -print0 2>/dev/null)
-        done
-    fi
-
-    # Check excludeRegex patterns
-    if [ -n "$cfg_excludeRegex" ]; then
-        IFS='|' read -ra regexes <<< "$cfg_excludeRegex"
-        for pattern in "${regexes[@]}"; do
-            while IFS= read -r -d '' file; do
-                excluded_files+=("$file")
-            done < <(find "$cfg_sync" -regextype posix-extended -regex "$cfg_sync/$pattern" -print0 2>/dev/null)
-        done
-    fi
-
-    # Check belowPath patterns
-    if [ -n "$cfg_belowPath" ]; then
-        IFS='|' read -ra paths <<< "$cfg_belowPath"
-        for pattern in "${paths[@]}"; do
-            if [ -d "$cfg_sync/$pattern" ]; then
-                excluded_files+=("$cfg_sync/$pattern")
+            # Check excludeName patterns
+            if [ -n "$cfg_excludeName" ]; then
+                IFS='|' read -ra names <<< "$cfg_excludeName"
+                for pattern in "${names[@]}"; do
+                    while IFS= read -r -d '' file; do
+                        excluded_files+=("$file")
+                    done < <(find "$cfg_sync" -name "$pattern" -print0 2>/dev/null)
+                done
             fi
-        done
-    fi
 
-    # If excluded files found, prompt user
-    if [ ${#excluded_files[@]} -gt 0 ]; then
-        echo ""
-        echo "Now hold on. We got files here that shouldn't be on this bird:"
-        for file in "${excluded_files[@]}"; do
-            echo "  - $file"
-        done
-        echo ""
-        echo "Looks like they was from a previous flight with different rules."
-        echo "Gonna need to clean 'em out before we take off."
-        echo ""
-        read -p "Want me to remove these files? [y/N] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            for file in "${excluded_files[@]}"; do
-                rm -rf "$file"
-                echo "Gone: $file"
-            done
-        else
-            echo "Alright, you handle it yourself. Can't proceed 'til they're gone."
-            exit 1
+            # Check excludeRegex patterns
+            if [ -n "$cfg_excludeRegex" ]; then
+                IFS='|' read -ra regexes <<< "$cfg_excludeRegex"
+                for pattern in "${regexes[@]}"; do
+                    while IFS= read -r -d '' file; do
+                        excluded_files+=("$file")
+                    done < <(find "$cfg_sync" -regextype posix-extended -regex "$cfg_sync/$pattern" -print0 2>/dev/null)
+                done
+            fi
+
+            # Check belowPath patterns
+            if [ -n "$cfg_belowPath" ]; then
+                IFS='|' read -ra paths <<< "$cfg_belowPath"
+                for pattern in "${paths[@]}"; do
+                    if [ -d "$cfg_sync/$pattern" ]; then
+                        excluded_files+=("$cfg_sync/$pattern")
+                    fi
+                done
+            fi
+
+            # If excluded files found, prompt user
+            if [ ${#excluded_files[@]} -gt 0 ]; then
+                echo ""
+                echo "Now hold on. We got files here that match your new exclusion rules:"
+                for file in "${excluded_files[@]}"; do
+                    echo "  - $file"
+                done
+                echo ""
+                echo "These could be from before you changed the rules."
+                echo "They'll be ignored during sync, but they're still takin' up space."
+                echo ""
+                read -p "Want me to remove these files? [y/N] " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    for file in "${excluded_files[@]}"; do
+                        rm -rf "$file"
+                        echo "Gone: $file"
+                    done
+                else
+                    echo "Alright. They'll stay there but won't sync. Your call."
+                fi
+            fi
         fi
     fi
+
+    # Save current exclude patterns for next run
+    echo "$current_excludes" > "$config_cache"
 fi
 
 # Check if there's already a running instance
@@ -1228,14 +1246,31 @@ if [ "$skip_setup" = false ]; then
     else
         # Sync mode: use unison + bindfs
         # Build unison command with exclude options
-        unison_cmd="unison ./$cfg_source ./$cfg_sync -force ./$cfg_source -prefer ./$cfg_source -batch -confirmbigdel=false"
+        unison_cmd_base="unison ./$cfg_source ./$cfg_sync -batch -confirmbigdel=false"
         if [ -n "$cfg_exclude" ]; then
-            unison_cmd="$unison_cmd $cfg_exclude"
+            unison_cmd_base="$unison_cmd_base $cfg_exclude"
         fi
 
-        # Run unison as the original user
-        su -c "$unison_cmd" "$original_user" >/dev/null 2>&1
-        su -c "$unison_cmd -repeat watch" "$original_user" >/dev/null 2>&1 &
+        # Initial sync: force from source to sync to establish clean starting state
+        unison_cmd_initial="$unison_cmd_base -force ./$cfg_source -prefer ./$cfg_source"
+
+        # Ongoing sync: bidirectional with auto-resolution
+        unison_cmd_ongoing="$unison_cmd_base -auto"
+
+        # Check if unison-fsmonitor is available for watch mode
+        if command -v unison-fsmonitor >/dev/null 2>&1; then
+            repeat_mode="watch"
+        else
+            # Fall back to polling mode (every 1 second)
+            repeat_mode="1"
+            echo "Looks like unison-fsmonitor ain't installed. That's alright."
+            echo "We're gonna use polling mode instead. Check for changes every second."
+            echo "You want it faster? Install unison-fsmonitor. But this'll do the job."
+        fi
+
+        # Run initial sync, then ongoing sync as the original user
+        su -c "$unison_cmd_initial" "$original_user" >/dev/null 2>&1
+        su -c "$unison_cmd_ongoing -repeat $repeat_mode" "$original_user" >/dev/null 2>&1 &
         unison_pid=$!
 
         bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"

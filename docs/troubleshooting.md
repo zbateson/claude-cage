@@ -398,10 +398,10 @@ curl -I https://github.com:443
 2. **Verify port specification:**
    ```lua
    -- Wrong: Missing port
-   allowedDomains = { "github.com" }  -- Allows all ports
+   allow = { domains = { "github.com" } }  -- Allows all ports
 
    -- Right: Specific port
-   allowedDomains = { "github.com:443" }  -- HTTPS only
+   allow = { domains = { "github.com:443" } }  -- HTTPS only
    ```
 
 ### DNS resolution fails

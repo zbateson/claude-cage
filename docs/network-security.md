@@ -20,21 +20,21 @@ Only allow specific IPs/domains, deny everything else. Provides maximum security
 claude_cage {
     networkMode = "allowlist",
 
-    allowedDomains = {
-        "github.com:443",              -- Only HTTPS
-        "registry.npmjs.org:443",      -- Only HTTPS
-        "pypi.org"                     -- All ports
-    },
-
-    allowedIPs = {
-        "1.2.3.4:80,443",              -- Only HTTP and HTTPS
-        "127.0.0.1:5432",              -- Localhost PostgreSQL only
-        "5.6.7.8"                      -- All ports
-    },
-
-    allowedNetworks = {
-        "10.0.0.0/24:443",             -- Internal network, HTTPS only
-        "192.168.1.0/24"               -- All ports
+    allow = {
+        domains = {
+            "github.com:443",              -- Only HTTPS
+            "registry.npmjs.org:443",      -- Only HTTPS
+            "pypi.org"                     -- All ports
+        },
+        ips = {
+            "1.2.3.4:80,443",              -- Only HTTP and HTTPS
+            "127.0.0.1:5432",              -- Localhost PostgreSQL only
+            "5.6.7.8"                      -- All ports
+        },
+        networks = {
+            "10.0.0.0/24:443",             -- Internal network, HTTPS only
+            "192.168.1.0/24"               -- All ports
+        }
     }
 }
 ```
@@ -49,36 +49,36 @@ Block specific IPs/domains, allow everything else. More practical for most use c
 claude_cage {
     networkMode = "blocklist",
 
-    blockNetworks = {
-        "192.168.1.0/24",              -- Entire home network
-        "10.0.0.0/8:22,3389"           -- Corporate network, SSH/RDP only
-    },
-
-    blockIPs = {
-        "169.254.169.254",             -- AWS metadata service
-        "192.168.1.100:5432",          -- Production database
-        "127.0.0.1"                    -- All localhost
-    },
-
-    blockDomains = {
-        "internal.company.com",        -- All ports
-        "vault.company.com:443",       -- HTTPS only
-        "admin.local:80,443"           -- HTTP and HTTPS
+    block = {
+        networks = {
+            "192.168.1.0/24",              -- Entire home network
+            "10.0.0.0/8:22,3389"           -- Corporate network, SSH/RDP only
+        },
+        ips = {
+            "169.254.169.254",             -- AWS metadata service
+            "192.168.1.100:5432",          -- Production database
+            "127.0.0.1"                    -- All localhost
+        },
+        domains = {
+            "internal.company.com",        -- All ports
+            "vault.company.com:443",       -- HTTPS only
+            "admin.local:80,443"           -- HTTP and HTTPS
+        }
     }
 }
 ```
 
 ## Blocklist Exceptions
 
-In blocklist mode, you can use `allowedDomains`, `allowedIPs`, and `allowedNetworks` to create exceptions. This is useful when you want to block a broad range but allow specific services.
+In blocklist mode, you can use `allow.domains`, `allow.ips`, and `allow.networks` to create exceptions. This is useful when you want to block a broad range but allow specific services.
 
 **Example: Block localhost except PostgreSQL**
 
 ```lua
 claude_cage {
     networkMode = "blocklist",
-    blockIPs = { "127.0.0.1" },
-    allowedIPs = { "127.0.0.1:5432" }  -- Exception
+    block = { ips = { "127.0.0.1" } },
+    allow = { ips = { "127.0.0.1:5432" } }  -- Exception
 }
 ```
 
@@ -87,10 +87,12 @@ claude_cage {
 ```lua
 claude_cage {
     networkMode = "blocklist",
-    blockNetworks = { "192.168.0.0/16" },
-    allowedIPs = {
-        "192.168.1.50:3000",           -- Dev server 1
-        "192.168.1.51:8080"            -- Dev server 2
+    block = { networks = { "192.168.0.0/16" } },
+    allow = {
+        ips = {
+            "192.168.1.50:3000",           -- Dev server 1
+            "192.168.1.51:8080"            -- Dev server 2
+        }
     }
 }
 ```

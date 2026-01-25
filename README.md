@@ -255,16 +255,20 @@ You want to add some OS-level network controls on top? Here's how you do it:
 **Blocklist mode** - Keep Claude away from your infrastructure:
 ```lua
 networkMode = "blocklist"
-blockNetworks = { "192.168.1.0/24" }          -- Block home network
-blockIPs = { "169.254.169.254" }              -- Block AWS metadata
-allowedIPs = { "127.0.0.1:5432" }             -- Exception for PostgreSQL
+block = {
+    networks = { "192.168.1.0/24" },          -- Block home network
+    ips = { "169.254.169.254" }               -- Block AWS metadata
+}
+allow = { ips = { "127.0.0.1:5432" } }        -- Exception for PostgreSQL
 ```
 
 **Allowlist mode** - Lock it down tight:
 ```lua
 networkMode = "allowlist"
-allowedDomains = { "github.com:443", "npmjs.org:443" }
-allowedIPs = { "127.0.0.1:5432" }
+allow = {
+    domains = { "github.com:443", "npmjs.org:443" },
+    ips = { "127.0.0.1:5432" }
+}
 ```
 
 📖 **[Network Security Guide →](docs/network-security.md)**
@@ -356,8 +360,8 @@ claude_cage {
     },
 
     networkMode = "blocklist",
-    blockIPs = { "127.0.0.1" },
-    allowedIPs = { "127.0.0.1:5432" }  -- PostgreSQL only
+    block = { ips = { "127.0.0.1" } },
+    allow = { ips = { "127.0.0.1:5432" } }  -- PostgreSQL only
 }
 ```
 
@@ -369,7 +373,7 @@ claude_cage {
     directMount = "workspace",
 
     networkMode = "blocklist",
-    blockNetworks = { "192.168.1.0/24" }
+    block = { networks = { "192.168.1.0/24" } }
 }
 
 -- Project mode: Claude isolated to one project
@@ -377,7 +381,7 @@ claude_cage {
     directMount = "project",
 
     networkMode = "blocklist",
-    blockNetworks = { "192.168.1.0/24" }
+    block = { networks = { "192.168.1.0/24" } }
 }
 ```
 
@@ -393,7 +397,7 @@ claude_cage {
     },
 
     networkMode = "allowlist",
-    allowedDomains = { "github.com:443" }
+    allow = { domains = { "github.com:443" } }
 }
 ```
 

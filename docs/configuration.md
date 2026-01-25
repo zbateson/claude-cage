@@ -339,24 +339,28 @@ Network restriction mode.
 networkMode = "disabled"
 ```
 
-### Allowlist Mode Arrays
+### Allow Object
 
-Only apply when `networkMode = "allowlist"`.
+Used in allowlist mode (required) or blocklist mode (for exceptions).
 
 ```lua
-allowedDomains = { "github.com:443", "npmjs.org" }
-allowedIPs = { "1.2.3.4:80,443", "127.0.0.1:5432" }
-allowedNetworks = { "10.0.0.0/24:443", "192.168.1.0/24" }
+allow = {
+    domains = { "github.com:443", "npmjs.org" },
+    ips = { "1.2.3.4:80,443", "127.0.0.1:5432" },
+    networks = { "10.0.0.0/24:443", "192.168.1.0/24" }
+}
 ```
 
-### Blocklist Mode Arrays
+### Block Object
 
-Only apply when `networkMode = "blocklist"`.
+Only applies when `networkMode = "blocklist"`.
 
 ```lua
-blockDomains = { "internal.company.com", "vault.company.com:443" }
-blockIPs = { "169.254.169.254", "192.168.1.100:5432" }
-blockNetworks = { "192.168.1.0/24", "10.0.0.0/8:22,3389" }
+block = {
+    domains = { "internal.company.com", "vault.company.com:443" },
+    ips = { "169.254.169.254", "192.168.1.100:5432" },
+    networks = { "192.168.1.0/24", "10.0.0.0/8:22,3389" }
+}
 ```
 
 ### Port Specification Format
@@ -381,9 +385,11 @@ claude_cage {
 
     -- Network restrictions
     networkMode = "blocklist",
-    blockNetworks = { "192.168.1.0/24" },
-    blockIPs = { "127.0.0.1" },
-    allowedIPs = { "127.0.0.1:5432" }  -- Exception for PostgreSQL
+    block = {
+        networks = { "192.168.1.0/24" },
+        ips = { "127.0.0.1" }
+    },
+    allow = { ips = { "127.0.0.1:5432" } }  -- Exception for PostgreSQL
 }
 ```
 
@@ -397,7 +403,7 @@ claude_cage {
 
     -- Network restrictions (optional)
     networkMode = "blocklist",
-    blockIPs = { "169.254.169.254" }  -- Block AWS metadata
+    block = { ips = { "169.254.169.254" } }  -- Block AWS metadata
 }
 ```
 
@@ -411,7 +417,7 @@ claude_cage {
 
     -- Network restrictions (optional)
     networkMode = "blocklist",
-    blockIPs = { "169.254.169.254" }  -- Block AWS metadata
+    block = { ips = { "169.254.169.254" } }  -- Block AWS metadata
 }
 ```
 
@@ -427,8 +433,10 @@ claude_cage {
     },
 
     networkMode = "allowlist",
-    allowedDomains = { "github.com:443", "api.company.com:443" },
-    allowedIPs = { "10.0.0.50:5432" }
+    allow = {
+        domains = { "github.com:443", "api.company.com:443" },
+        ips = { "10.0.0.50:5432" }
+    }
 }
 ```
 
@@ -447,8 +455,8 @@ claude_cage {
 
     -- Shared network restrictions
     networkMode = "blocklist",
-    blockIPs = { "127.0.0.1" },
-    allowedIPs = { "127.0.0.1:5432" }  -- PostgreSQL for all projects
+    block = { ips = { "127.0.0.1" } },
+    allow = { ips = { "127.0.0.1:5432" } }  -- PostgreSQL for all projects
 }
 ```
 
@@ -466,7 +474,7 @@ claude_cage {
 ```lua
 claude_cage {
     -- Frontend dev server allowed
-    allowedIPs = { "127.0.0.1:3000" }
+    allow = { ips = { "127.0.0.1:3000" } }
 }
 ```
 
@@ -495,7 +503,7 @@ claude_cage {
 
     -- Default network restrictions
     networkMode = "blocklist",
-    blockIPs = { "169.254.169.254" }  -- Block cloud metadata services
+    block = { ips = { "169.254.169.254" } }  -- Block cloud metadata services
 }
 ```
 
@@ -518,7 +526,7 @@ claude_cage {
 
     -- Your network preferences
     networkMode = "blocklist",
-    blockNetworks = { "192.168.1.0/24" }
+    block = { networks = { "192.168.1.0/24" } }
 }
 ```
 

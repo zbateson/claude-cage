@@ -243,8 +243,8 @@ claude_cage {
     },
 
     networkMode = "blocklist",
-    blockIPs = { "127.0.0.1" },
-    allowedIPs = { "127.0.0.1:3000" }  -- Allow dev server
+    block = { ips = { "127.0.0.1" } },
+    allow = { ips = { "127.0.0.1:3000" } }  -- Allow dev server
 }
 ```
 
@@ -258,7 +258,7 @@ claude_cage {
     },
 
     networkMode = "blocklist",
-    blockNetworks = { "192.168.1.0/24" }
+    block = { networks = { "192.168.1.0/24" } }
 }
 ```
 
@@ -337,9 +337,11 @@ claude_cage {
 
     -- Strict network allowlist
     networkMode = "allowlist",
-    allowedDomains = {
-        "github.com:443",
-        "api.company.com:443"
+    allow = {
+        domains = {
+            "github.com:443",
+            "api.company.com:443"
+        }
     }
 }
 ```
@@ -355,11 +357,13 @@ claude_cage {
 
     -- Block most localhost, allow specific services
     networkMode = "blocklist",
-    blockIPs = { "127.0.0.1" },
-    allowedIPs = {
-        "127.0.0.1:5432",      -- PostgreSQL
-        "127.0.0.1:6379",      -- Redis
-        "127.0.0.1:3000"       -- Dev server
+    block = { ips = { "127.0.0.1" } },
+    allow = {
+        ips = {
+            "127.0.0.1:5432",      -- PostgreSQL
+            "127.0.0.1:6379",      -- Redis
+            "127.0.0.1:3000"       -- Dev server
+        }
     }
 }
 ```

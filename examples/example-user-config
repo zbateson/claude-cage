@@ -56,28 +56,34 @@ claude_cage {
 
     -- Blocklist mode: Block specific connections (everything else allowed)
     -- networkMode = "blocklist",
-    -- blockNetworks = {
-    --     "127.0.0.1",        -- Block all localhost
-    --     "192.168.0.0/16",   -- Block home networks
-    --     "10.0.0.0/8",       -- Block office/corporate networks
-    --     "172.16.0.0/12"     -- Block corporate private networks
-    -- },
-    -- blockDomains = {
-    --     "secret-api.example.com"    -- Block internal API
+    -- block = {
+    --     networks = {
+    --         "127.0.0.1",        -- Block all localhost
+    --         "192.168.0.0/16",   -- Block home networks
+    --         "10.0.0.0/8",       -- Block office/corporate networks
+    --         "172.16.0.0/12"     -- Block corporate private networks
+    --     },
+    --     domains = {
+    --         "secret-api.example.com"    -- Block internal API
+    --     }
     -- },
 
     -- Blocklist exceptions: Allow specific services even when broader range blocked
-    -- allowedIPs = {
-    --     "127.0.0.1:5432",   -- PostgreSQL
-    --     "127.0.0.1:3306",   -- MySQL
-    --     "127.0.0.1:6379",   -- Redis
-    --     "127.0.0.1:27017",  -- MongoDB
-    --     "127.0.0.1:3000",   -- Common dev server port
-    --     "127.0.0.1:8080"    -- Common dev server port
+    -- allow = {
+    --     ips = {
+    --         "127.0.0.1:5432",   -- PostgreSQL
+    --         "127.0.0.1:3306",   -- MySQL
+    --         "127.0.0.1:6379",   -- Redis
+    --         "127.0.0.1:27017",  -- MongoDB
+    --         "127.0.0.1:3000",   -- Common dev server port
+    --         "127.0.0.1:8080"    -- Common dev server port
+    --     }
     -- },
 
     -- Allowlist mode: Only allow specific connections (everything else blocked)
     -- networkMode = "allowlist",
-    -- allowedDomains = { "github.com:443", "registry.npmjs.org:443" },
-    -- allowedIPs = { "127.0.0.1:5432" },
+    -- allow = {
+    --     domains = { "github.com:443", "registry.npmjs.org:443" },
+    --     ips = { "127.0.0.1:5432" }
+    -- },
 }

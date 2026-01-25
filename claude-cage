@@ -516,22 +516,7 @@ local function merge_config(base, override)
 
     -- Override with new values
     for k, v in pairs(override) do
-        local array_fields = {"allowedDomains", "allowedIPs", "allowedNetworks", "blockDomains", "blockIPs", "blockNetworks"}
-        local is_array_field = false
-        for _, field in ipairs(array_fields) do
-            if k == field then
-                is_array_field = true
-                break
-            end
-        end
-
-        if is_array_field and type(v) == "table" then
-            -- Merge array fields
-            result[k] = result[k] or {}
-            for _, item in ipairs(v) do
-                table.insert(result[k], item)
-            end
-        elseif k == "exclude" and type(v) == "table" then
+        if k == "exclude" and type(v) == "table" then
             -- Merge exclude sub-fields (path, name, belowPath, regex)
             result.exclude = result.exclude or {}
             for subkey, subval in pairs(v) do
@@ -539,6 +524,28 @@ local function merge_config(base, override)
                     result.exclude[subkey] = result.exclude[subkey] or {}
                     for _, item in ipairs(subval) do
                         table.insert(result.exclude[subkey], item)
+                    end
+                end
+            end
+        elseif k == "block" and type(v) == "table" then
+            -- Merge block sub-fields (domains, ips, networks)
+            result.block = result.block or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.block[subkey] = result.block[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.block[subkey], item)
+                    end
+                end
+            end
+        elseif k == "allow" and type(v) == "table" then
+            -- Merge allow sub-fields (domains, ips, networks)
+            result.allow = result.allow or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.allow[subkey] = result.allow[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.allow[subkey], item)
                     end
                 end
             end
@@ -774,13 +781,15 @@ print(array_to_string(exclude.regex))
 print(array_to_string(exclude.belowPath))
 
 -- Output network configuration
+local allow = config.allow or {}
+local block = config.block or {}
 print(networkMode)
-print(array_to_string(config.allowedDomains))
-print(array_to_string(config.allowedIPs))
-print(array_to_string(config.allowedNetworks))
-print(array_to_string(config.blockDomains))
-print(array_to_string(config.blockIPs))
-print(array_to_string(config.blockNetworks))
+print(array_to_string(allow.domains))
+print(array_to_string(allow.ips))
+print(array_to_string(allow.networks))
+print(array_to_string(block.domains))
+print(array_to_string(block.ips))
+print(array_to_string(block.networks))
 
 -- Output project for validation
 print(project)
@@ -818,12 +827,12 @@ fi
     read -r cfg_exclude_regex
     read -r cfg_exclude_belowPath
     read -r cfg_networkMode
-    read -r cfg_allowedDomains
-    read -r cfg_allowedIPs
-    read -r cfg_allowedNetworks
-    read -r cfg_blockDomains
-    read -r cfg_blockIPs
-    read -r cfg_blockNetworks
+    read -r cfg_allow_domains
+    read -r cfg_allow_ips
+    read -r cfg_allow_networks
+    read -r cfg_block_domains
+    read -r cfg_block_ips
+    read -r cfg_block_networks
     read -r cfg_project
     read -r cfg_directMount
     read -r cfg_relative_path
@@ -835,12 +844,12 @@ fi
 [ "$cfg_exclude_name" = "EMPTY" ] && cfg_exclude_name=""
 [ "$cfg_exclude_regex" = "EMPTY" ] && cfg_exclude_regex=""
 [ "$cfg_exclude_belowPath" = "EMPTY" ] && cfg_exclude_belowPath=""
-[ "$cfg_allowedDomains" = "EMPTY" ] && cfg_allowedDomains=""
-[ "$cfg_allowedIPs" = "EMPTY" ] && cfg_allowedIPs=""
-[ "$cfg_allowedNetworks" = "EMPTY" ] && cfg_allowedNetworks=""
-[ "$cfg_blockDomains" = "EMPTY" ] && cfg_blockDomains=""
-[ "$cfg_blockIPs" = "EMPTY" ] && cfg_blockIPs=""
-[ "$cfg_blockNetworks" = "EMPTY" ] && cfg_blockNetworks=""
+[ "$cfg_allow_domains" = "EMPTY" ] && cfg_allow_domains=""
+[ "$cfg_allow_ips" = "EMPTY" ] && cfg_allow_ips=""
+[ "$cfg_allow_networks" = "EMPTY" ] && cfg_allow_networks=""
+[ "$cfg_block_domains" = "EMPTY" ] && cfg_block_domains=""
+[ "$cfg_block_ips" = "EMPTY" ] && cfg_block_ips=""
+[ "$cfg_block_networks" = "EMPTY" ] && cfg_block_networks=""
 
 # Parse command line arguments
 test_mode=false
@@ -1176,62 +1185,62 @@ if [ "$cfg_networkMode" != "disabled" ]; then
 
     if [ "$cfg_networkMode" = "allowlist" ]; then
         echo "  Allow list (everything else blocked):"
-        if [ -n "$cfg_allowedDomains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+        if [ -n "$cfg_allow_domains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_allow_domains"
             for domain in "${domains[@]}"; do
                 echo "    Domain:  $domain"
             done
         fi
-        if [ -n "$cfg_allowedIPs" ]; then
-            IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+        if [ -n "$cfg_allow_ips" ]; then
+            IFS='|' read -ra ips <<< "$cfg_allow_ips"
             for ip in "${ips[@]}"; do
                 echo "    IP:      $ip"
             done
         fi
-        if [ -n "$cfg_allowedNetworks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+        if [ -n "$cfg_allow_networks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_allow_networks"
             for network in "${networks[@]}"; do
                 echo "    Network: $network"
             done
         fi
     elif [ "$cfg_networkMode" = "blocklist" ]; then
         echo "  Block list (everything else allowed):"
-        if [ -n "$cfg_blockDomains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_blockDomains"
+        if [ -n "$cfg_block_domains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_block_domains"
             for domain in "${domains[@]}"; do
                 echo "    Domain:  $domain"
             done
         fi
-        if [ -n "$cfg_blockIPs" ]; then
-            IFS='|' read -ra ips <<< "$cfg_blockIPs"
+        if [ -n "$cfg_block_ips" ]; then
+            IFS='|' read -ra ips <<< "$cfg_block_ips"
             for ip in "${ips[@]}"; do
                 echo "    IP:      $ip"
             done
         fi
-        if [ -n "$cfg_blockNetworks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_blockNetworks"
+        if [ -n "$cfg_block_networks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_block_networks"
             for network in "${networks[@]}"; do
                 echo "    Network: $network"
             done
         fi
 
         # Show exceptions if any exist
-        if [ -n "$cfg_allowedDomains" ] || [ -n "$cfg_allowedIPs" ] || [ -n "$cfg_allowedNetworks" ]; then
+        if [ -n "$cfg_allow_domains" ] || [ -n "$cfg_allow_ips" ] || [ -n "$cfg_allow_networks" ]; then
             echo "  Exceptions (allowed even when blocked):"
-            if [ -n "$cfg_allowedDomains" ]; then
-                IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+            if [ -n "$cfg_allow_domains" ]; then
+                IFS='|' read -ra domains <<< "$cfg_allow_domains"
                 for domain in "${domains[@]}"; do
                     echo "    Domain:  $domain"
                 done
             fi
-            if [ -n "$cfg_allowedIPs" ]; then
-                IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+            if [ -n "$cfg_allow_ips" ]; then
+                IFS='|' read -ra ips <<< "$cfg_allow_ips"
                 for ip in "${ips[@]}"; do
                     echo "    IP:      $ip"
                 done
             fi
-            if [ -n "$cfg_allowedNetworks" ]; then
-                IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+            if [ -n "$cfg_allow_networks" ]; then
+                IFS='|' read -ra networks <<< "$cfg_allow_networks"
                 for network in "${networks[@]}"; do
                     echo "    Network: $network"
                 done
@@ -1729,8 +1738,8 @@ setup_network_restrictions() {
         # No need to remove final rule here - already done above if chain exists
 
         # Allow user-configured domains
-        if [ -n "$cfg_allowedDomains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+        if [ -n "$cfg_allow_domains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_allow_domains"
             for domain_spec in "${domains[@]}"; do
                 IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
                 while IFS= read -r ip; do
@@ -1740,8 +1749,8 @@ setup_network_restrictions() {
         fi
 
         # Allow user-configured IPs
-        if [ -n "$cfg_allowedIPs" ]; then
-            IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+        if [ -n "$cfg_allow_ips" ]; then
+            IFS='|' read -ra ips <<< "$cfg_allow_ips"
             for ip_spec in "${ips[@]}"; do
                 IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
@@ -1749,8 +1758,8 @@ setup_network_restrictions() {
         fi
 
         # Allow user-configured networks
-        if [ -n "$cfg_allowedNetworks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+        if [ -n "$cfg_allow_networks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_allow_networks"
             for network_spec in "${networks[@]}"; do
                 IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports"
@@ -1766,8 +1775,8 @@ setup_network_restrictions() {
         # First, allow exceptions (these rules are processed first)
         # Use INSERT mode so exceptions go at the beginning of the chain, before any existing blocks
         # Allow user-configured domains
-        if [ -n "$cfg_allowedDomains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+        if [ -n "$cfg_allow_domains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_allow_domains"
             for domain_spec in "${domains[@]}"; do
                 IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
                 while IFS= read -r ip; do
@@ -1777,8 +1786,8 @@ setup_network_restrictions() {
         fi
 
         # Allow user-configured IPs
-        if [ -n "$cfg_allowedIPs" ]; then
-            IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+        if [ -n "$cfg_allow_ips" ]; then
+            IFS='|' read -ra ips <<< "$cfg_allow_ips"
             for ip_spec in "${ips[@]}"; do
                 IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports" "insert"
@@ -1786,8 +1795,8 @@ setup_network_restrictions() {
         fi
 
         # Allow user-configured networks
-        if [ -n "$cfg_allowedNetworks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+        if [ -n "$cfg_allow_networks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_allow_networks"
             for network_spec in "${networks[@]}"; do
                 IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports" "insert"
@@ -1796,8 +1805,8 @@ setup_network_restrictions() {
 
         # Then, block configured targets
         # Block user-configured domains
-        if [ -n "$cfg_blockDomains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_blockDomains"
+        if [ -n "$cfg_block_domains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_block_domains"
             for domain_spec in "${domains[@]}"; do
                 IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
                 while IFS= read -r ip; do
@@ -1807,8 +1816,8 @@ setup_network_restrictions() {
         fi
 
         # Block user-configured IPs
-        if [ -n "$cfg_blockIPs" ]; then
-            IFS='|' read -ra ips <<< "$cfg_blockIPs"
+        if [ -n "$cfg_block_ips" ]; then
+            IFS='|' read -ra ips <<< "$cfg_block_ips"
             for ip_spec in "${ips[@]}"; do
                 IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
                 add_iptables_rule "$iptables_chain" "REJECT" "$ip" "$ports"
@@ -1816,8 +1825,8 @@ setup_network_restrictions() {
         fi
 
         # Block user-configured networks
-        if [ -n "$cfg_blockNetworks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_blockNetworks"
+        if [ -n "$cfg_block_networks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_block_networks"
             for network_spec in "${networks[@]}"; do
                 IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
                 add_iptables_rule "$iptables_chain" "REJECT" "$network" "$ports"

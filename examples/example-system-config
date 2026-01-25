@@ -10,12 +10,24 @@ claude_cage {
     -- Not typically set in system-wide config
     -- project = "myproject",
 
-    -- Default user to run claude as
-    user = "claude",
+    -- Default user to run claude as (default: "claude")
+    -- Users are automatically deleted on exit (unless they existed before)
+    -- user = "claude",
 
-    -- User persistence (default: false)
-    -- Set to true if you want users to persist system-wide
-    -- persistUser = true,
+    -- User isolation mode (default: "single")
+    -- Options: "single" or "per-project"
+    --
+    -- Single-user mode (RECOMMENDED): All projects share one user (e.g., "claude")
+    --   - User home: /home/claude/ (standard location)
+    --   - Network rules: Shared across all projects
+    --   - Claude Code authentication: Login once, works for all projects
+    --
+    -- Per-project mode: Each project gets its own user (e.g., "claude-myproject")
+    --   - User home: /home/.claude-cage/claude-myproject/
+    --   - Network rules: Project-specific
+    --   - Claude Code authentication: Requires login for each new project user
+    --
+    -- userMode = "single",
 
     -- Show ASCII art banner (default: true)
     -- showBanner = false,
@@ -44,6 +56,9 @@ claude_cage {
 
     -- Network restrictions (optional - defense in depth)
     -- Default to disabled; users/projects can override
+    -- NOTE: In single-user mode (default), network rules are shared across all
+    -- projects and persist until the last instance exits. In per-project mode,
+    -- each project gets its own network rules.
     networkMode = "disabled",
 
     -- Allowlist mode example: Only allow Claude's required domains

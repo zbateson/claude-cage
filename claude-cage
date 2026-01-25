@@ -46,8 +46,17 @@ EOF
 
 # Check if lua is available early (before sudo check)
 if ! command -v lua >/dev/null 2>&1; then
-    echo "Error: lua is required but not installed"
-    echo "Install with: sudo apt install lua"
+    echo "Now listen carefully. We got a problem here."
+    echo "I need lua installed on this bird."
+    echo "Can't do nothin' without it."
+    exit 1
+fi
+
+# Check if inotifywait is available (required for unison watch mode)
+if ! command -v inotifywait >/dev/null 2>&1; then
+    echo "Hold on now. We got a problem here."
+    echo "Unison needs inotify-tools for file monitoring."
+    echo "Without it, this bird ain't gonna watch your files properly."
     exit 1
 fi
 
@@ -61,8 +70,9 @@ local_config="claude-cage.config"
 
 # Local config is required
 if [ ! -f "$local_config" ]; then
-    echo "Error: Local config file '$local_config' not found"
-    echo "This file is required to run claude-cage in this directory"
+    echo "Hold on now. I'm lookin' for a file called '$local_config' and it ain't here."
+    echo "Can't take off without that config file in this directory."
+    echo "You understand what I'm tellin' you?"
     exit 1
 fi
 
@@ -140,8 +150,8 @@ end
 -- Set defaults
 local project = config.project or ""
 local user = config.user or "claude"
+local userMode = config.userMode or "single"  -- Options: "single" or "per-project"
 local userAppend = config.userAppend or ""
-local persistUser = config.persistUser or false
 local source = config.source or ""
 local sync = config.sync or ""
 local syncPrepend = config.syncPrepend or "claude-"
@@ -154,14 +164,23 @@ if project ~= "" and source == "" then
     source = project
 end
 
--- If project is set and userAppend is not, use project for userAppend
-if project ~= "" and userAppend == "" then
-    userAppend = project
-end
-
--- Append to username if specified
-if userAppend ~= "" then
-    user = user .. "-" .. userAppend
+-- Determine username based on userMode
+if userMode == "single" then
+    -- Single-user mode: use base username only
+    -- userAppend is ignored
+elseif userMode == "per-project" then
+    -- Per-project mode: append identifier to username
+    if userAppend ~= "" then
+        -- Use explicitly set userAppend
+        user = user .. "-" .. userAppend
+    elseif project ~= "" then
+        -- Use project name as default
+        user = user .. "-" .. project
+    else
+        -- No userAppend and no project: use base username (fallback to single-user)
+    end
+else
+    error("Invalid userMode: must be 'single' or 'per-project'")
 end
 
 -- If sync is empty, determine from project or source
@@ -213,7 +232,7 @@ if config.belowPath then
 end
 
 -- Output basic config (use | delimiter to preserve empty fields)
-print(user .. "|" .. source .. "|" .. sync .. "|" .. syncPrepend .. "|" .. mounted .. "|" .. tostring(persistUser) .. "|" .. exclude_args .. "|" .. tostring(showBanner))
+print(user .. "|" .. source .. "|" .. sync .. "|" .. syncPrepend .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner))
 
 -- Output exclude patterns for validation (pipe-separated)
 local function array_to_string(arr)
@@ -249,17 +268,18 @@ lua_exit_code=$?
 if [ $lua_exit_code -ne 0 ]; then
     echo ""
     echo "============================================"
-    echo "Error: Failed to parse configuration files"
+    echo "Somethin' went wrong with the config files"
     echo "============================================"
     echo ""
     echo "$lua_output"
     echo ""
+    echo "Now I want you to fix that and we'll try this again."
     exit 1
 fi
 
 # Parse the lua output (only if lua succeeded)
 {
-    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_syncPrepend cfg_mounted cfg_persistUser cfg_exclude cfg_showBanner
+    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_syncPrepend cfg_mounted cfg_exclude cfg_showBanner
     read -r cfg_excludePath
     read -r cfg_excludeName
     read -r cfg_excludeRegex
@@ -288,6 +308,7 @@ fi
 
 # Parse command line arguments
 test_mode=false
+cleanup_mode=false
 source_arg=""
 
 for arg in "$@"; do
@@ -295,6 +316,8 @@ for arg in "$@"; do
         test_mode=true
     elif [ "$arg" = "--no-banner" ]; then
         cfg_showBanner="false"
+    elif [ "$arg" = "--cleanup" ]; then
+        cleanup_mode=true
     else
         source_arg="$arg"
     fi
@@ -307,24 +330,108 @@ fi
 
 # Validate required config
 if [ -z "$cfg_project" ]; then
-    echo "Error: 'project' must be specified in ./claude-cage.config"
-    echo "Example: project = \"myproject\""
+    echo "Listen to me very carefully now."
+    echo "You need to put a 'project' in that ./claude-cage.config file."
+    echo "Somethin' like: project = \"myproject\""
+    echo "Can't proceed without it."
     exit 1
 fi
 
 if [ -z "$cfg_source" ]; then
-    echo "Error: source directory not specified in config or command line"
+    echo "Hold on. Where's the source directory?"
+    echo "I need that specified in the config or on the command line."
     exit 1
 fi
 
 if [ ! -d "$cfg_source" ]; then
-    echo "Error: source directory '$cfg_source' does not exist"
+    echo "Now we got a problem. That source directory '$cfg_source' don't exist."
+    echo "Can't work with somethin' that ain't there."
     exit 1
+fi
+
+# Handle cleanup mode
+if [ "$cleanup_mode" = true ]; then
+    # Now check for root
+    if [ "$EUID" -ne 0 ]; then
+        echo "Gonna need you to run this as root. Use sudo."
+        exit 1
+    fi
+
+    echo "=== CLEANUP MODE ==="
+    echo "Alright, let's clean up this operation."
+    echo ""
+
+    # Find and unmount any bindfs mounts for this user
+    mount_point="/home/$cfg_user/$cfg_mounted"
+    if mountpoint -q "$mount_point" 2>/dev/null; then
+        echo "Found mounted directory at $mount_point, unmountin' it now..."
+        umount -l "$mount_point" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo "  Unmounted successfully."
+        else
+            echo "  Warning: Had trouble unmountin'. May need manual cleanup."
+        fi
+    else
+        echo "No mounted directory found at $mount_point"
+    fi
+
+    # Clean up iptables rules for this user
+    if id -u "$cfg_user" >/dev/null 2>&1; then
+        user_uid=$(id -u "$cfg_user")
+        # Look for any chains with our pattern
+        for chain in $(iptables -L -n | grep "CLAUDE_CAGE_" | awk '{print $1}' | sort -u); do
+            echo "Found iptables chain: $chain, cleanin' it up..."
+            iptables -D OUTPUT -j "$chain" 2>/dev/null
+            iptables -F "$chain" 2>/dev/null
+            iptables -X "$chain" 2>/dev/null
+            echo "  Cleaned up $chain"
+        done
+    fi
+
+    # Kill processes from PID file
+    if [ -f "$pid_file" ]; then
+        echo "Found PID file, stoppin' tracked processes..."
+        while IFS= read -r pid; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+                echo "  Stopped process $pid"
+            fi
+        done < "$pid_file"
+        rm -f "$pid_file"
+        echo "  PID file removed."
+    else
+        echo "No PID file found at $pid_file"
+    fi
+
+    # Ask about user deletion
+    if id -u "$cfg_user" >/dev/null 2>&1; then
+        echo ""
+        echo "User '$cfg_user' exists on this system."
+        read -p "Delete user '$cfg_user'? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "Alright, removin' user '$cfg_user'..."
+            userdel -r "$cfg_user" 2>/dev/null || userdel "$cfg_user" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                echo "  User removed."
+            else
+                echo "  Warning: Had trouble removin' the user. May need manual cleanup."
+            fi
+        else
+            echo "Leavin' user '$cfg_user' as is."
+        fi
+    else
+        echo "User '$cfg_user' doesn't exist. Nothin' to delete."
+    fi
+
+    echo ""
+    echo "Cleanup complete. All done."
+    exit 0
 fi
 
 # Now check for root after validating config
 if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root (sudo)"
+    echo "Gonna need you to run this as root. Use sudo."
     exit 1
 fi
 
@@ -332,6 +439,8 @@ if [ "$cfg_showBanner" = "true" ]; then
     print_banner
 fi
 
+echo "Alright. Here's what we're workin' with:"
+echo ""
 echo "Configuration:"
 echo "  Project:       $cfg_project"
 echo "  User:          $cfg_user"
@@ -340,7 +449,7 @@ echo "  Sync:          $cfg_sync"
 echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
 echo "  Network mode:  $cfg_networkMode"
 echo ""
-echo "Exclusions:"
+echo "Excludes:"
 if [ -n "$cfg_excludePath" ]; then
     IFS='|' read -ra paths <<< "$cfg_excludePath"
     for path in "${paths[@]}"; do
@@ -369,6 +478,77 @@ if [ -z "$cfg_excludePath$cfg_excludeName$cfg_excludeRegex$cfg_belowPath" ]; the
     echo "  (none)"
 fi
 echo ""
+
+# Show active network restrictions if configured
+if [ "$cfg_networkMode" != "disabled" ]; then
+    echo "Network restrictions ($cfg_networkMode mode):"
+
+    if [ "$cfg_networkMode" = "allowlist" ]; then
+        echo "  Allow list (everything else blocked):"
+        if [ -n "$cfg_allowedDomains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+            for domain in "${domains[@]}"; do
+                echo "    Domain:  $domain"
+            done
+        fi
+        if [ -n "$cfg_allowedIPs" ]; then
+            IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+            for ip in "${ips[@]}"; do
+                echo "    IP:      $ip"
+            done
+        fi
+        if [ -n "$cfg_allowedNetworks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+            for network in "${networks[@]}"; do
+                echo "    Network: $network"
+            done
+        fi
+    elif [ "$cfg_networkMode" = "blocklist" ]; then
+        echo "  Block list (everything else allowed):"
+        if [ -n "$cfg_blockDomains" ]; then
+            IFS='|' read -ra domains <<< "$cfg_blockDomains"
+            for domain in "${domains[@]}"; do
+                echo "    Domain:  $domain"
+            done
+        fi
+        if [ -n "$cfg_blockIPs" ]; then
+            IFS='|' read -ra ips <<< "$cfg_blockIPs"
+            for ip in "${ips[@]}"; do
+                echo "    IP:      $ip"
+            done
+        fi
+        if [ -n "$cfg_blockNetworks" ]; then
+            IFS='|' read -ra networks <<< "$cfg_blockNetworks"
+            for network in "${networks[@]}"; do
+                echo "    Network: $network"
+            done
+        fi
+
+        # Show exceptions if any exist
+        if [ -n "$cfg_allowedDomains" ] || [ -n "$cfg_allowedIPs" ] || [ -n "$cfg_allowedNetworks" ]; then
+            echo "  Exceptions (allowed even when blocked):"
+            if [ -n "$cfg_allowedDomains" ]; then
+                IFS='|' read -ra domains <<< "$cfg_allowedDomains"
+                for domain in "${domains[@]}"; do
+                    echo "    Domain:  $domain"
+                done
+            fi
+            if [ -n "$cfg_allowedIPs" ]; then
+                IFS='|' read -ra ips <<< "$cfg_allowedIPs"
+                for ip in "${ips[@]}"; do
+                    echo "    IP:      $ip"
+                done
+            fi
+            if [ -n "$cfg_allowedNetworks" ]; then
+                IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
+                for network in "${networks[@]}"; do
+                    echo "    Network: $network"
+                done
+            fi
+        fi
+    fi
+    echo ""
+fi
 
 # Set computed values
 cfg_user="${cfg_user:-claude}"
@@ -415,9 +595,10 @@ fi
 # Display warning only if username was truncated
 if [ "$was_truncated" = true ]; then
     echo ""
-    echo "WARNING: Username exceeds 32 character limit imposed by useradd"
-    echo "Original username: $original_username (${#original_username} characters)"
-    echo "Truncated username: $sanitized_username (${#sanitized_username} characters)"
+    echo "Hold on now. That username's too long for this bird."
+    echo "What you wanted:  $original_username (${#original_username} characters)"
+    echo "What you got:     $sanitized_username (${#sanitized_username} characters)"
+    echo "Had to trim it down. Regulations, you understand."
     echo ""
 fi
 
@@ -429,53 +610,153 @@ if id -u "$cfg_user" >/dev/null 2>&1; then
     user_existed_before=true
 fi
 
+# Create claude-cage base directory for tracking/config
+cage_home_base="/home/.claude-cage"
+mkdir -p "$cage_home_base"
+
+# Track whether we prompted the user to continue
+user_was_prompted=false
+
 # Create user if it doesn't exist
 if ! id -u "$cfg_user" >/dev/null 2>&1; then
-    echo "User '$cfg_user' does not exist."
-    read -p "Create user '$cfg_user'? [y/N] " -n 1 -r
+    echo "That user '$cfg_user' ain't on this system yet."
+    read -p "Want me to create that user? [y/N] " -n 1 -r
     echo
+    user_was_prompted=true
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        adduser --disabled-login --comment "" "$cfg_user"
-        echo "User '$cfg_user' created."
-        if [ "$cfg_persistUser" = "true" ]; then
-            echo "User will persist after claude-cage exits (persistUser = true)"
+        # In single-user mode, use default home directory location
+        # In multi-project mode, use /home/claude-cage/<user>
+        if [[ "$cfg_user" == *"-"* ]]; then
+            # Multi-project mode: home under /home/claude-cage
+            user_home="$cage_home_base/$cfg_user"
+            adduser --disabled-password --shell /bin/bash --home "$user_home" --comment "" "$cfg_user"
+            echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
         else
-            echo "User will be deleted when claude-cage exits (persistUser = false)"
+            # Single-user mode: default home directory
+            adduser --disabled-password --shell /bin/bash --comment "" "$cfg_user"
+            user_home=$(eval echo ~"$cfg_user")
+            echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
         fi
+        echo "This user's temporary. Gone when we're done here."
     else
-        echo "Cannot proceed without user '$cfg_user'"
+        echo "Can't fly this bird without that user. We're done here."
         exit 1
     fi
-elif [ "$cfg_persistUser" = "false" ] && [ "$user_existed_before" = "true" ]; then
-    echo "Warning: User '$cfg_user' already exists and persistUser is false."
-    echo "User will NOT be deleted since it existed before this run."
 fi
 
-mount_point="/home/${cfg_user}/${cfg_mounted}"
+# Prompt to continue if user wasn't already prompted during user creation
+if [ "$user_was_prompted" = "false" ]; then
+    echo ""
+    read -p "Ready to proceed? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo "Alright, abortin' the mission."
+        exit 0
+    fi
+fi
+
+# Set user_home for later use
+user_home=$(eval echo ~"$cfg_user")
+mount_point="$user_home/${cfg_mounted}"
 
 # Track iptables chain name for cleanup
-iptables_chain="CLAUDE_CAGE_$$"
+# In single-user mode, use a shared chain name; otherwise use per-process chain
+if [[ "$cfg_user" == *"-"* ]]; then
+    # Multi-project mode: per-process chain
+    iptables_chain="CLAUDE_CAGE_$$"
+else
+    # Single-user mode: shared chain for the user
+    iptables_chain="CLAUDE_CAGE_${cfg_user}"
+fi
+
+# PID file to track running processes
+pid_file="claude-cage.pid"
+
+# Instance tracking file (tracks multiple instances)
+instance_file="claude-cage.instances"
+
+# This instance's ID
+instance_id="$$"
 
 cleanup() {
-    jobs -p | xargs -r kill 2>/dev/null
-    umount -l "$mount_point" 2>/dev/null
+    echo ""
+    echo "Alright, shuttin' down operations..."
 
-    # Clean up iptables rules if they were set
-    if iptables -L "$iptables_chain" >/dev/null 2>&1; then
-        # Remove jump rule from OUTPUT chain
-        iptables -D OUTPUT -j "$iptables_chain" 2>/dev/null
-        # Flush and delete custom chain
-        iptables -F "$iptables_chain" 2>/dev/null
-        iptables -X "$iptables_chain" 2>/dev/null
+    # Remove this instance from the instance file
+    if [ -f "$instance_file" ]; then
+        sed -i "/^$instance_id$/d" "$instance_file"
+
+        # Check if there are other instances still running
+        remaining_instances=()
+        while IFS= read -r inst_id; do
+            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
+                remaining_instances+=("$inst_id")
+            fi
+        done < "$instance_file"
+
+        if [ ${#remaining_instances[@]} -gt 0 ]; then
+            echo "Other instances still runnin' (${remaining_instances[*]}). Leavin' processes alone."
+            # Update instance file to remove dead instances
+            printf "%s\n" "${remaining_instances[@]}" > "$instance_file"
+            echo "This session's done. Stay safe out there."
+            return
+        else
+            # No more instances, remove the instance file
+            rm -f "$instance_file"
+        fi
     fi
 
-    # Delete user if persistUser is false AND user didn't exist before
-    if [ "$cfg_persistUser" = "false" ] && [ "$user_existed_before" = "false" ]; then
+    # Only run full cleanup if this is the last instance
+    echo "Last instance shuttin' down. Cleanin' up everything..."
+
+    # Kill processes from PID file
+    if [ -f "$pid_file" ]; then
+        echo "Stoppin' processes from $pid_file..."
+        while IFS= read -r pid; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+            fi
+        done < "$pid_file"
+        rm -f "$pid_file"
+    fi
+
+    # Unmount the bindfs mount
+    if mountpoint -q "$mount_point" 2>/dev/null; then
+        echo "Unmountin' $mount_point..."
+        umount -l "$mount_point" 2>/dev/null
+    fi
+
+    # Clean up iptables rules
+    if [[ "$cfg_user" == *"-"* ]]; then
+        # Multi-project mode: always clean up per-process chain
+        if iptables -L "$iptables_chain" >/dev/null 2>&1; then
+            echo "Cleanin' up network restrictions..."
+            iptables -D OUTPUT -j "$iptables_chain" 2>/dev/null
+            iptables -F "$iptables_chain" 2>/dev/null
+            iptables -X "$iptables_chain" 2>/dev/null
+        fi
+    else
+        # Single-user mode: only clean up if no other instances exist
+        # Check for any claude-cage.instances files under /home/.claude-cage
+        cage_instances=$(find /home/.claude-cage -name "claude-cage.instances" -type f 2>/dev/null | wc -l)
+
+        if [ "$cage_instances" -eq 0 ] && iptables -L "$iptables_chain" >/dev/null 2>&1; then
+            echo "Last instance for user $cfg_user, cleanin' up network restrictions..."
+            iptables -D OUTPUT -j "$iptables_chain" 2>/dev/null
+            iptables -F "$iptables_chain" 2>/dev/null
+            iptables -X "$iptables_chain" 2>/dev/null
+        fi
+    fi
+
+    # Delete user if it didn't exist before
+    if [ "$user_existed_before" = "false" ]; then
         if id -u "$cfg_user" >/dev/null 2>&1; then
-            echo "Deleting user '$cfg_user'..."
+            echo "User '$cfg_user' is temporary, removin' it now..."
             userdel -r "$cfg_user" 2>/dev/null || userdel "$cfg_user" 2>/dev/null
         fi
     fi
+
+    echo "All done. Stay safe out there."
 }
 trap cleanup SIGINT SIGTERM EXIT
 
@@ -539,28 +820,33 @@ setup_network_restrictions() {
         return 0
     fi
 
-    echo "Setting up network restrictions (mode: $mode)..."
-
-    # Create custom chain for claude-cage rules
-    iptables -N "$iptables_chain" 2>/dev/null || {
-        echo "Warning: Could not create iptables chain. Network restrictions may not work."
-        return 1
-    }
-
-    # Jump to our chain for output from cfg_user
-    iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$iptables_chain"
+    # Check if chain already exists
+    local chain_exists=false
+    if iptables -L "$iptables_chain" >/dev/null 2>&1; then
+        chain_exists=true
+        echo "Adding network restrictions to existing chain (shared in single-user mode)..."
+    else
+        echo "Setting up network restrictions (mode: $mode)..."
+        # Create custom chain for claude-cage rules
+        iptables -N "$iptables_chain" 2>/dev/null || {
+            echo "Warning: Could not create iptables chain. Network restrictions may not work."
+            return 1
+        }
+        # Jump to our chain for output from cfg_user
+        iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$iptables_chain"
+    fi
 
     if [ "$mode" = "allowlist" ]; then
+        # If chain exists, remove the final REJECT rule so we can add more ACCEPT rules
+        if [ "$chain_exists" = true ]; then
+            iptables -D "$iptables_chain" -j REJECT 2>/dev/null
+        fi
+
         # Allow user-configured domains
         if [ -n "$cfg_allowedDomains" ]; then
             IFS='|' read -ra domains <<< "$cfg_allowedDomains"
             for domain_spec in "${domains[@]}"; do
                 IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Allowing domain: $domain (ports: $ports)"
-                else
-                    echo "  Allowing domain: $domain"
-                fi
                 while IFS= read -r ip; do
                     [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
                 done < <(resolve_domain "$domain")
@@ -572,11 +858,6 @@ setup_network_restrictions() {
             IFS='|' read -ra ips <<< "$cfg_allowedIPs"
             for ip_spec in "${ips[@]}"; do
                 IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Allowing IP: $ip (ports: $ports)"
-                else
-                    echo "  Allowing IP: $ip"
-                fi
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
             done
         fi
@@ -586,16 +867,11 @@ setup_network_restrictions() {
             IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
             for network_spec in "${networks[@]}"; do
                 IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Allowing network: $network (ports: $ports)"
-                else
-                    echo "  Allowing network: $network"
-                fi
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports"
             done
         fi
 
-        # Reject everything else
+        # Reject everything else (re-add at the end)
         iptables -A "$iptables_chain" -j REJECT
 
     elif [ "$mode" = "blocklist" ]; then
@@ -605,11 +881,6 @@ setup_network_restrictions() {
             IFS='|' read -ra domains <<< "$cfg_allowedDomains"
             for domain_spec in "${domains[@]}"; do
                 IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Allowing domain (exception): $domain (ports: $ports)"
-                else
-                    echo "  Allowing domain (exception): $domain"
-                fi
                 while IFS= read -r ip; do
                     [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
                 done < <(resolve_domain "$domain")
@@ -621,11 +892,6 @@ setup_network_restrictions() {
             IFS='|' read -ra ips <<< "$cfg_allowedIPs"
             for ip_spec in "${ips[@]}"; do
                 IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Allowing IP (exception): $ip (ports: $ports)"
-                else
-                    echo "  Allowing IP (exception): $ip"
-                fi
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
             done
         fi
@@ -635,11 +901,6 @@ setup_network_restrictions() {
             IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
             for network_spec in "${networks[@]}"; do
                 IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Allowing network (exception): $network (ports: $ports)"
-                else
-                    echo "  Allowing network (exception): $network"
-                fi
                 add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports"
             done
         fi
@@ -650,11 +911,6 @@ setup_network_restrictions() {
             IFS='|' read -ra domains <<< "$cfg_blockDomains"
             for domain_spec in "${domains[@]}"; do
                 IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Blocking domain: $domain (ports: $ports)"
-                else
-                    echo "  Blocking domain: $domain"
-                fi
                 while IFS= read -r ip; do
                     [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "REJECT" "$ip" "$ports"
                 done < <(resolve_domain "$domain")
@@ -666,11 +922,6 @@ setup_network_restrictions() {
             IFS='|' read -ra ips <<< "$cfg_blockIPs"
             for ip_spec in "${ips[@]}"; do
                 IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Blocking IP: $ip (ports: $ports)"
-                else
-                    echo "  Blocking IP: $ip"
-                fi
                 add_iptables_rule "$iptables_chain" "REJECT" "$ip" "$ports"
             done
         fi
@@ -680,11 +931,6 @@ setup_network_restrictions() {
             IFS='|' read -ra networks <<< "$cfg_blockNetworks"
             for network_spec in "${networks[@]}"; do
                 IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
-                if [ -n "$ports" ]; then
-                    echo "  Blocking network: $network (ports: $ports)"
-                else
-                    echo "  Blocking network: $network"
-                fi
                 add_iptables_rule "$iptables_chain" "REJECT" "$network" "$ports"
             done
         fi
@@ -698,7 +944,7 @@ setup_network_restrictions() {
 
 # Check for excluded files in sync directory
 if [ -d "$cfg_sync" ]; then
-    echo "Checking for excluded files in sync directory..."
+    echo "Doin' a quick sweep of the sync directory..."
     excluded_files=()
 
     # Check excludePath patterns
@@ -744,56 +990,108 @@ if [ -d "$cfg_sync" ]; then
     # If excluded files found, prompt user
     if [ ${#excluded_files[@]} -gt 0 ]; then
         echo ""
-        echo "WARNING: Found files/directories in sync directory that are now excluded:"
+        echo "Now hold on. We got files here that shouldn't be on this bird:"
         for file in "${excluded_files[@]}"; do
             echo "  - $file"
         done
         echo ""
-        echo "These files may have been created in a previous run with different exclude settings."
-        echo "They should be removed from the sync directory before continuing."
+        echo "Looks like they was from a previous flight with different rules."
+        echo "Gonna need to clean 'em out before we take off."
         echo ""
-        read -p "Remove these files? [y/N] " -n 1 -r
+        read -p "Want me to remove these files? [y/N] " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             for file in "${excluded_files[@]}"; do
                 rm -rf "$file"
-                echo "Removed: $file"
+                echo "Gone: $file"
             done
         else
-            echo "Please manually remove the excluded files before running claude-cage."
+            echo "Alright, you handle it yourself. Can't proceed 'til they're gone."
             exit 1
         fi
     fi
 fi
 
-# Setup network restrictions if configured
-setup_network_restrictions "$cfg_networkMode"
+# Check if there's already a running instance
+skip_setup=false
+if [ -f "$pid_file" ]; then
+    echo "Hold on now. Found a PID file from a previous run."
+    echo "Checkin' if those processes are still alive..."
 
-# Build unison command with exclude options
-unison_cmd="unison ./$cfg_source ./$cfg_sync -force ./$cfg_source -prefer ./$cfg_source -batch -confirmbigdel=false"
-if [ -n "$cfg_exclude" ]; then
-    unison_cmd="$unison_cmd $cfg_exclude"
+    running_pids=()
+    while IFS= read -r pid; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            running_pids+=("$pid")
+        fi
+    done < "$pid_file"
+
+    if [ ${#running_pids[@]} -gt 0 ]; then
+        echo "Processes still runnin': ${running_pids[*]}"
+        echo "Reusing existing unison and bindfs processes."
+        echo ""
+        skip_setup=true
+    else
+        echo "Those processes are gone. Cleanin' up the old PID file..."
+        rm -f "$pid_file"
+    fi
 fi
 
-echo $unison_cmd
-# Run unison as the original user
-su -c "$unison_cmd" "$original_user"
-su -c "$unison_cmd -repeat watch" "$original_user" &
+if [ "$skip_setup" = false ]; then
+    # Setup network restrictions if configured
+    setup_network_restrictions "$cfg_networkMode"
 
-# Create mount point if it doesn't exist
-mkdir -p "$mount_point"
+    # Build unison command with exclude options
+    unison_cmd="unison ./$cfg_source ./$cfg_sync -force ./$cfg_source -prefer ./$cfg_source -batch -confirmbigdel=false"
+    if [ -n "$cfg_exclude" ]; then
+        unison_cmd="$unison_cmd $cfg_exclude"
+    fi
 
-bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"
+    # Run unison as the original user
+    su -c "$unison_cmd" "$original_user" >/dev/null 2>&1
+    su -c "$unison_cmd -repeat watch" "$original_user" >/dev/null 2>&1 &
+    unison_pid=$!
+
+    # Create mount point if it doesn't exist
+    mkdir -p "$mount_point"
+
+    bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"
+    bindfs_pid=$!
+
+    # Write PIDs to file for cleanup
+    {
+        echo "$unison_pid"
+        echo "$bindfs_pid"
+    } > "$pid_file"
+else
+    # Verify mount point still exists
+    if ! mountpoint -q "$mount_point" 2>/dev/null; then
+        echo "Wait a minute. The mount point ain't there anymore."
+        echo "Somethin' went wrong. Run: sudo claude-cage --cleanup"
+        exit 1
+    fi
+    echo "Mount point verified at $mount_point"
+fi
+
+# Register this instance
+echo "$instance_id" >> "$instance_file"
 
 if [ "$test_mode" = true ]; then
     echo ""
     echo "=== TEST MODE ==="
-    echo "Everything is set up. Switching to user '$cfg_user' for testing."
-    echo "Working directory will be: $mount_point"
-    echo "To exit test mode, type 'exit'"
+    echo "Alright, everything's ready. Switchin' over to user '$cfg_user' for testin'."
+    echo "Your files are mounted at: ~/$cfg_mounted"
+    echo "Just 'cd $cfg_mounted' to get to 'em."
+    echo "When you're done, type 'exit' and we'll clean up."
     echo "================="
     echo ""
-    su - "$cfg_user" -c "cd $cfg_mounted && exec bash"
+    su - "$cfg_user"
+    exit_code=$?
 else
-    su - "$cfg_user" -c "cd $cfg_mounted && claude"
+    # Run Claude as the original user, but in the mounted directory
+    # This preserves authentication while still working with isolated files
+    su - "$original_user" -c "cd $mount_point && claude"
+    exit_code=$?
 fi
+
+# Explicit exit to ensure cleanup trap fires
+exit $exit_code

@@ -1,16 +1,27 @@
 # ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
-Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight while lettin' Claude Code do its work. Three layers of protection. Three layers between your precious code and anything that might go wrong. That's how we do this right.
+Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Three layers of file protection. Optional network isolation. Multiple barriers between your precious code and anything that might go wrong. That's how we do this right.
 
 ## What This Thing Does
 
-Listen up. `claude-cage` sets up a containment system - three levels of security, each one watchin' the other:
+Listen up. `claude-cage` sets up a containment system - multiple layers of protection workin' together:
+
+**File Isolation** - Three levels of security, each one watchin' the other:
 
 1. **Source directory** - That's your actual project files. Your life's work. The thing you came here to protect.
 2. **Sync directory** - A perfect copy, maintained by `unison`. Like a mirror, but better.
 3. **Mounted directory** - Where Claude Code operates. Permission-mapped through `bindfs`. Controlled. Contained.
 
 Every change Claude makes gets synced back to your source. But only the changes you allow. The rest? They stay on the outside where they belong.
+
+**Network Isolation** (optional) - OS-level restrictions on top of Claude Code's sandbox:
+
+- **Allowlist mode**: Lock it down - only approved connections get through
+- **Blocklist mode**: Keep Claude away from your internal infrastructure
+- **Defense in depth**: Application sandbox plus OS-level firewall rules
+- Works through iptables - kernel-level enforcement that can't be bypassed from userspace
+
+You don't have to use network restrictions. But they're there if you need 'em.
 
 ## ⚠️ Now Listen to Me Very Carefully
 
@@ -39,10 +50,10 @@ Get your dependencies installed:
 
 ```bash
 # Ubuntu/Debian
-sudo apt install unison bindfs lua
+sudo apt install unison bindfs lua inotify-tools
 
 # RHEL/CentOS
-sudo yum install unison bindfs lua
+sudo yum install unison bindfs lua inotify-tools
 ```
 
 ## Installation
@@ -125,15 +136,16 @@ claude_cage {
     -- User to run Claude Code as (default: "claude")
     -- user = "claude",
 
-    -- Optional: Append to username for project isolation
-    -- If not set, uses 'project' name
-    -- Creates user "claude-myproject" instead of just "claude"
-    -- userAppend = "myproject",
+    -- User isolation mode (default: "single" - RECOMMENDED)
+    -- Options: "single" or "per-project"
+    -- Single-user mode shares one user across all projects (easier authentication)
+    -- Per-project mode creates separate users per project (requires login per user)
+    -- userMode = "single",
 
-    -- Optional: Persist user between runs (default: false)
-    -- false = user is deleted when claude-cage exits
-    -- true = user persists for future runs
-    -- persistUser = true,
+    -- Optional: Custom suffix for per-project mode
+    -- Only applies when userMode = "per-project"
+    -- If not set, uses project name
+    -- userAppend = "myproject",
 
     -- Source directory under current directory to allow reading from
     -- If not provided, source must be provided as a command-line argument
@@ -162,16 +174,26 @@ claude_cage {
 
 - **project**: Project name (**required**)
   - Automatically used as default for `userAppend` and `sync`
-  - Example: `project = "backend"` creates user `"claude-backend"` and sync dir `"claude-backend"`
+  - Example: `project = "backend"` creates sync dir `"claude-backend"`
 - **user**: Base user account name to run Claude Code as (default: `"claude"`)
-- **userAppend**: String to append to username for project isolation (default: `""`, or `project` if set)
-  - If set, creates username like `"claude-myproject"`
-  - Allows different projects to run as different users
-  - If not set but `project` is set, uses `project` name
-- **persistUser**: Keep user account after exit (default: `false`)
-  - `false`: User is deleted when claude-cage exits (unless it existed before)
-  - `true`: User persists between runs
-  - Useful if you run the same project frequently
+- **userMode**: User isolation mode (default: `"single"`)
+  - Options: `"single"` or `"per-project"`
+  - **Single-user mode** (RECOMMENDED, default): All projects share one user
+    - Username: `"claude"` (just the base username)
+    - User home: `/home/claude/` (standard location)
+    - Network rules: Shared across all projects, persist until last instance exits
+    - Claude Code authentication: Login once, works for all projects
+    - Use when: Most situations (simpler, easier to manage)
+  - **Per-project mode**: Each project gets its own user
+    - Username: `"claude-myproject"` (user + "-" + userAppend or project)
+    - User home: `/home/.claude-cage/claude-myproject/`
+    - Network rules: Project-specific, cleaned up when the project exits
+    - Claude Code authentication: **Requires login for each new project user** (see caveats below)
+    - Use when: Different projects need different security policies
+  - Users are automatically deleted when claude-cage exits (unless they existed before)
+- **userAppend**: (Optional) Custom suffix for per-project mode (default: uses `project` name)
+  - Only applies when `userMode = "per-project"`
+  - Example: `userAppend = "custom"` creates user `"claude-custom"` instead of `"claude-myproject"`
 - **source**: Source directory to sync (can be overridden via command-line)
 - **sync**: Sync directory name (default: auto-generated from `project` or `source`)
   - If not set and `project` is set: `syncPrepend + project`
@@ -179,6 +201,54 @@ claude_cage {
 - **syncPrepend**: Prefix for auto-generated sync directory (default: `"claude-"`)
 - **mounted**: Directory name under `/home/<user>/` where files will be mounted (default: `"claude"`)
   - Note: Default is `"claude"`, NOT the source directory name
+- **showBanner**: Show ASCII art banner on startup (default: `true`)
+  - Set to `false` to disable, or use `--no-banner` CLI flag
+
+**Network Restriction Options** (optional - defense in depth):
+
+- **networkMode**: Network isolation mode (default: `"disabled"`)
+  - Options: `"disabled"`, `"allowlist"`, or `"blocklist"`
+  - `"disabled"`: No OS-level network restrictions (relies on Claude Code's sandbox)
+  - `"allowlist"`: Only allow specific connections (deny everything else)
+  - `"blocklist"`: Block specific connections (allow everything else)
+  - Note: In single-user mode, network rules are shared across all projects and persist until the last instance exits. In per-project mode, each project gets its own network rules.
+
+**Allowlist Mode Options** (only apply when `networkMode = "allowlist"`):
+
+- **allowedDomains**: Array of domains to allow (e.g., `["github.com:443", "npmjs.org"]`)
+  - Format: `"domain:port"` or `"domain:port1,port2"` or just `"domain"` (all ports)
+  - Claude's required domains are always allowed: `api.anthropic.com`, `claude.ai`, `statsig.anthropic.com`, `sentry.io`
+- **allowedIPs**: Array of IP addresses to allow (e.g., `["127.0.0.1:5432", "1.2.3.4"]`)
+  - Format: `"ip:port"` or `"ip:port1,port2"` or just `"ip"` (all ports)
+- **allowedNetworks**: Array of IP ranges to allow (e.g., `["192.168.1.0/24:443", "10.0.0.0/8"]`)
+  - Format: `"network/cidr:port"` or `"network/cidr"` (all ports)
+
+**Blocklist Mode Options** (only apply when `networkMode = "blocklist"`):
+
+- **blockDomains**: Array of domains to block (e.g., `["internal.company.com", "twitter.com:443"]`)
+  - Format: Same as `allowedDomains`
+- **blockIPs**: Array of IP addresses to block (e.g., `["169.254.169.254", "192.168.1.100:22"]`)
+  - Format: Same as `allowedIPs`
+- **blockNetworks**: Array of IP ranges to block (e.g., `["127.0.0.1", "192.168.0.0/16", "10.0.0.0/8"]`)
+  - Format: Same as `allowedNetworks`
+
+**Blocklist Exceptions:**
+- In blocklist mode, you can use `allowedDomains`, `allowedIPs`, and `allowedNetworks` to create exceptions
+- Exceptions are processed first, then blocks are applied
+- Example: Block all localhost except PostgreSQL on port 5432
+  ```lua
+  networkMode = "blocklist",
+  blockIPs = { "127.0.0.1" },
+  allowedIPs = { "127.0.0.1:5432" }  -- Exception
+  ```
+
+**Port Specification:**
+- No port specified: `"example.com"` - All ports allowed/blocked
+- Single port: `"example.com:443"` - Only port 443
+- Multiple ports: `"example.com:80,443,8080"` - Only ports 80, 443, and 8080
+- Applies to both TCP and UDP protocols
+
+See "Network Restriction Options (Optional - Defense in Depth)" section below for detailed examples and usage.
 
 **Exclude Options** (all optional, all important):
 
@@ -372,6 +442,88 @@ See "Defense in Depth" section below for how this works with Claude Code's sandb
 
 Example: System config has `excludePath = [".git"]` and local config has `excludePath = ["secrets.txt"]`. Final result? Both get excluded: `[".git", "secrets.txt"]`.
 
+### Single-User vs Per-Project Mode
+
+Now listen up. This thing's got two ways to run, and you gotta pick the one that makes sense for your operation.
+
+**Single-User Mode** (default - `userMode = "single"`):
+- One user for all your projects: `claude`
+- Home directory where it belongs: `/home/claude/`
+- Network rules shared and **cumulative** across everything you're runnin'
+  - First project sets up its rules
+  - Second project adds its rules to the existing chain
+  - Both projects get access to the union of all rules
+  - Rules stick around till the last instance shuts down
+- **Here's the important part**: Login to Claude Code once, you're done. Works for every project.
+- Simple. Clean. Efficient.
+- Use this when: You ain't got a reason not to
+
+**Per-Project Mode** (`userMode = "per-project"`):
+- Each project gets its own user: `claude-projectname`
+- Home directories tucked away in `/home/.claude-cage/`
+- Each project's got its own isolated network restrictions
+- Clean slate when you exit - user and rules get wiped
+- Use this when: You need different security rules for different projects
+
+#### Network Rules in Single-User Mode
+
+Here's how network restrictions work when you're runnin' multiple projects in single-user mode:
+
+**Cumulative Rules:**
+- All network rules from all running projects get combined into one shared chain
+- Example:
+  - Project 1 starts with allowlist: `["github.com"]`
+  - Project 2 starts with allowlist: `["npmjs.org"]`
+  - Result: Both projects can access `github.com` AND `npmjs.org`
+- In allowlist mode: Each project adds to the list of allowed connections
+- In blocklist mode: Each project adds to the list of blocked connections
+- This makes sense - they're all runnin' as the same user anyway
+
+**Important:**
+- The first project to start sets the `networkMode` (allowlist or blocklist)
+- Subsequent projects should use the same mode - mixin' modes don't make sense
+- Rules persist until the last instance exits
+- When all instances shut down, the chain gets cleaned up
+
+#### ⚠️ Now Here's What You Need to Understand About Per-Project Mode
+
+**The authentication situation:**
+- Every new project user needs its own Claude Code login. Every. Single. One.
+- Claude Code ties authentication to the user account - that's just how it is
+- Config syncing don't solve this. You still gotta authenticate.
+- You got ten projects? That's ten logins. Gets old real fast.
+
+**When you'd use per-project mode anyway:**
+- You need hard network isolation - completely different allowlist/blocklist for each project
+- Security-sensitive work that needs completely separate environments
+- You're willin' to deal with the login hassle for that extra layer of protection
+
+**Example configurations:**
+
+Single-user (default):
+```lua
+claude_cage {
+    project = "backend",  -- Uses user "claude" for all projects
+}
+```
+
+Per-project mode:
+```lua
+claude_cage {
+    project = "backend",
+    userMode = "per-project",  -- Creates user "claude-backend"
+}
+```
+
+Custom suffix in per-project mode:
+```lua
+claude_cage {
+    project = "backend",
+    userMode = "per-project",
+    userAppend = "prod",  -- Creates user "claude-prod" instead of "claude-backend"
+}
+```
+
 ## Usage
 
 ### First Run
@@ -383,7 +535,19 @@ User 'claude' does not exist.
 Create user 'claude'? [y/N]
 ```
 
-The user gets created with `--disabled-login` - no interactive login, but can still run processes through `su`. That's how we launch Claude Code. Controlled access.
+The user gets created with `--disabled-password` and `/bin/bash` shell - no password login, but can still run processes through `su`. That's how we launch Claude Code. Controlled access.
+
+**Claude Code Configuration Sync:**
+
+If you have Claude Code configured on your account (logged in, with settings, chat history, etc.), claude-cage automatically sets up bidirectional synchronization of your `~/.claude` directory:
+
+- Your authentication and settings are available to the caged user
+- No need to log in again
+- Chat history syncs between both users
+- Any settings changes or conversations sync back to your original user
+- Uses unison watch mode for real-time synchronization
+
+This means you can use Claude Code in the cage with all your existing configuration, and everything stays synchronized.
 
 ### Basic Usage
 
@@ -424,6 +588,27 @@ You can combine `--test` with a source directory override:
 ```bash
 sudo claude-cage --test my-project
 ```
+
+### Cleanup Mode
+
+If the cleanup process didn't run properly (e.g., the script was killed unexpectedly), you can manually clean up with:
+
+```bash
+sudo claude-cage --cleanup
+```
+
+This will:
+- Stop processes tracked in `claude-cage.pid` file
+- Unmount any bindfs mounts for the configured user
+- Remove iptables rules created by claude-cage
+- Prompt whether to delete the user account
+
+This is useful when:
+- The script was interrupted and cleanup didn't run
+- You want to manually tear down the environment
+- You're switching projects and want to clean up the old user
+
+**Note:** claude-cage creates `claude-cage.pid` and `claude-cage.instances` files in the working directory to track processes and running instances. Multiple instances can run simultaneously - they will share the same unison/bindfs processes. Cleanup only happens when the last instance exits.
 
 ### Excluded Files Check
 
@@ -523,13 +708,17 @@ Layer 1: OS User Isolation (claude-cage)
 Here's the play-by-play:
 
 1. **Unison** runs in watch mode, continuously syncing `source` ↔ `sync` directories
-2. **Bindfs** mounts the sync directory with permission mapping:
+2. **Unison** also syncs `~/.claude` (if it exists) between your user and the cage user
+   - Your Claude Code authentication, settings, and history stay synchronized
+   - No need to log in again inside the cage
+   - Changes sync bidirectionally in real-time
+3. **Bindfs** mounts the sync directory with permission mapping:
    - Files created by the Claude user appear as owned by you
    - Ensures proper permissions when files sync back to source
-3. **Claude Code** runs in the mounted directory, working on your files
-4. **Changes sync bidirectionally** in real-time
+4. **Claude Code** runs in the mounted directory, working on your files
+5. **All changes sync bidirectionally** in real-time
 
-Three layers. Each one doin' its job. That's how you keep things under control.
+Multiple layers. Each one doin' its job. That's how you keep things under control.
 
 ## Example Workflow
 
@@ -547,9 +736,15 @@ Three layers. Each one doin' its job. That's how you keep things under control.
    sudo ./claude-cage
    ```
 
-3. Claude Code starts in `/home/claude/my-web-app`
-4. Make your changes with Claude Code
-5. Changes automatically appear in `./my-web-app`
+3. If you're already logged into Claude Code on your account:
+   - Your `~/.claude` config automatically syncs to the cage user
+   - No need to log in again
+   - Your chat history and settings are available
+
+4. Claude Code starts in `/home/claude/my-web-app`
+5. Make your changes with Claude Code
+6. File changes automatically appear in `./my-web-app`
+7. Settings changes and chat history sync back to your `~/.claude`
 
 Simple. Effective. Controlled.
 
@@ -631,6 +826,14 @@ Each tool for its purpose. Use 'em right.
 **Error: lua is required but not installed**
 ```bash
 sudo apt install lua
+```
+
+**Error: No file monitoring helper program found (from unison)**
+- This means inotify-tools is not installed
+- Unison's watch mode requires inotify to efficiently monitor file changes
+- Install it with:
+```bash
+sudo apt install inotify-tools
 ```
 
 **Error: source directory does not exist**

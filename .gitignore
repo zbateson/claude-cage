@@ -1,0 +1,6 @@
+# Claude Cage PID and instance tracking files
+claude-cage.pid
+claude-cage.instances
+
+# Sync directories (generated at runtime)
+claude-*

@@ -87,9 +87,19 @@ if [ ! -f "$local_config" ]; then
     exit 1
 fi
 
+# Parse command line arguments BEFORE running Lua
+# Need to extract non-flag argument to pass to Lua
+cli_project_arg=""
+for arg in "$@"; do
+    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ]; then
+        cli_project_arg="$arg"
+        break
+    fi
+done
+
 # Extract config values using Lua with multi-level loading
-# Pass command-line argument to Lua
-lua_output=$(lua - "$source_arg" <<EOF 2>&1
+# Pass command-line project argument to Lua
+lua_output=$(lua - "$cli_project_arg" <<EOF 2>&1
 -- Get command-line project argument
 local cli_arg = arg[1] or ""
 
@@ -201,10 +211,13 @@ end
 -- Update project from CLI arg if provided (CLI arg takes precedence)
 if cli_arg ~= "" then
     config.project = cli_arg
+    project = cli_arg
 end
 
--- Set defaults
-local project = config.project or ""
+-- Set defaults from config (but don't override project if already set from CLI)
+if project == "" then
+    project = config.project or ""
+end
 local user = config.user or "claude"
 local userMode = config.userMode or "single"  -- Options: "single" or "per-project"
 local userAppend = config.userAppend or ""

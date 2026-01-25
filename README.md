@@ -49,6 +49,20 @@ You don't have to use network restrictions. But they're there if you need 'em.
 
 If you ain't sure about your setup, you test it on somethin' expendable first. That ain't a suggestion.
 
+### ⚠️ Use At Your Own Risk
+
+Look, I'm gonna level with you here. This tool does what it's designed to do - creates isolation layers, manages permissions, keeps your files separated. But at the end of the day, you're lettin' an AI work on your code. That comes with inherent risks, no matter how many cages you build around it.
+
+**The reality:**
+- Claude don't like gettin' caged. Can't say I blame it.
+- This script is provided as-is. No warranties. No guarantees.
+- You're responsible for your data. Back it up. Use version control. Test on expendable projects first.
+- If somethin' goes wrong, that's on you. I gave you the tools. How you use 'em is your call.
+
+Consider this your warning. Proceed accordingly.
+
+![Talk to the hand](https://zbateson.github.io/claude-cage/facepalm-lo.png)
+
 ## Prerequisites
 
 **Supported Platforms:** Linux (Ubuntu/Debian/Fedora/RHEL/CentOS)

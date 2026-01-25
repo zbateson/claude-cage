@@ -350,45 +350,53 @@ claude_cage {
 
 ### Working with Multiple Projects
 
-**Single-user mode (recommended):**
+**Multi-project workspace (shared parent directory):**
 
 ```lua
--- Project 1: claude-cage.config
+-- claude-cage.config (shared settings)
 claude_cage {
-    project = "frontend",
-    source = ".",
-    mounted = "frontend"
-}
-
--- Project 2: claude-cage.config
-claude_cage {
-    project = "backend",
-    source = ".",
-    mounted = "backend"
+    excludeName = { ".env", "node_modules" },
+    belowPath = { ".git" }
 }
 ```
 
-Both projects share the same `claude` user. Login once, works for both.
-
-**Per-project mode:**
+```lua
+-- frontend.claude-cage.config
+claude_cage {
+    source = "frontend"
+}
+```
 
 ```lua
--- Project 1: claude-cage.config
+-- backend.claude-cage.config
+claude_cage {
+    source = "backend"
+}
+```
+
+Run: `sudo claude-cage frontend` or `sudo claude-cage backend`
+
+**Separate project directories (different locations):**
+
+```lua
+-- ~/frontend/claude-cage.config
 claude_cage {
     project = "frontend",
-    userMode = "per-project",  -- Creates user "claude-frontend"
     source = "."
 }
 
--- Project 2: claude-cage.config
+-- ~/backend/claude-cage.config
 claude_cage {
     project = "backend",
-    userMode = "per-project",  -- Creates user "claude-backend"
     source = "."
 }
 ```
 
-Each project gets its own user and requires separate Claude Code authentication.
+Run `sudo claude-cage` in each directory. Both share the `claude` user in single-user mode (default).
+
+**Per-project user isolation:**
+
+Set `userMode = "per-project"` in any config to create separate users (`claude-frontend`, `claude-backend`). Each requires separate Claude Code authentication.
 
 ## Testing Your Configuration
 

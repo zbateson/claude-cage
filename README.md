@@ -79,6 +79,8 @@ sudo yum install unison bindfs lua inotify-tools
 
 ### 1. Install
 
+Alright, let's get you set up.
+
 **Option 1: Download script only**
 ```bash
 curl -O https://raw.githubusercontent.com/zbateson/claude-cage/main/claude-cage
@@ -99,7 +101,7 @@ sudo cp claude-cage /usr/local/bin/
 
 ### 2. Configure
 
-Create `claude-cage.config` in your project directory:
+Now you gotta create `claude-cage.config` in your project directory:
 
 **Sync mode** (for single projects with secrets to exclude):
 ```lua
@@ -116,7 +118,7 @@ claude_cage {
 .caged
 ```
 
-**Direct mount mode** (for large collections without duplication):
+**Direct mount mode** (for large collections - no copying, no syncing):
 ```lua
 claude_cage {
     project = "public-projects",
@@ -144,6 +146,8 @@ Then run: `sudo claude-cage backend`
 📖 **[Configuration Examples →](docs/examples.md)**
 
 ### 3. Run
+
+Now we're ready to fly.
 
 **Sync mode:**
 ```bash
@@ -317,7 +321,7 @@ claude_cage {
 }
 ```
 
-### Multi-Project Collection
+### Direct Mount Mode (Large Collections)
 
 ```lua
 claude_cage {

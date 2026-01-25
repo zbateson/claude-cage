@@ -10,7 +10,7 @@ claude_cage {
     -- PERSONAL PREFERENCES
     -- ============================================================================
 
-    -- User mode (default: "single" - recommended)
+    -- User mode (default: "single")
     -- Most users should use single-user mode for simpler authentication
     -- userMode = "single",
 
@@ -48,26 +48,25 @@ claude_cage {
     },
 
     -- ============================================================================
-    -- PERSONAL NETWORK RESTRICTIONS
+    -- PERSONAL NETWORK RESTRICTIONS (optional)
     -- ============================================================================
 
-    -- Default network mode (blocklist is practical for most users)
-    networkMode = "blocklist",
+    -- Network restrictions provide OS-level control as defense in depth
+    -- Default: disabled (no network restrictions)
 
-    -- Block local and private networks by default
-    blockNetworks = {
-        "127.0.0.1",        -- Block all localhost
-        "192.168.0.0/16",   -- Block home networks
-        "10.0.0.0/8",       -- Block office/corporate networks
-        "172.16.0.0/12"     -- Block corporate private networks
-    },
-
-    -- Block specific domains (uncomment as needed)
+    -- Blocklist mode: Block specific connections (everything else allowed)
+    -- networkMode = "blocklist",
+    -- blockNetworks = {
+    --     "127.0.0.1",        -- Block all localhost
+    --     "192.168.0.0/16",   -- Block home networks
+    --     "10.0.0.0/8",       -- Block office/corporate networks
+    --     "172.16.0.0/12"     -- Block corporate private networks
+    -- },
     -- blockDomains = {
     --     "secret-api.example.com"    -- Block internal API
     -- },
 
-    -- Allow specific local services (uncomment as needed)
+    -- Blocklist exceptions: Allow specific services even when broader range blocked
     -- allowedIPs = {
     --     "127.0.0.1:5432",   -- PostgreSQL
     --     "127.0.0.1:3306",   -- MySQL
@@ -76,4 +75,9 @@ claude_cage {
     --     "127.0.0.1:3000",   -- Common dev server port
     --     "127.0.0.1:8080"    -- Common dev server port
     -- },
+
+    -- Allowlist mode: Only allow specific connections (everything else blocked)
+    -- networkMode = "allowlist",
+    -- allowedDomains = { "github.com:443", "registry.npmjs.org:443" },
+    -- allowedIPs = { "127.0.0.1:5432" },
 }

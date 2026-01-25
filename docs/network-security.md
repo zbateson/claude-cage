@@ -20,9 +20,6 @@ Only allow specific IPs/domains, deny everything else. Provides maximum security
 claude_cage {
     networkMode = "allowlist",
 
-    -- Claude's required domains are ALWAYS allowed:
-    -- api.anthropic.com, claude.ai, statsig.anthropic.com, sentry.io
-
     allowedDomains = {
         "github.com:443",              -- Only HTTPS
         "registry.npmjs.org:443",      -- Only HTTPS

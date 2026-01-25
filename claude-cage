@@ -1,5 +1,301 @@
 #!/bin/bash
 
+# Detect operating system
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        echo "linux"
+    else
+        echo "unsupported"
+    fi
+}
+
+OS_TYPE=$(detect_os)
+
+if [ "$OS_TYPE" = "unsupported" ]; then
+    echo "Unsupported operating system: $OSTYPE"
+    echo "claude-cage supports Linux and macOS only."
+    exit 1
+fi
+
+# ============================================================================
+# OS Abstraction Functions - User Management
+# ============================================================================
+
+# Check if user exists
+user_exists() {
+    local username="$1"
+    if [ "$OS_TYPE" = "linux" ]; then
+        id -u "$username" >/dev/null 2>&1
+    elif [ "$OS_TYPE" = "macos" ]; then
+        dscl . -read /Users/"$username" >/dev/null 2>&1
+    fi
+}
+
+# Get user UID
+get_user_uid() {
+    local username="$1"
+    if [ "$OS_TYPE" = "linux" ]; then
+        id -u "$username" 2>/dev/null
+    elif [ "$OS_TYPE" = "macos" ]; then
+        dscl . -read /Users/"$username" UniqueID 2>/dev/null | awk '{print $2}'
+    fi
+}
+
+# Get user GID
+get_user_gid() {
+    local username="$1"
+    if [ "$OS_TYPE" = "linux" ]; then
+        id -g "$username" 2>/dev/null
+    elif [ "$OS_TYPE" = "macos" ]; then
+        dscl . -read /Users/"$username" PrimaryGroupID 2>/dev/null | awk '{print $2}'
+    fi
+}
+
+# Create user
+create_user() {
+    local username="$1"
+    local user_home="$2"
+    local use_custom_home="$3"  # true/false
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        if [ "$use_custom_home" = "true" ]; then
+            adduser --disabled-password --shell /bin/bash --home "$user_home" --comment "" "$username"
+        else
+            adduser --disabled-password --shell /bin/bash --comment "" "$username"
+        fi
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # Find next available UID (starting from 501, avoiding system range)
+        local max_uid=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1)
+        local new_uid=$((max_uid + 1))
+        if [ $new_uid -lt 501 ]; then
+            new_uid=501
+        fi
+
+        # Find next available GID
+        local max_gid=$(dscl . -list /Groups PrimaryGroupID | awk '{print $2}' | sort -n | tail -1)
+        local new_gid=$((max_gid + 1))
+        if [ $new_gid -lt 501 ]; then
+            new_gid=501
+        fi
+
+        # Set home directory
+        if [ "$use_custom_home" != "true" ]; then
+            user_home="/Users/$username"
+        fi
+
+        # Create user using dscl
+        dscl . -create /Users/"$username"
+        dscl . -create /Users/"$username" UserShell /bin/bash
+        dscl . -create /Users/"$username" RealName "$username"
+        dscl . -create /Users/"$username" UniqueID "$new_uid"
+        dscl . -create /Users/"$username" PrimaryGroupID "$new_gid"
+        dscl . -create /Users/"$username" NFSHomeDirectory "$user_home"
+
+        # Create home directory if it doesn't exist
+        if [ ! -d "$user_home" ]; then
+            mkdir -p "$user_home"
+            chown "$username:staff" "$user_home"
+            chmod 755 "$user_home"
+        fi
+
+        # Create group (macOS requires this)
+        if ! dscl . -read /Groups/"$username" >/dev/null 2>&1; then
+            dscl . -create /Groups/"$username"
+            dscl . -create /Groups/"$username" PrimaryGroupID "$new_gid"
+        fi
+    fi
+}
+
+# Delete user
+delete_user() {
+    local username="$1"
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        userdel -r "$username" 2>/dev/null || userdel "$username" 2>/dev/null
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # Delete user
+        dscl . -delete /Users/"$username" 2>/dev/null
+        # Delete group if it exists
+        dscl . -delete /Groups/"$username" 2>/dev/null
+        # Remove home directory if it exists
+        local user_home=$(dscl . -read /Users/"$username" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+        if [ -n "$user_home" ] && [ -d "$user_home" ]; then
+            rm -rf "$user_home"
+        fi
+    fi
+}
+
+# ============================================================================
+# OS Abstraction Functions - Network/Firewall
+# ============================================================================
+
+# Check if firewall chain/anchor exists
+firewall_chain_exists() {
+    local chain_name="$1"
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        iptables -L "$chain_name" >/dev/null 2>&1
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # Check if anchor exists in pf rules
+        pfctl -s Anchors 2>/dev/null | grep -q "^$chain_name$"
+    fi
+}
+
+# Create firewall chain/anchor
+create_firewall_chain() {
+    local chain_name="$1"
+    local user_uid="$2"
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        iptables -N "$chain_name" 2>/dev/null || return 1
+        # Jump to our chain for output from user
+        iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$chain_name"
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # Create anchor in pf
+        # macOS pf uses anchors - we'll load rules from a temp file
+        local pf_rules_file="/tmp/${chain_name}.pf"
+
+        # Create the anchor definition
+        echo "# Claude-cage rules for UID $user_uid" > "$pf_rules_file"
+        echo "anchor \"$chain_name\"" >> "$pf_rules_file"
+
+        # Load the anchor (this doesn't activate rules yet, just creates the anchor point)
+        pfctl -a "$chain_name" -f "$pf_rules_file" 2>/dev/null || return 1
+    fi
+}
+
+# Add firewall rule
+add_firewall_rule() {
+    local chain_name="$1"
+    local action="$2"        # ACCEPT or REJECT
+    local ip_or_network="$3"
+    local ports="$4"          # Optional: comma-separated ports or empty
+    local insert_mode="$5"    # Optional: "insert" to add at beginning
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        local iptables_action
+        if [ "$action" = "ACCEPT" ]; then
+            iptables_action="ACCEPT"
+        else
+            iptables_action="REJECT"
+        fi
+
+        local iptables_cmd="iptables -A"
+        if [ "$insert_mode" = "insert" ]; then
+            iptables_cmd="iptables -I"
+        fi
+
+        if [ -z "$ports" ]; then
+            # No port restriction - allow/block all ports
+            $iptables_cmd "$chain_name" -d "$ip_or_network" -j "$iptables_action"
+        else
+            # Port restriction - apply to TCP and UDP
+            if [[ "$ports" == *","* ]]; then
+                # Multiple ports - use multiport
+                $iptables_cmd "$chain_name" -p tcp -d "$ip_or_network" -m multiport --dports "$ports" -j "$iptables_action"
+                $iptables_cmd "$chain_name" -p udp -d "$ip_or_network" -m multiport --dports "$ports" -j "$iptables_action"
+            else
+                # Single port
+                $iptables_cmd "$chain_name" -p tcp -d "$ip_or_network" --dport "$ports" -j "$iptables_action"
+                $iptables_cmd "$chain_name" -p udp -d "$ip_or_network" --dport "$ports" -j "$iptables_action"
+            fi
+        fi
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # macOS pfctl - append rules to the anchor's rule file
+        local pf_rules_file="/tmp/${chain_name}.pf"
+        local pf_action
+
+        if [ "$action" = "ACCEPT" ]; then
+            pf_action="pass"
+        else
+            pf_action="block"
+        fi
+
+        if [ -z "$ports" ]; then
+            # No port restriction
+            echo "$pf_action out to $ip_or_network" >> "$pf_rules_file"
+        else
+            # With port restriction
+            IFS=',' read -ra port_array <<< "$ports"
+            for port in "${port_array[@]}"; do
+                echo "$pf_action out proto tcp to $ip_or_network port $port" >> "$pf_rules_file"
+                echo "$pf_action out proto udp to $ip_or_network port $port" >> "$pf_rules_file"
+            done
+        fi
+
+        # Reload the anchor with updated rules
+        pfctl -a "$chain_name" -f "$pf_rules_file" 2>/dev/null
+    fi
+}
+
+# Delete firewall chain/anchor
+delete_firewall_chain() {
+    local chain_name="$1"
+    local user_uid="$2"
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        # Remove jump rule from OUTPUT chain
+        iptables -D OUTPUT -m owner --uid-owner "$user_uid" -j "$chain_name" 2>/dev/null
+
+        # Flush and delete the chain
+        iptables -F "$chain_name" 2>/dev/null
+        iptables -X "$chain_name" 2>/dev/null
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # Flush rules from anchor
+        pfctl -a "$chain_name" -F all 2>/dev/null
+
+        # Remove the anchor (by clearing its rules, pf will clean it up)
+        local pf_rules_file="/tmp/${chain_name}.pf"
+        rm -f "$pf_rules_file" 2>/dev/null
+    fi
+}
+
+# Get last rule number in chain (Linux iptables only)
+get_last_firewall_rule_number() {
+    local chain_name="$1"
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        iptables -L "$chain_name" -n --line-numbers | grep -E "^[0-9]" | tail -1 | awk '{print $1}'
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # Not applicable to pf
+        echo ""
+    fi
+}
+
+# Delete specific firewall rule by number (Linux iptables only)
+delete_firewall_rule_by_number() {
+    local chain_name="$1"
+    local rule_number="$2"
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        iptables -D "$chain_name" "$rule_number" 2>/dev/null
+    elif [ "$OS_TYPE" = "macos" ]; then
+        # For pf, we rebuild the entire ruleset instead
+        # This is handled in add_firewall_rule by rewriting the file
+        :
+    fi
+}
+
+# Add final catch-all rule to chain
+add_catchall_firewall_rule() {
+    local chain_name="$1"
+    local action="$2"  # ACCEPT or REJECT
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        iptables -A "$chain_name" -j "$action"
+    elif [ "$OS_TYPE" = "macos" ]; then
+        local pf_rules_file="/tmp/${chain_name}.pf"
+        if [ "$action" = "ACCEPT" ]; then
+            echo "pass out" >> "$pf_rules_file"
+        else
+            echo "block out" >> "$pf_rules_file"
+        fi
+        pfctl -a "$chain_name" -f "$pf_rules_file" 2>/dev/null
+    fi
+}
+
 # Important things first
 print_banner() {
     local banner=$(cat << 'EOF'
@@ -63,12 +359,25 @@ if ! command -v lua >/dev/null 2>&1; then
     exit 1
 fi
 
-# Check if inotifywait is available (required for unison watch mode)
-if ! command -v inotifywait >/dev/null 2>&1; then
-    echo "Hold on now. We got a problem here."
-    echo "Unison needs inotify-tools for file monitoring."
-    echo "Without it, this bird ain't gonna watch your files properly."
-    exit 1
+# Check for file monitoring tools (OS-specific)
+if [ "$OS_TYPE" = "linux" ]; then
+    # Linux uses inotify-tools
+    if ! command -v inotifywait >/dev/null 2>&1; then
+        echo "Hold on now. We got a problem here."
+        echo "Unison needs inotify-tools for file monitoring."
+        echo "Without it, this bird ain't gonna watch your files properly."
+        echo "Install it: sudo apt install inotify-tools"
+        exit 1
+    fi
+elif [ "$OS_TYPE" = "macos" ]; then
+    # macOS - fswatch is optional for unison, we'll fall back to polling
+    # Just check that unison itself is available
+    if ! command -v unison >/dev/null 2>&1; then
+        echo "Hold on now. We got a problem here."
+        echo "I need unison installed on this bird."
+        echo "Install it: brew install unison"
+        exit 1
+    fi
 fi
 
 # Get the original user (in case running with sudo)
@@ -423,6 +732,9 @@ if [ "$cfg_directMount" = "true" ] && [ -z "$cfg_source" ]; then
     cfg_source="."
 fi
 
+# Define cage_home_base early (needed by cleanup mode)
+cage_home_base="/home/.claude-cage"
+
 # Validate required config
 if [ -z "$cfg_project" ]; then
     echo "Listen to me very carefully now."
@@ -432,6 +744,10 @@ if [ -z "$cfg_project" ]; then
     echo "Can't proceed without it."
     exit 1
 fi
+
+# Define PID and instance file paths early (needed for cleanup mode)
+pid_file=".caged/$cfg_project/claude-cage.pid"
+local_instance_file=".caged/$cfg_project/claude-cage.instances"
 
 if [ -z "$cfg_source" ]; then
     echo "Hold on. Where's the source directory?"
@@ -474,8 +790,26 @@ if [ "$cleanup_mode" = true ]; then
     echo "Alright, let's clean up this operation."
     echo ""
 
+    # Get user home directory
+    if user_exists "$cfg_user"; then
+        user_home=$(eval echo ~"$cfg_user")
+    else
+        # User doesn't exist, construct expected home path
+        if [[ "$cfg_user" == *"-"* ]]; then
+            user_home="$cage_home_base/$cfg_user"
+        else
+            user_home="/home/$cfg_user"
+        fi
+    fi
+
+    # Construct mount point using same logic as main script
+    if [ -n "$cfg_mountBase" ]; then
+        mount_point="$user_home/${cfg_mountBase}/${cfg_mounted}"
+    else
+        mount_point="$user_home/${cfg_mounted}"
+    fi
+
     # Find and unmount any bindfs mounts for this user
-    mount_point="/home/$cfg_user/$cfg_mounted"
     if mountpoint -q "$mount_point" 2>/dev/null; then
         echo "Found mounted directory at $mount_point, unmountin' it now..."
         umount -l "$mount_point" 2>/dev/null
@@ -489,16 +823,34 @@ if [ "$cleanup_mode" = true ]; then
     fi
 
     # Clean up iptables rules for this user
-    if id -u "$cfg_user" >/dev/null 2>&1; then
-        user_uid=$(id -u "$cfg_user")
+    if user_exists "$cfg_user"; then
+        user_uid=$(get_user_uid "$cfg_user")
         # Look for any chains with our pattern
-        for chain in $(iptables -L -n | grep "CLAUDE_CAGE_" | awk '{print $1}' | sort -u); do
-            echo "Found iptables chain: $chain, cleanin' it up..."
-            iptables -D OUTPUT -j "$chain" 2>/dev/null
-            iptables -F "$chain" 2>/dev/null
-            iptables -X "$chain" 2>/dev/null
-            echo "  Done. $chain is gone."
-        done
+        if [ "$OS_TYPE" = "linux" ]; then
+            # First, get all CLAUDE_CAGE chains and their associated UIDs from OUTPUT rules
+            iptables -L OUTPUT -n | grep "CLAUDE_CAGE_" | while read -r line; do
+                chain=$(echo "$line" | awk '{print $1}')
+                uid=$(echo "$line" | grep -o "owner UID match [0-9]*" | awk '{print $4}')
+
+                echo "Found firewall chain: $chain (UID: $uid), cleanin' it up..."
+
+                # Remove the OUTPUT jump rule
+                iptables -D OUTPUT -m owner --uid-owner "$uid" -j "$chain" 2>/dev/null
+
+                # Flush and delete the chain
+                iptables -F "$chain" 2>/dev/null
+                iptables -X "$chain" 2>/dev/null
+
+                echo "  Done. $chain is gone."
+            done
+        elif [ "$OS_TYPE" = "macos" ]; then
+            # Clean up pf anchors
+            for anchor in $(pfctl -s Anchors 2>/dev/null | grep "CLAUDE_CAGE_"); do
+                echo "Found firewall anchor: $anchor, cleanin' it up..."
+                delete_firewall_chain "$anchor" "$user_uid"
+                echo "  Done. $anchor is gone."
+            done
+        fi
     fi
 
     # Kill processes from PID file
@@ -516,22 +868,31 @@ if [ "$cleanup_mode" = true ]; then
         echo "No PID file found at $pid_file"
     fi
 
-    # Ask about user deletion
-    if id -u "$cfg_user" >/dev/null 2>&1; then
-        echo ""
-        echo "User '$cfg_user' exists on this system."
-        read -p "Delete user '$cfg_user'? [y/N] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "Alright, removin' user '$cfg_user'..."
-            userdel -r "$cfg_user" 2>/dev/null || userdel "$cfg_user" 2>/dev/null
-            if [ $? -eq 0 ]; then
-                echo "  Done. User's gone."
+    # Ask about user deletion (only in per-project mode)
+    # In single-user mode, the user is shared across projects and shouldn't be deleted
+    if user_exists "$cfg_user"; then
+        if [[ "$cfg_user" == *"-"* ]]; then
+            # Per-project mode: offer to delete the project-specific user
+            echo ""
+            echo "User '$cfg_user' exists on this system."
+            read -p "Delete user '$cfg_user'? [y/N] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo "Alright, removin' user '$cfg_user'..."
+                delete_user "$cfg_user"
+                if [ $? -eq 0 ]; then
+                    echo "  Done. User's gone."
+                else
+                    echo "  Had some trouble removin' the user. May need to clean that up yourself."
+                fi
             else
-                echo "  Had some trouble removin' the user. May need to clean that up yourself."
+                echo "Leavin' user '$cfg_user' as is."
             fi
         else
-            echo "Leavin' user '$cfg_user' as is."
+            # Single-user mode: don't delete the shared user
+            echo ""
+            echo "User '$cfg_user' is in single-user mode (shared across projects)."
+            echo "Not deletin' the user. If you want to remove it, do that manually."
         fi
     else
         echo "User '$cfg_user' doesn't exist. Nothin' to delete."
@@ -727,19 +1088,18 @@ cfg_user="$sanitized_username"
 
 # Track if user exists before we start
 user_existed_before=false
-if id -u "$cfg_user" >/dev/null 2>&1; then
+if user_exists "$cfg_user"; then
     user_existed_before=true
 fi
 
 # Create claude-cage base directory for tracking/config
-cage_home_base="/home/.claude-cage"
 mkdir -p "$cage_home_base"
 
 # Track whether we prompted the user to continue
 user_was_prompted=false
 
 # Create user if it doesn't exist
-if ! id -u "$cfg_user" >/dev/null 2>&1; then
+if ! user_exists "$cfg_user"; then
     echo "That user '$cfg_user' ain't on this system yet."
     read -p "Want me to create that user? [y/N] " -n 1 -r
     echo
@@ -750,11 +1110,11 @@ if ! id -u "$cfg_user" >/dev/null 2>&1; then
         if [[ "$cfg_user" == *"-"* ]]; then
             # Multi-project mode: home under /home/claude-cage
             user_home="$cage_home_base/$cfg_user"
-            adduser --disabled-password --shell /bin/bash --home "$user_home" --comment "" "$cfg_user"
+            create_user "$cfg_user" "$user_home" "true"
             echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
         else
             # Single-user mode: default home directory
-            adduser --disabled-password --shell /bin/bash --comment "" "$cfg_user"
+            create_user "$cfg_user" "" "false"
             user_home=$(eval echo ~"$cfg_user")
             echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
         fi
@@ -779,6 +1139,9 @@ fi
 # Set user_home for later use
 user_home=$(eval echo ~"$cfg_user")
 
+# Get user UID for cleanup function (needed for firewall rule deletion)
+user_uid=$(get_user_uid "$cfg_user")
+
 # Construct mount point: /home/<user>/<mountBase>/<mounted>/ or /home/<user>/<mounted>/
 if [ -n "$cfg_mountBase" ]; then
     mount_point="$user_home/${cfg_mountBase}/${cfg_mounted}"
@@ -795,13 +1158,6 @@ else
     # Single-user mode: shared chain for the user
     iptables_chain="CLAUDE_CAGE_${cfg_user}"
 fi
-
-# PID file to track running processes (in .caged/project-name/)
-pid_file=".caged/$cfg_project/claude-cage.pid"
-
-# Instance tracking files
-# Local instance file (tracks instances of THIS project)
-local_instance_file=".caged/$cfg_project/claude-cage.instances"
 
 # Global instance file (tracks all projects for this user in single-user mode)
 if [[ "$cfg_user" == *"-"* ]]; then
@@ -911,14 +1267,12 @@ cleanup() {
         umount -l "$mount_point" 2>/dev/null
     fi
 
-    # Clean up iptables rules
+    # Clean up firewall rules
     if [[ "$cfg_user" == *"-"* ]]; then
         # Multi-project mode: always clean up per-process chain
-        if iptables -L "$iptables_chain" >/dev/null 2>&1; then
+        if firewall_chain_exists "$iptables_chain"; then
             echo "Cleanin' up network restrictions..."
-            iptables -D OUTPUT -j "$iptables_chain" 2>/dev/null
-            iptables -F "$iptables_chain" 2>/dev/null
-            iptables -X "$iptables_chain" 2>/dev/null
+            delete_firewall_chain "$iptables_chain" "$user_uid"
         fi
     else
         # Single-user mode: only clean up if no other instances exist
@@ -934,19 +1288,18 @@ cleanup() {
             done < "$global_instance_file"
         fi
 
-        if [ "$has_other_instances" = "false" ] && iptables -L "$iptables_chain" >/dev/null 2>&1; then
+        if [ "$has_other_instances" = "false" ] && firewall_chain_exists "$iptables_chain"; then
             echo "Last instance for user $cfg_user, cleanin' up network restrictions..."
-            iptables -D OUTPUT -j "$iptables_chain" 2>/dev/null
-            iptables -F "$iptables_chain" 2>/dev/null
-            iptables -X "$iptables_chain" 2>/dev/null
+            delete_firewall_chain "$iptables_chain" "$user_uid"
         fi
     fi
 
-    # Delete user if it didn't exist before
-    if [ "$user_existed_before" = "false" ]; then
-        if id -u "$cfg_user" >/dev/null 2>&1; then
+    # Delete user if it didn't exist before AND we're in per-project mode
+    # In single-user mode, keep the user around (it's shared across projects)
+    if [ "$user_existed_before" = "false" ] && [[ "$cfg_user" == *"-"* ]]; then
+        if user_exists "$cfg_user"; then
             echo "User '$cfg_user' is temporary, removin' it now..."
-            userdel -r "$cfg_user" 2>/dev/null || userdel "$cfg_user" 2>/dev/null
+            delete_user "$cfg_user"
         fi
     fi
 
@@ -980,40 +1333,16 @@ parse_ip_port() {
 }
 
 # Function to add iptables rule with optional port restriction
+# Wrapper for backward compatibility - now uses OS abstraction
 add_iptables_rule() {
-    local chain="$1"
-    local action="$2"  # ACCEPT or REJECT
-    local ip="$3"
-    local ports="$4"   # Empty or comma-separated ports
-    local insert_mode="${5:-append}"  # "insert" or "append" (default: append)
-
-    local iptables_cmd="iptables -A"
-    if [ "$insert_mode" = "insert" ]; then
-        iptables_cmd="iptables -I"
-    fi
-
-    if [ -z "$ports" ]; then
-        # No port restriction - allow/block all ports
-        $iptables_cmd "$chain" -d "$ip" -j "$action"
-    else
-        # Port restriction - apply to TCP and UDP
-        if [[ "$ports" == *","* ]]; then
-            # Multiple ports - use multiport
-            $iptables_cmd "$chain" -p tcp -d "$ip" -m multiport --dports "$ports" -j "$action"
-            $iptables_cmd "$chain" -p udp -d "$ip" -m multiport --dports "$ports" -j "$action"
-        else
-            # Single port
-            $iptables_cmd "$chain" -p tcp -d "$ip" --dport "$ports" -j "$action"
-            $iptables_cmd "$chain" -p udp -d "$ip" --dport "$ports" -j "$action"
-        fi
-    fi
+    add_firewall_rule "$@"
 }
 
 # Function to setup network restrictions
 setup_network_restrictions() {
     local mode="$1"
     local user_uid
-    user_uid=$(id -u "$cfg_user")
+    user_uid=$(get_user_uid "$cfg_user")
 
     if [ "$mode" = "disabled" ]; then
         echo "Network restrictions: None. You're flyin' without that extra safety net."
@@ -1022,27 +1351,25 @@ setup_network_restrictions() {
 
     # Check if chain already exists
     local chain_exists=false
-    if iptables -L "$iptables_chain" >/dev/null 2>&1; then
+    if firewall_chain_exists "$iptables_chain"; then
         chain_exists=true
         echo "Addin' network restrictions to existing chain (shared in single-user mode)..."
 
         # Remove the final catch-all rule (could be ACCEPT or REJECT depending on previous mode)
         # We need to remove it so we can add new rules, then re-add it at the end
-        # Try to get the last rule number and delete it
-        local last_rule_num=$(iptables -L "$iptables_chain" -n --line-numbers | grep -E "^[0-9]" | tail -1 | awk '{print $1}')
+        # Try to get the last rule number and delete it (Linux only)
+        local last_rule_num=$(get_last_firewall_rule_number "$iptables_chain")
         if [ -n "$last_rule_num" ]; then
             echo "Removin' final rule (line $last_rule_num) to add new restrictions..."
-            iptables -D "$iptables_chain" "$last_rule_num" 2>/dev/null
+            delete_firewall_rule_by_number "$iptables_chain" "$last_rule_num"
         fi
     else
         echo "Settin' up network restrictions (mode: $mode)..."
         # Create custom chain for claude-cage rules
-        iptables -N "$iptables_chain" 2>/dev/null || {
-            echo "Hold on. Couldn't create iptables chain. Network restrictions may not work right."
+        create_firewall_chain "$iptables_chain" "$user_uid" || {
+            echo "Hold on. Couldn't create firewall chain. Network restrictions may not work right."
             return 1
         }
-        # Jump to our chain for output from cfg_user
-        iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$iptables_chain"
     fi
 
     if [ "$mode" = "allowlist" ]; then
@@ -1078,7 +1405,7 @@ setup_network_restrictions() {
         fi
 
         # Reject everything else (re-add at the end)
-        iptables -A "$iptables_chain" -j REJECT
+        add_catchall_firewall_rule "$iptables_chain" "REJECT"
 
     elif [ "$mode" = "blocklist" ]; then
         # No need to remove final rule here - already done above if chain exists
@@ -1145,7 +1472,7 @@ setup_network_restrictions() {
         fi
 
         # Accept everything else
-        iptables -A "$iptables_chain" -j ACCEPT
+        add_catchall_firewall_rule "$iptables_chain" "ACCEPT"
     fi
 
     echo "Network restrictions in place. Locked down tight."

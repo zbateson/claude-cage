@@ -61,18 +61,25 @@ Consider this your warning. Proceed accordingly.
 
 ## Prerequisites
 
-**Supported Platforms:** Linux (Ubuntu/Debian/Fedora/RHEL/CentOS)
-
-**Note:** This is a Linux-only operation. While `unison` works on macOS, `bindfs` needs FUSE, and that bird don't fly on Mac anymore.
+**Supported Platforms:** Linux (Ubuntu/Debian/Fedora/RHEL/CentOS) and macOS
 
 Get your dependencies installed:
 
+**Linux:**
 ```bash
 # Ubuntu/Debian
 sudo apt install unison bindfs lua inotify-tools
 
 # RHEL/CentOS/Fedora
 sudo yum install unison bindfs lua inotify-tools
+```
+
+**macOS:**
+```bash
+# Using Homebrew
+brew install unison bindfs lua macfuse
+
+# Note: macFUSE may require enabling in System Settings > Privacy & Security
 ```
 
 ## Quick Start

@@ -153,8 +153,9 @@ directMount = false  -- Use sync mode (default)
 
 Source directory to sync/mount.
 
-- In sync mode: Must be specified in config file
+- In sync mode: Defaults to project name if not specified
 - In direct mount mode: Defaults to `"."` (current directory) if not set
+- Explicitly set to override the default
 
 ```lua
 source = "my-directory"

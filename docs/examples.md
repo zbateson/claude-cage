@@ -58,11 +58,12 @@ claude_cage {
 
     excludeName = {
         "*.tmp",
-        ".DS_Store"
+        ".DS_Store",
+        "node_modules"  -- Use excludeName for dirs that can appear anywhere
     },
 
     belowPath = {
-        "node_modules"
+        ".git"  -- Use belowPath for root-level directories only
     },
 
     excludeRegex = {

@@ -43,12 +43,25 @@ sudo yum install inotify-tools
 The script doesn't check for these upfront. If they're missing, you'll see errors when the script tries to use them.
 
 **Solution:**
+
+**Linux:**
 ```bash
 # Ubuntu/Debian
 sudo apt install unison bindfs
 
 # RHEL/CentOS/Fedora
 sudo yum install unison bindfs
+```
+
+**macOS:**
+```bash
+# Using Homebrew
+brew install unison bindfs macfuse
+
+# Note: macFUSE requires approval in System Settings
+# Go to: System Settings > Privacy & Security
+# Look for "System software from developer 'Benjamin Fleischer' was blocked"
+# Click "Allow" and restart your Mac
 ```
 
 ### No file monitoring helper program found
@@ -387,12 +400,6 @@ curl -I https://github.com:443
    -- Right: Specific port
    allowedDomains = { "github.com:443" }  -- HTTPS only
    ```
-
-3. **Remember Claude's required domains are auto-allowed:**
-   - api.anthropic.com
-   - claude.ai
-   - statsig.anthropic.com
-   - sentry.io
 
 ### DNS resolution fails
 

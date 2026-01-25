@@ -332,6 +332,12 @@ sudo claude-cage my-project
 # Test configuration without launching Claude
 sudo claude-cage --test
 
+# Preview commands without executing (no sudo required)
+claude-cage --dry-run
+
+# Test cross-platform (simulate macOS on Linux or vice-versa)
+claude-cage --dry-run --os macos
+
 # Clean up after interrupted session
 sudo claude-cage --cleanup
 

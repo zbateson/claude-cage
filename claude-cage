@@ -13,6 +13,35 @@ detect_os() {
 
 OS_TYPE=$(detect_os)
 
+# Parse --dry-run and --os early to allow OS simulation
+dry_run=false
+simulated_os=""
+next_is_os=false
+for arg in "$@"; do
+    if [ "$next_is_os" = true ]; then
+        simulated_os="$arg"
+        next_is_os=false
+    elif [ "$arg" = "--dry-run" ]; then
+        dry_run=true
+    elif [ "$arg" = "--os" ]; then
+        next_is_os=true
+    fi
+done
+
+# Handle --os flag (only valid with --dry-run)
+if [ -n "$simulated_os" ]; then
+    if [ "$dry_run" != true ]; then
+        echo "Error: --os can only be used with --dry-run"
+        exit 1
+    fi
+    if [ "$simulated_os" != "linux" ] && [ "$simulated_os" != "macos" ]; then
+        echo "Error: --os must be 'linux' or 'macos'"
+        exit 1
+    fi
+    OS_TYPE="$simulated_os"
+    echo "[dry-run] Simulating OS: $OS_TYPE"
+fi
+
 if [ "$OS_TYPE" = "unsupported" ]; then
     echo "Unsupported operating system: $OSTYPE"
     echo "claude-cage supports Linux and macOS only."
@@ -71,9 +100,9 @@ create_user() {
 
     if [ "$OS_TYPE" = "linux" ]; then
         if [ "$use_custom_home" = "true" ]; then
-            adduser --disabled-password --shell /bin/bash --home "$user_home" --comment "" "$username"
+            run adduser --disabled-password --shell /bin/bash --home "$user_home" --comment "" "$username"
         else
-            adduser --disabled-password --shell /bin/bash --comment "" "$username"
+            run adduser --disabled-password --shell /bin/bash --comment "" "$username"
         fi
     elif [ "$OS_TYPE" = "macos" ]; then
         # Find next available UID (starting from 501, avoiding system range)
@@ -96,24 +125,24 @@ create_user() {
         fi
 
         # Create user using dscl
-        dscl . -create /Users/"$username"
-        dscl . -create /Users/"$username" UserShell /bin/bash
-        dscl . -create /Users/"$username" RealName "$username"
-        dscl . -create /Users/"$username" UniqueID "$new_uid"
-        dscl . -create /Users/"$username" PrimaryGroupID "$new_gid"
-        dscl . -create /Users/"$username" NFSHomeDirectory "$user_home"
+        run dscl . -create /Users/"$username"
+        run dscl . -create /Users/"$username" UserShell /bin/bash
+        run dscl . -create /Users/"$username" RealName "$username"
+        run dscl . -create /Users/"$username" UniqueID "$new_uid"
+        run dscl . -create /Users/"$username" PrimaryGroupID "$new_gid"
+        run dscl . -create /Users/"$username" NFSHomeDirectory "$user_home"
 
         # Create home directory if it doesn't exist
-        if [ ! -d "$user_home" ]; then
-            mkdir -p "$user_home"
-            chown "$username:staff" "$user_home"
-            chmod 755 "$user_home"
+        if [ ! -d "$user_home" ] || [ "$dry_run" = true ]; then
+            run mkdir -p "$user_home"
+            run chown "$username:staff" "$user_home"
+            run chmod 755 "$user_home"
         fi
 
         # Create group (macOS requires this)
-        if ! dscl . -read /Groups/"$username" >/dev/null 2>&1; then
-            dscl . -create /Groups/"$username"
-            dscl . -create /Groups/"$username" PrimaryGroupID "$new_gid"
+        if ! dscl . -read /Groups/"$username" >/dev/null 2>&1 || [ "$dry_run" = true ]; then
+            run dscl . -create /Groups/"$username"
+            run dscl . -create /Groups/"$username" PrimaryGroupID "$new_gid"
         fi
     fi
 }
@@ -123,16 +152,16 @@ delete_user() {
     local username="$1"
 
     if [ "$OS_TYPE" = "linux" ]; then
-        userdel -r "$username" 2>/dev/null || userdel "$username" 2>/dev/null
+        run_quiet userdel -r "$username" || run_quiet userdel "$username"
     elif [ "$OS_TYPE" = "macos" ]; then
         # Delete user
-        dscl . -delete /Users/"$username" 2>/dev/null
+        run_quiet dscl . -delete /Users/"$username"
         # Delete group if it exists
-        dscl . -delete /Groups/"$username" 2>/dev/null
+        run_quiet dscl . -delete /Groups/"$username"
         # Remove home directory if it exists
         local user_home=$(dscl . -read /Users/"$username" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
         if [ -n "$user_home" ] && [ -d "$user_home" ]; then
-            rm -rf "$user_home"
+            run rm -rf "$user_home"
         fi
     fi
 }
@@ -144,6 +173,12 @@ delete_user() {
 # Check if firewall chain/anchor exists
 firewall_chain_exists() {
     local chain_name="$1"
+
+    # In dry-run mode, report what we would check and return false (chain doesn't exist)
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] check firewall chain exists: $chain_name"
+        return 1
+    fi
 
     if [ "$OS_TYPE" = "linux" ]; then
         iptables -L "$chain_name" >/dev/null 2>&1
@@ -159,13 +194,20 @@ create_firewall_chain() {
     local user_uid="$2"
 
     if [ "$OS_TYPE" = "linux" ]; then
-        iptables -N "$chain_name" 2>/dev/null || return 1
+        run_quiet iptables -N "$chain_name" || return 1
         # Jump to our chain for output from user
-        iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$chain_name"
+        run iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$chain_name"
     elif [ "$OS_TYPE" = "macos" ]; then
         # Create anchor in pf
         # macOS pf uses anchors - we'll load rules from a temp file
         local pf_rules_file="/tmp/${chain_name}.pf"
+
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] echo '# Claude-cage rules for UID $user_uid' > $pf_rules_file"
+            echo "[dry-run] echo 'anchor \"$chain_name\"' >> $pf_rules_file"
+            echo "[dry-run] pfctl -a $chain_name -f $pf_rules_file"
+            return 0
+        fi
 
         # Create the anchor definition
         echo "# Claude-cage rules for UID $user_uid" > "$pf_rules_file"
@@ -192,24 +234,24 @@ add_firewall_rule() {
             iptables_action="REJECT"
         fi
 
-        local iptables_cmd="iptables -A"
+        local iptables_flag="-A"
         if [ "$insert_mode" = "insert" ]; then
-            iptables_cmd="iptables -I"
+            iptables_flag="-I"
         fi
 
         if [ -z "$ports" ]; then
             # No port restriction - allow/block all ports
-            $iptables_cmd "$chain_name" -d "$ip_or_network" -j "$iptables_action"
+            run iptables $iptables_flag "$chain_name" -d "$ip_or_network" -j "$iptables_action"
         else
             # Port restriction - apply to TCP and UDP
             if [[ "$ports" == *","* ]]; then
                 # Multiple ports - use multiport
-                $iptables_cmd "$chain_name" -p tcp -d "$ip_or_network" -m multiport --dports "$ports" -j "$iptables_action"
-                $iptables_cmd "$chain_name" -p udp -d "$ip_or_network" -m multiport --dports "$ports" -j "$iptables_action"
+                run iptables $iptables_flag "$chain_name" -p tcp -d "$ip_or_network" -m multiport --dports "$ports" -j "$iptables_action"
+                run iptables $iptables_flag "$chain_name" -p udp -d "$ip_or_network" -m multiport --dports "$ports" -j "$iptables_action"
             else
                 # Single port
-                $iptables_cmd "$chain_name" -p tcp -d "$ip_or_network" --dport "$ports" -j "$iptables_action"
-                $iptables_cmd "$chain_name" -p udp -d "$ip_or_network" --dport "$ports" -j "$iptables_action"
+                run iptables $iptables_flag "$chain_name" -p tcp -d "$ip_or_network" --dport "$ports" -j "$iptables_action"
+                run iptables $iptables_flag "$chain_name" -p udp -d "$ip_or_network" --dport "$ports" -j "$iptables_action"
             fi
         fi
     elif [ "$OS_TYPE" = "macos" ]; then
@@ -221,6 +263,20 @@ add_firewall_rule() {
             pf_action="pass"
         else
             pf_action="block"
+        fi
+
+        if [ "$dry_run" = true ]; then
+            if [ -z "$ports" ]; then
+                echo "[dry-run] echo '$pf_action out to $ip_or_network' >> $pf_rules_file"
+            else
+                IFS=',' read -ra port_array <<< "$ports"
+                for port in "${port_array[@]}"; do
+                    echo "[dry-run] echo '$pf_action out proto tcp to $ip_or_network port $port' >> $pf_rules_file"
+                    echo "[dry-run] echo '$pf_action out proto udp to $ip_or_network port $port' >> $pf_rules_file"
+                done
+            fi
+            echo "[dry-run] pfctl -a $chain_name -f $pf_rules_file"
+            return 0
         fi
 
         if [ -z "$ports" ]; then
@@ -247,18 +303,18 @@ delete_firewall_chain() {
 
     if [ "$OS_TYPE" = "linux" ]; then
         # Remove jump rule from OUTPUT chain
-        iptables -D OUTPUT -m owner --uid-owner "$user_uid" -j "$chain_name" 2>/dev/null
+        run_quiet iptables -D OUTPUT -m owner --uid-owner "$user_uid" -j "$chain_name"
 
         # Flush and delete the chain
-        iptables -F "$chain_name" 2>/dev/null
-        iptables -X "$chain_name" 2>/dev/null
+        run_quiet iptables -F "$chain_name"
+        run_quiet iptables -X "$chain_name"
     elif [ "$OS_TYPE" = "macos" ]; then
         # Flush rules from anchor
-        pfctl -a "$chain_name" -F all 2>/dev/null
+        run_quiet pfctl -a "$chain_name" -F all
 
         # Remove the anchor (by clearing its rules, pf will clean it up)
         local pf_rules_file="/tmp/${chain_name}.pf"
-        rm -f "$pf_rules_file" 2>/dev/null
+        run_quiet rm -f "$pf_rules_file"
     fi
 }
 
@@ -280,7 +336,7 @@ delete_firewall_rule_by_number() {
     local rule_number="$2"
 
     if [ "$OS_TYPE" = "linux" ]; then
-        iptables -D "$chain_name" "$rule_number" 2>/dev/null
+        run_quiet iptables -D "$chain_name" "$rule_number"
     elif [ "$OS_TYPE" = "macos" ]; then
         # For pf, we rebuild the entire ruleset instead
         # This is handled in add_firewall_rule by rewriting the file
@@ -294,9 +350,20 @@ add_catchall_firewall_rule() {
     local action="$2"  # ACCEPT or REJECT
 
     if [ "$OS_TYPE" = "linux" ]; then
-        iptables -A "$chain_name" -j "$action"
+        run iptables -A "$chain_name" -j "$action"
     elif [ "$OS_TYPE" = "macos" ]; then
         local pf_rules_file="/tmp/${chain_name}.pf"
+
+        if [ "$dry_run" = true ]; then
+            if [ "$action" = "ACCEPT" ]; then
+                echo "[dry-run] echo 'pass out' >> $pf_rules_file"
+            else
+                echo "[dry-run] echo 'block out' >> $pf_rules_file"
+            fi
+            echo "[dry-run] pfctl -a $chain_name -f $pf_rules_file"
+            return 0
+        fi
+
         if [ "$action" = "ACCEPT" ]; then
             echo "pass out" >> "$pf_rules_file"
         else
@@ -359,6 +426,33 @@ EOF
         sleep 0.01
     done <<< "$banner"
     sleep 0.3
+}
+
+# ============================================================================
+# Dry-run Mode Helper Functions
+# ============================================================================
+
+# Note: dry_run and OS_TYPE are parsed at the top of the script
+
+# Wrapper function for commands that modify the system
+# In dry-run mode, prints the command instead of executing it
+run() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] $*"
+        return 0
+    else
+        "$@"
+    fi
+}
+
+# Wrapper for commands that should be silent in normal mode but shown in dry-run
+run_quiet() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] $*"
+        return 0
+    else
+        "$@" >/dev/null 2>&1
+    fi
 }
 
 # Check if lua is available early (before sudo check)
@@ -479,11 +573,11 @@ for arg in "$@"; do
         skip_next=false
         continue
     fi
-    if [ "$arg" = "--config" ]; then
+    if [ "$arg" = "--config" ] || [ "$arg" = "--os" ]; then
         skip_next=true
         continue
     fi
-    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ]; then
+    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ] && [ "$arg" != "--dry-run" ]; then
         cli_project_arg="$arg"
         break
     fi
@@ -564,24 +658,71 @@ function claude_cage(tbl)
     table.insert(configs, tbl)
 end
 
--- Load configs in priority order (system -> user -> local)
-local config_files = {
-    "$system_config",
-    "$user_config",
-    "$local_config"
+-- Track items by source for display
+local sources = {
+    { name = "system", path = "$system_config", exclude = {}, block = {}, allow = {} },
+    { name = "user", path = "$user_config", exclude = {}, block = {}, allow = {} },
+    { name = "local", path = "$local_config", exclude = {}, block = {}, allow = {} },
+    { name = "project", path = "", exclude = {}, block = {}, allow = {} }  -- path set later
 }
 
-for _, path in ipairs(config_files) do
-    local f = io.open(path, "r")
+-- Helper to extract items from a config into a source tracker
+local function track_items(source_entry, cfg)
+    if cfg.exclude then
+        for subkey, items in pairs(cfg.exclude) do
+            source_entry.exclude[subkey] = source_entry.exclude[subkey] or {}
+            if type(items) == "table" then
+                for _, item in ipairs(items) do
+                    table.insert(source_entry.exclude[subkey], item)
+                end
+            end
+        end
+    end
+    if cfg.block then
+        for subkey, items in pairs(cfg.block) do
+            source_entry.block[subkey] = source_entry.block[subkey] or {}
+            if type(items) == "table" then
+                for _, item in ipairs(items) do
+                    table.insert(source_entry.block[subkey], item)
+                end
+            end
+        end
+    end
+    if cfg.allow then
+        for subkey, items in pairs(cfg.allow) do
+            source_entry.allow[subkey] = source_entry.allow[subkey] or {}
+            if type(items) == "table" then
+                for _, item in ipairs(items) do
+                    table.insert(source_entry.allow[subkey], item)
+                end
+            end
+        end
+    end
+end
+
+-- Load configs in priority order (system -> user -> local)
+local config_files = {
+    { idx = 1, path = "$system_config" },
+    { idx = 2, path = "$user_config" },
+    { idx = 3, path = "$local_config" }
+}
+
+for _, cf in ipairs(config_files) do
+    local f = io.open(cf.path, "r")
     if f then
         f:close()
+        local before_count = #configs
         local success, err = pcall(function()
-            dofile(path)
+            dofile(cf.path)
         end)
         if not success then
-            io.stderr:write("Error loading config file: " .. path .. "\n")
+            io.stderr:write("Error loading config file: " .. cf.path .. "\n")
             io.stderr:write(tostring(err) .. "\n")
             os.exit(1)
+        end
+        -- Track items from newly loaded configs
+        for i = before_count + 1, #configs do
+            track_items(sources[cf.idx], configs[i])
         end
     end
 end
@@ -598,6 +739,7 @@ local project = cli_arg ~= "" and cli_arg or config.project or ""
 -- If project name is set (from CLI or config), try to load project-specific config
 if project ~= "" then
     local project_config = project .. ".claude-cage.config"
+    sources[4].path = project_config
     local f = io.open(project_config, "r")
     if f then
         f:close()
@@ -621,8 +763,9 @@ if project ~= "" then
             os.exit(1)
         end
 
-        -- Merge project-specific configs on top of main config
+        -- Track and merge project-specific configs
         for _, cfg in ipairs(project_configs) do
+            track_items(sources[4], cfg)
             config = merge_config(config, cfg)
         end
     end
@@ -802,6 +945,50 @@ print(relative_path)
 
 -- Output config_root for source directory
 print(config_root)
+
+-- Output source-tracked items for display (format: SOURCE|TYPE|items,comma,separated)
+-- This allows bash to display items grouped by source
+local function format_source_items(src, category)
+    local lines = {}
+    local items = src[category] or {}
+    for subkey, arr in pairs(items) do
+        if #arr > 0 then
+            table.insert(lines, src.name .. "|" .. subkey .. "|" .. table.concat(arr, ", "))
+        end
+    end
+    return lines
+end
+
+-- Collect all display lines
+local display_lines = {}
+for _, src in ipairs(sources) do
+    -- Check if this source has any items
+    local has_items = false
+    for _, cat in ipairs({"exclude", "block", "allow"}) do
+        for _, arr in pairs(src[cat] or {}) do
+            if #arr > 0 then has_items = true break end
+        end
+        if has_items then break end
+    end
+
+    if has_items then
+        for _, line in ipairs(format_source_items(src, "exclude")) do
+            table.insert(display_lines, "EXCLUDE|" .. line)
+        end
+        for _, line in ipairs(format_source_items(src, "block")) do
+            table.insert(display_lines, "BLOCK|" .. line)
+        end
+        for _, line in ipairs(format_source_items(src, "allow")) do
+            table.insert(display_lines, "ALLOW|" .. line)
+        end
+    end
+end
+
+-- Output display line count, then lines
+print(#display_lines)
+for _, line in ipairs(display_lines) do
+    print(line)
+end
 EOF
 )
 lua_exit_code=$?
@@ -837,6 +1024,13 @@ fi
     read -r cfg_directMount
     read -r cfg_relative_path
     read -r cfg_config_root
+    read -r cfg_display_line_count
+    # Read display lines into array
+    cfg_display_lines=()
+    for ((i=0; i<cfg_display_line_count; i++)); do
+        read -r line
+        cfg_display_lines+=("$line")
+    done
 } <<< "$lua_output"
 
 # Replace EMPTY placeholder with empty string for array values
@@ -876,8 +1070,11 @@ for arg in "$@"; do
         claude_continue=true
     elif [ "$arg" = "--resume" ]; then
         claude_resume=true
-    elif [ "$arg" = "--config" ]; then
+    elif [ "$arg" = "--config" ] || [ "$arg" = "--os" ]; then
         skip_next_arg=true
+    elif [ "$arg" = "--dry-run" ]; then
+        # Already parsed early, just skip here
+        :
     else
         # Non-flag argument is either project name or subdirectory (depending on mode)
         source_arg="$arg"
@@ -983,8 +1180,8 @@ fi
 
 # Handle cleanup mode
 if [ "$cleanup_mode" = true ]; then
-    # Now check for root
-    if [ "$EUID" -ne 0 ]; then
+    # Now check for root (unless dry-run)
+    if [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
         echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
         exit 1
     fi
@@ -1014,9 +1211,9 @@ if [ "$cleanup_mode" = true ]; then
     fi
 
     # Find and unmount any bindfs mounts for this user
-    if mountpoint -q "$mount_point" 2>/dev/null; then
+    if mountpoint -q "$mount_point" 2>/dev/null || [ "$dry_run" = true ]; then
         echo "Found mounted directory at $mount_point, unmountin' it now..."
-        umount -l "$mount_point" 2>/dev/null
+        run_quiet umount -l "$mount_point"
         if [ $? -eq 0 ]; then
             echo "  Unmounted. All clear."
         else
@@ -1027,46 +1224,61 @@ if [ "$cleanup_mode" = true ]; then
     fi
 
     # Clean up iptables rules for this user
-    if user_exists "$cfg_user"; then
+    if user_exists "$cfg_user" || [ "$dry_run" = true ]; then
         user_uid=$(get_user_uid "$cfg_user")
         # Look for any chains with our pattern
         if [ "$OS_TYPE" = "linux" ]; then
-            # First, get all CLAUDE_CAGE chains and their associated UIDs from OUTPUT rules
-            iptables -L OUTPUT -n | grep "CLAUDE_CAGE_" | while read -r line; do
-                chain=$(echo "$line" | awk '{print $1}')
-                uid=$(echo "$line" | grep -o "owner UID match [0-9]*" | awk '{print $4}')
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] iptables -L OUTPUT -n | grep CLAUDE_CAGE_"
+                echo "[dry-run] (would clean up any matching firewall chains)"
+            else
+                # First, get all CLAUDE_CAGE chains and their associated UIDs from OUTPUT rules
+                iptables -L OUTPUT -n | grep "CLAUDE_CAGE_" | while read -r line; do
+                    chain=$(echo "$line" | awk '{print $1}')
+                    uid=$(echo "$line" | grep -o "owner UID match [0-9]*" | awk '{print $4}')
 
-                echo "Found firewall chain: $chain (UID: $uid), cleanin' it up..."
+                    echo "Found firewall chain: $chain (UID: $uid), cleanin' it up..."
 
-                # Remove the OUTPUT jump rule
-                iptables -D OUTPUT -m owner --uid-owner "$uid" -j "$chain" 2>/dev/null
+                    # Remove the OUTPUT jump rule
+                    iptables -D OUTPUT -m owner --uid-owner "$uid" -j "$chain" 2>/dev/null
 
-                # Flush and delete the chain
-                iptables -F "$chain" 2>/dev/null
-                iptables -X "$chain" 2>/dev/null
+                    # Flush and delete the chain
+                    iptables -F "$chain" 2>/dev/null
+                    iptables -X "$chain" 2>/dev/null
 
-                echo "  Done. $chain is gone."
-            done
+                    echo "  Done. $chain is gone."
+                done
+            fi
         elif [ "$OS_TYPE" = "macos" ]; then
-            # Clean up pf anchors
-            for anchor in $(pfctl -s Anchors 2>/dev/null | grep "CLAUDE_CAGE_"); do
-                echo "Found firewall anchor: $anchor, cleanin' it up..."
-                delete_firewall_chain "$anchor" "$user_uid"
-                echo "  Done. $anchor is gone."
-            done
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] pfctl -s Anchors | grep CLAUDE_CAGE_"
+                echo "[dry-run] (would clean up any matching pf anchors)"
+            else
+                # Clean up pf anchors
+                for anchor in $(pfctl -s Anchors 2>/dev/null | grep "CLAUDE_CAGE_"); do
+                    echo "Found firewall anchor: $anchor, cleanin' it up..."
+                    delete_firewall_chain "$anchor" "$user_uid"
+                    echo "  Done. $anchor is gone."
+                done
+            fi
         fi
     fi
 
     # Kill processes from PID file
-    if [ -f "$pid_file" ]; then
+    if [ -f "$pid_file" ] || [ "$dry_run" = true ]; then
         echo "Found PID file, stoppin' tracked processes..."
-        while IFS= read -r pid; do
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                kill "$pid" 2>/dev/null
-                echo "  Process $pid stopped."
-            fi
-        done < "$pid_file"
-        rm -f "$pid_file"
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] kill <PIDs from $pid_file>"
+            echo "[dry-run] rm -f $pid_file"
+        else
+            while IFS= read -r pid; do
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    kill "$pid" 2>/dev/null
+                    echo "  Process $pid stopped."
+                fi
+            done < "$pid_file"
+            rm -f "$pid_file"
+        fi
         echo "  PID file's gone."
     else
         echo "No PID file found at $pid_file"
@@ -1107,8 +1319,8 @@ if [ "$cleanup_mode" = true ]; then
     exit 0
 fi
 
-# Now check for root after validating config
-if [ "$EUID" -ne 0 ]; then
+# Now check for root after validating config (unless dry-run)
+if [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
     echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
     exit 1
 fi
@@ -1148,107 +1360,90 @@ else
     echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
 fi
 echo "  Network mode:  $cfg_networkMode"
+
+# Display excludes and network rules grouped by source config
+# Format from Lua: CATEGORY|source|type|items,comma,separated
+# Sources are ordered: system, user, local, project
+
+# Helper to get display name for source
+get_source_display() {
+    case "$1" in
+        system) echo "System config" ;;
+        user) echo "User config" ;;
+        local) echo "Local config" ;;
+        project) echo "Project config" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Collect and display excludes by source
 echo ""
 echo "Excludes:"
-if [ -n "$cfg_exclude_path" ]; then
-    IFS='|' read -ra paths <<< "$cfg_exclude_path"
-    for path in "${paths[@]}"; do
-        echo "  Path:          $path"
-    done
-fi
-if [ -n "$cfg_exclude_name" ]; then
-    IFS='|' read -ra names <<< "$cfg_exclude_name"
-    for name in "${names[@]}"; do
-        echo "  Name:          $name"
-    done
-fi
-if [ -n "$cfg_exclude_regex" ]; then
-    IFS='|' read -ra regexes <<< "$cfg_exclude_regex"
-    for regex in "${regexes[@]}"; do
-        echo "  Regex:         $regex"
-    done
-fi
-if [ -n "$cfg_exclude_belowPath" ]; then
-    IFS='|' read -ra belows <<< "$cfg_exclude_belowPath"
-    for below in "${belows[@]}"; do
-        echo "  Below path:    $below"
-    done
-fi
-if [ -z "$cfg_exclude_path$cfg_exclude_name$cfg_exclude_regex$cfg_exclude_belowPath" ]; then
+has_excludes=false
+current_source=""
+for line in "${cfg_display_lines[@]}"; do
+    IFS='|' read -r category source type items <<< "$line"
+    if [ "$category" = "EXCLUDE" ]; then
+        has_excludes=true
+        if [ "$source" != "$current_source" ]; then
+            current_source="$source"
+            echo "  $(get_source_display "$source"):"
+        fi
+        # Capitalize first letter of type
+        type_display=$(echo "$type" | sed 's/\b\(.\)/\u\1/')
+        [ "$type" = "belowPath" ] && type_display="BelowPath"
+        printf "    %-10s %s\n" "$type_display:" "$items"
+    fi
+done
+if [ "$has_excludes" = false ]; then
     echo "  (none)"
 fi
-echo ""
 
-# Show active network restrictions if configured
+# Display network rules by source if network mode is enabled
 if [ "$cfg_networkMode" != "disabled" ]; then
+    echo ""
     echo "Network restrictions ($cfg_networkMode mode):"
 
-    if [ "$cfg_networkMode" = "allowlist" ]; then
-        echo "  Allow list (everything else blocked):"
-        if [ -n "$cfg_allow_domains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_allow_domains"
-            for domain in "${domains[@]}"; do
-                echo "    Domain:  $domain"
-            done
-        fi
-        if [ -n "$cfg_allow_ips" ]; then
-            IFS='|' read -ra ips <<< "$cfg_allow_ips"
-            for ip in "${ips[@]}"; do
-                echo "    IP:      $ip"
-            done
-        fi
-        if [ -n "$cfg_allow_networks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_allow_networks"
-            for network in "${networks[@]}"; do
-                echo "    Network: $network"
-            done
-        fi
-    elif [ "$cfg_networkMode" = "blocklist" ]; then
-        echo "  Block list (everything else allowed):"
-        if [ -n "$cfg_block_domains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_block_domains"
-            for domain in "${domains[@]}"; do
-                echo "    Domain:  $domain"
-            done
-        fi
-        if [ -n "$cfg_block_ips" ]; then
-            IFS='|' read -ra ips <<< "$cfg_block_ips"
-            for ip in "${ips[@]}"; do
-                echo "    IP:      $ip"
-            done
-        fi
-        if [ -n "$cfg_block_networks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_block_networks"
-            for network in "${networks[@]}"; do
-                echo "    Network: $network"
-            done
-        fi
+    has_block=false
+    has_allow=false
+    current_source=""
 
-        # Show exceptions if any exist
-        if [ -n "$cfg_allow_domains" ] || [ -n "$cfg_allow_ips" ] || [ -n "$cfg_allow_networks" ]; then
-            echo "  Exceptions (allowed even when blocked):"
-            if [ -n "$cfg_allow_domains" ]; then
-                IFS='|' read -ra domains <<< "$cfg_allow_domains"
-                for domain in "${domains[@]}"; do
-                    echo "    Domain:  $domain"
-                done
+    # Show block rules first (for blocklist mode)
+    if [ "$cfg_networkMode" = "blocklist" ]; then
+        for line in "${cfg_display_lines[@]}"; do
+            IFS='|' read -r category source type items <<< "$line"
+            if [ "$category" = "BLOCK" ]; then
+                has_block=true
+                if [ "$source" != "$current_source" ]; then
+                    current_source="$source"
+                    echo "  Block ($(get_source_display "$source")):"
+                fi
+                type_display=$(echo "$type" | sed 's/\b\(.\)/\u\1/')
+                printf "    %-10s %s\n" "$type_display:" "$items"
             fi
-            if [ -n "$cfg_allow_ips" ]; then
-                IFS='|' read -ra ips <<< "$cfg_allow_ips"
-                for ip in "${ips[@]}"; do
-                    echo "    IP:      $ip"
-                done
-            fi
-            if [ -n "$cfg_allow_networks" ]; then
-                IFS='|' read -ra networks <<< "$cfg_allow_networks"
-                for network in "${networks[@]}"; do
-                    echo "    Network: $network"
-                done
-            fi
-        fi
+        done
     fi
-    echo ""
+
+    # Show allow rules
+    current_source=""
+    for line in "${cfg_display_lines[@]}"; do
+        IFS='|' read -r category source type items <<< "$line"
+        if [ "$category" = "ALLOW" ]; then
+            has_allow=true
+            if [ "$source" != "$current_source" ]; then
+                current_source="$source"
+                if [ "$cfg_networkMode" = "blocklist" ]; then
+                    echo "  Exceptions ($(get_source_display "$source")):"
+                else
+                    echo "  Allow ($(get_source_display "$source")):"
+                fi
+            fi
+            type_display=$(echo "$type" | sed 's/\b\(.\)/\u\1/')
+            printf "    %-10s %s\n" "$type_display:" "$items"
+        fi
+    done
 fi
+echo ""
 
 # Set computed values
 cfg_user="${cfg_user:-claude}"
@@ -1326,41 +1521,57 @@ if user_exists "$cfg_user"; then
 fi
 
 # Create claude-cage base directory for tracking/config
-mkdir -p "$cage_home_base"
+run mkdir -p "$cage_home_base"
 
 # Track whether we prompted the user to continue
 user_was_prompted=false
 
-# Create user if it doesn't exist
-if ! user_exists "$cfg_user"; then
-    echo "That user '$cfg_user' ain't on this system yet."
-    read -p "Want me to create that user? [y/N] " -n 1 -r
-    echo
-    user_was_prompted=true
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+# Create user if it doesn't exist (or show what would be created in dry-run)
+if ! user_exists "$cfg_user" || [ "$dry_run" = true ]; then
+    if [ "$dry_run" = true ]; then
+        echo "Would create user '$cfg_user' (doesn't exist or dry-run mode)."
         # In single-user mode, use default home directory location
         # In multi-project mode, use /home/claude-cage/<user>
         if [[ "$cfg_user" == *"-"* ]]; then
             # Multi-project mode: home under /home/claude-cage
             user_home="$cage_home_base/$cfg_user"
             create_user "$cfg_user" "$user_home" "true"
-            echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
         else
             # Single-user mode: default home directory
             create_user "$cfg_user" "" "false"
-            # Get home directory using OS abstraction function
-            user_home=$(get_user_home "$cfg_user")
-            echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
+            user_home="/home/$cfg_user"
         fi
-        echo "This user's temporary. Gone when we're done here."
+        user_was_prompted=true
     else
-        echo "Can't fly this bird without that user. We're done here."
-        exit 1
+        echo "That user '$cfg_user' ain't on this system yet."
+        read -p "Want me to create that user? [y/N] " -n 1 -r
+        echo
+        user_was_prompted=true
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # In single-user mode, use default home directory location
+            # In multi-project mode, use /home/claude-cage/<user>
+            if [[ "$cfg_user" == *"-"* ]]; then
+                # Multi-project mode: home under /home/claude-cage
+                user_home="$cage_home_base/$cfg_user"
+                create_user "$cfg_user" "$user_home" "true"
+                echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
+            else
+                # Single-user mode: default home directory
+                create_user "$cfg_user" "" "false"
+                # Get home directory using OS abstraction function
+                user_home=$(get_user_home "$cfg_user")
+                echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
+            fi
+            echo "This user's temporary. Gone when we're done here."
+        else
+            echo "Can't fly this bird without that user. We're done here."
+            exit 1
+        fi
     fi
 fi
 
-# Prompt to continue if user wasn't already prompted during user creation
-if [ "$user_was_prompted" = "false" ]; then
+# Prompt to continue if user wasn't already prompted during user creation (skip in dry-run)
+if [ "$user_was_prompted" = "false" ] && [ "$dry_run" != true ]; then
     echo ""
     read -p "Ready to proceed? [Y/n] " -n 1 -r key
     echo
@@ -1372,10 +1583,19 @@ fi
 
 # Set user_home for later use
 # Get home directory using OS abstraction function
-user_home=$(get_user_home "$cfg_user")
-
-# Get user UID for cleanup function (needed for firewall rule deletion)
-user_uid=$(get_user_uid "$cfg_user")
+if [ "$dry_run" = true ]; then
+    # In dry-run, user might not exist, so use default paths
+    if [[ "$cfg_user" == *"-"* ]]; then
+        user_home="${user_home:-$cage_home_base/$cfg_user}"
+    else
+        user_home="${user_home:-/home/$cfg_user}"
+    fi
+    user_uid="${user_uid:-<UID>}"
+else
+    user_home=$(get_user_home "$cfg_user")
+    # Get user UID for cleanup function (needed for firewall rule deletion)
+    user_uid=$(get_user_uid "$cfg_user")
+fi
 
 # Check if Claude Code is installed for the user
 check_claude_installed() {
@@ -1435,8 +1655,10 @@ install_claude_code() {
     fi
 }
 
-# Check if Claude Code is available for the user
-if ! check_claude_installed "$cfg_user" "$user_home"; then
+# Check if Claude Code is available for the user (skip in dry-run)
+if [ "$dry_run" = true ]; then
+    echo "[dry-run] Would check if Claude Code is installed for user '$cfg_user'"
+elif ! check_claude_installed "$cfg_user" "$user_home"; then
     if ! install_claude_code "$cfg_user" "$user_home"; then
         echo "Can't proceed without Claude Code installed. We're done here."
         exit 1
@@ -1507,6 +1729,11 @@ fi
 instance_id="$$"
 
 cleanup() {
+    # Skip cleanup in dry-run mode (nothing was actually set up)
+    if [ "$dry_run" = true ]; then
+        return
+    fi
+
     echo ""
     echo "Alright, shuttin' down operations..."
 
@@ -1958,26 +2185,26 @@ if [ "$skip_setup" = false ]; then
     setup_network_restrictions "$cfg_networkMode"
 
     # Create mount point if it doesn't exist
-    mkdir -p "$mount_point"
+    run mkdir -p "$mount_point"
 
     # Create .caged/project-name/ directory for instance/PID files at config root
-    mkdir -p "$cfg_config_root/.caged/$cfg_project"
+    run mkdir -p "$cfg_config_root/.caged/$cfg_project"
 
     # In sync mode, create sync directory and set ownership
     if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
-        mkdir -p "$cfg_sync"
+        run mkdir -p "$cfg_sync"
     fi
 
     # Set ownership of .caged directory and everything under it to original user
-    chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
+    run chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
 
     # Check if mount point is already mounted
-    if mountpoint -q "$mount_point" 2>/dev/null; then
+    if [ "$dry_run" != true ] && mountpoint -q "$mount_point" 2>/dev/null; then
         if [ "$cfg_directMount" = "workspace" ]; then
             # In workspace mode, reusing an existing mount is fine
             # Just register this instance and continue
             echo "Mount point already exists at $mount_point. Reusin' it."
-            echo "$instance_id" >> "$mount_instance_file"
+            run bash -c "echo '$instance_id' >> '$mount_instance_file'"
             skip_mount=true
         elif [ "$cfg_directMount" = "project" ]; then
             # In project mode, mount point collision means another project is there
@@ -2014,14 +2241,16 @@ if [ "$skip_setup" = false ]; then
             # Workspace mode: mount entire source directory
             echo "Workspace mode: mountin' $cfg_source directly..."
             # Quote paths properly to handle spaces
-            if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source" "$mount_point"; then
-                echo "Now we got a problem. bindfs failed to mount."
-                echo "Check that bindfs is installed and $cfg_source exists."
-                exit 1
+            if ! run bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source" "$mount_point"; then
+                if [ "$dry_run" != true ]; then
+                    echo "Now we got a problem. bindfs failed to mount."
+                    echo "Check that bindfs is installed and $cfg_source exists."
+                    exit 1
+                fi
             fi
 
-            # Verify mount succeeded
-            if ! mountpoint -q "$mount_point" 2>/dev/null; then
+            # Verify mount succeeded (skip in dry-run)
+            if [ "$dry_run" != true ] && ! mountpoint -q "$mount_point" 2>/dev/null; then
                 echo "Somethin' went wrong. Mount point ain't there after bindfs."
                 echo "Check your permissions and try again."
                 exit 1
@@ -2030,21 +2259,23 @@ if [ "$skip_setup" = false ]; then
             echo "Mount successful."
 
             # Register this instance with the mount point tracker
-            echo "$instance_id" >> "$mount_instance_file"
+            run bash -c "echo '$instance_id' >> '$mount_instance_file'"
         fi
         # Note: if skip_mount=true, instance was already registered earlier
     elif [ "$cfg_directMount" = "project" ]; then
         # Project mode: mount only the specific project subdirectory
         echo "Project mode: mountin' $cfg_source/$start_subdir directly..."
         # Quote paths properly to handle spaces
-        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source/$start_subdir" "$mount_point"; then
-            echo "Now we got a problem. bindfs failed to mount."
-            echo "Check that bindfs is installed and $cfg_source/$start_subdir exists."
-            exit 1
+        if ! run bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source/$start_subdir" "$mount_point"; then
+            if [ "$dry_run" != true ]; then
+                echo "Now we got a problem. bindfs failed to mount."
+                echo "Check that bindfs is installed and $cfg_source/$start_subdir exists."
+                exit 1
+            fi
         fi
 
-        # Verify mount succeeded
-        if ! mountpoint -q "$mount_point" 2>/dev/null; then
+        # Verify mount succeeded (skip in dry-run)
+        if [ "$dry_run" != true ] && ! mountpoint -q "$mount_point" 2>/dev/null; then
             echo "Somethin' went wrong. Mount point ain't there after bindfs."
             echo "Check your permissions and try again."
             exit 1
@@ -2079,20 +2310,28 @@ if [ "$skip_setup" = false ]; then
 
         # Run initial sync, then ongoing sync as the original user
         # Pass command to bash to preserve quoting
-        su "$original_user" -c "bash -c '$unison_cmd_initial'" >/dev/null 2>&1
-        su "$original_user" -c "bash -c '$unison_cmd_ongoing -repeat $repeat_mode'" >/dev/null 2>&1 &
-        unison_pid=$!
-
-        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_sync" "$mount_point"; then
-            echo "Now we got a problem. bindfs failed to mount."
-            echo "Check that bindfs is installed and $cfg_sync exists."
-            # Kill unison since we're bailing
-            kill "$unison_pid" 2>/dev/null
-            exit 1
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] su $original_user -c \"bash -c '$unison_cmd_initial'\""
+            echo "[dry-run] su $original_user -c \"bash -c '$unison_cmd_ongoing -repeat $repeat_mode'\" &"
+            unison_pid="<PID>"
+        else
+            su "$original_user" -c "bash -c '$unison_cmd_initial'" >/dev/null 2>&1
+            su "$original_user" -c "bash -c '$unison_cmd_ongoing -repeat $repeat_mode'" >/dev/null 2>&1 &
+            unison_pid=$!
         fi
 
-        # Verify mount succeeded
-        if ! mountpoint -q "$mount_point" 2>/dev/null; then
+        if ! run bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_sync" "$mount_point"; then
+            if [ "$dry_run" != true ]; then
+                echo "Now we got a problem. bindfs failed to mount."
+                echo "Check that bindfs is installed and $cfg_sync exists."
+                # Kill unison since we're bailing
+                kill "$unison_pid" 2>/dev/null
+                exit 1
+            fi
+        fi
+
+        # Verify mount succeeded (skip in dry-run)
+        if [ "$dry_run" != true ] && ! mountpoint -q "$mount_point" 2>/dev/null; then
             echo "Somethin' went wrong. Mount point ain't there after bindfs."
             echo "Check your permissions and try again."
             kill "$unison_pid" 2>/dev/null
@@ -2100,7 +2339,7 @@ if [ "$skip_setup" = false ]; then
         fi
 
         # Write unison PID to file for cleanup (bindfs doesn't run as a daemon)
-        echo "$unison_pid" > "$pid_file"
+        run bash -c "echo '$unison_pid' > '$pid_file'"
     fi
 else
     # Verify mount point still exists
@@ -2113,14 +2352,20 @@ else
 fi
 
 # Register this instance
-echo "$instance_id" >> "$local_instance_file"
+run bash -c "echo '$instance_id' >> '$local_instance_file'"
 
 # In single-user mode, also register globally
 if [ -n "$global_instance_file" ]; then
-    echo "$instance_id" >> "$global_instance_file"
+    run bash -c "echo '$instance_id' >> '$global_instance_file'"
 fi
 
-if [ "$test_mode" = true ]; then
+if [ "$dry_run" = true ]; then
+    echo ""
+    echo "=== DRY-RUN COMPLETE ==="
+    echo "No changes were made. Above shows what would be executed."
+    echo ""
+    exit 0
+elif [ "$test_mode" = true ]; then
     echo ""
     echo "=== TEST MODE ==="
     echo "Alright, everything's ready. Switchin' you over to user '$cfg_user' so you can test things out."

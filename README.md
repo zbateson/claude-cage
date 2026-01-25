@@ -84,6 +84,8 @@ brew install unison bindfs lua macfuse
 
 **⚠️ macOS Warning:** Now I gotta be straight with you - macOS support ain't been tested yet. The code's there, but nobody's taken it for a spin on a Mac. You're flyin' blind on that one, friend. Use at your own risk and let us know if somethin' goes sideways.
 
+**Claude Code:** If Claude Code ain't installed for the cage user, don't worry - the script'll offer to install it for you using the official installer. Just say yes when it asks and we'll get you set up.
+
 ## Quick Start
 
 ### 1. Install

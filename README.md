@@ -111,6 +111,11 @@ claude_cage {
 }
 ```
 
+**Important:** If you run claude-cage from within your git repository, add to `.gitignore`:
+```
+.caged
+```
+
 **Direct mount mode** (for large collections without duplication):
 ```lua
 claude_cage {
@@ -119,6 +124,22 @@ claude_cage {
 }
 ```
 
+**Multi-project workspace** (shared parent directory with multiple projects):
+```lua
+-- claude-cage.config (shared settings)
+claude_cage {
+    excludeName = { ".env", "node_modules" },
+    belowPath = { ".git" }
+}
+```
+```lua
+-- backend.claude-cage.config
+claude_cage {
+    source = "backend"
+}
+```
+Then run: `sudo claude-cage backend`
+
 📖 **[Full Configuration Reference →](docs/configuration.md)**
 📖 **[Configuration Examples →](docs/examples.md)**
 
@@ -126,7 +147,8 @@ claude_cage {
 
 **Sync mode:**
 ```bash
-sudo claude-cage
+sudo claude-cage                  # Uses project name from config
+sudo claude-cage backend          # Uses backend.claude-cage.config (if exists)
 ```
 
 **Direct mount mode** (specify subdirectory to start in):

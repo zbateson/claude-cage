@@ -2,7 +2,7 @@
 
 ## Configuration Hierarchy
 
-claude-cage uses a three-tier configuration system that allows system-wide defaults, per-user preferences, and per-project settings.
+claude-cage uses a four-tier configuration system that allows system-wide defaults, per-user preferences, project workspace settings, and project-specific overrides.
 
 Configs are loaded in priority order (later overrides earlier):
 
@@ -15,11 +15,29 @@ Configs are loaded in priority order (later overrides earlier):
    - Overrides system defaults
 
 3. **Local config** (**required**): `./claude-cage.config`
-   - Project-specific settings
+   - Workspace-level settings (directory where claude-cage runs)
    - Must exist to run the script
+   - Overrides system and user configs
+
+4. **Project config** (optional): `projectname.claude-cage.config`
+   - Project-specific overrides
+   - Loaded when project name specified on command line
+   - Example: `backend.claude-cage.config` loaded when running `sudo claude-cage backend`
    - Overrides all other configs
 
 **Security note**: The local config is required to prevent accidentally running the script in unintended directories.
+
+### Multi-Project Workspaces
+
+For workspaces containing multiple projects:
+
+1. Create `claude-cage.config` with shared settings (common excludes, network rules)
+2. Create project-specific configs: `backend.claude-cage.config`, `frontend.claude-cage.config`
+3. Run with project name: `sudo claude-cage backend`
+
+The project name can come from either:
+- Command line argument (takes precedence): `sudo claude-cage backend`
+- The `project` field in `claude-cage.config`
 
 ### Merge Behavior
 
@@ -45,11 +63,20 @@ claude_cage {
 
 Project name used as identifier.
 
+- **Required**: Must be specified either in config file OR on command line
+- Command line takes precedence: `sudo claude-cage backend` overrides config
 - In sync mode: Used as default for `userAppend` and `sync` directory name
 - In direct mount mode: Used as identifier and for per-project username (if userMode = "per-project")
 
 ```lua
 project = "backend"
+```
+
+**Multi-project usage:**
+```bash
+# Omit from claude-cage.config, specify on command line
+sudo claude-cage backend    # Uses backend.claude-cage.config if exists
+sudo claude-cage frontend   # Uses frontend.claude-cage.config if exists
 ```
 
 ### user
@@ -146,25 +173,15 @@ source = "my-directory"
 
 Sync directory name (ignored in direct mount mode).
 
-- Default: Auto-generated from `project` or `source`
-- If not set and `project` is set: `syncPrepend + project`
-- If not set and no `project`: `syncPrepend + source`
+- Default: Auto-generated as `.caged/project-name/sync`
+- If not set and `project` is set: `.caged/project/sync`
+- If not set and no `project`: `.caged/source/sync`
 - Only used in sync mode
+- Structure: `.caged/project-name/sync` and `.caged/project-name/excludes-cache`
+- Add `.caged` to `.gitignore` if running from within a git repository
 
 ```lua
-sync = ".caged-myproject"
-```
-
-### syncPrepend
-
-Prefix for auto-generated sync directory name.
-
-- Default: `".caged-"`
-- Creates hidden directories (starting with `.`) to keep workspace clean
-- Only used in sync mode
-
-```lua
-syncPrepend = ".caged-"
+sync = ".caged/myproject/sync"  -- Only needed if you want to override default
 ```
 
 ### mountBase
@@ -365,6 +382,49 @@ claude_cage {
     allowedDomains = { "github.com:443", "api.company.com:443" },
     allowedIPs = { "10.0.0.50:5432" }
 }
+```
+
+### Multi-Project Workspace
+
+**claude-cage.config** (shared settings):
+```lua
+claude_cage {
+    -- No project specified - must provide on command line
+    -- source will be overridden by project configs
+
+    -- Shared excludes for all projects
+    excludeName = { ".env", "node_modules", "dist", ".DS_Store" },
+    belowPath = { ".git" },
+
+    -- Shared network restrictions
+    networkMode = "blocklist",
+    blockIPs = { "127.0.0.1" },
+    allowedIPs = { "127.0.0.1:5432" }  -- PostgreSQL for all projects
+}
+```
+
+**backend.claude-cage.config**:
+```lua
+claude_cage {
+    source = "backend",
+    -- Additional backend-specific excludes
+    excludeName = { "target", "*.class" }
+}
+```
+
+**frontend.claude-cage.config**:
+```lua
+claude_cage {
+    source = "frontend",
+    -- Frontend dev server allowed
+    allowedIPs = { "127.0.0.1:3000" }
+}
+```
+
+**Usage**:
+```bash
+sudo claude-cage backend   # Merges claude-cage.config + backend.claude-cage.config
+sudo claude-cage frontend  # Merges claude-cage.config + frontend.claude-cage.config
 ```
 
 ## Global Configuration

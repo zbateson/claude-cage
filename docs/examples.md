@@ -155,8 +155,8 @@ claude_cage {
     project = "my-web-app",
     source = "src",
 
-    excludePath = { ".env", "dist" },
-    belowPath = { "node_modules" }
+    excludeName = { ".env", "node_modules", "dist" },
+    belowPath = { ".git" }
 }
 ```
 
@@ -167,10 +167,10 @@ sudo ./claude-cage
 ```
 
 3. **File flow:**
-   - Claude works in `/home/claude/caged/`
+   - Claude works in `/home/claude/caged/my-web-app/`
    - Changes sync bidirectionally
-   - `./src` ↔ `./.caged-my-web-app` ↔ `/home/claude/caged/`
-   - Sync directory (`.caged-my-web-app`) is hidden
+   - `./src` ↔ `./.caged/my-web-app/sync` ↔ `/home/claude/caged/my-web-app/`
+   - Sync directory (`.caged/my-web-app/`) is hidden
 
 4. **Make changes with Claude Code**
 
@@ -427,10 +427,10 @@ After running in test mode or normal mode, check what's in the sync directory:
 
 ```bash
 # Should NOT contain excluded files
-ls -la .caged-myproject/
+ls -la .caged/myproject/sync/
 
 # Check for secrets
-grep -r "API_KEY" .caged-myproject/  # Should find nothing if excluded properly
+grep -r "API_KEY" .caged/myproject/sync/  # Should find nothing if excluded properly
 ```
 
 ### Test Network Rules

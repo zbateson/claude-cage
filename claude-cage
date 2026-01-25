@@ -88,7 +88,11 @@ if [ ! -f "$local_config" ]; then
 fi
 
 # Extract config values using Lua with multi-level loading
-lua_output=$(lua <<EOF 2>&1
+# Pass command-line argument to Lua
+lua_output=$(lua - "$source_arg" <<EOF 2>&1
+-- Get command-line project argument
+local cli_arg = arg[1] or ""
+
 -- Function to merge two tables (later overrides earlier)
 local function merge_config(base, override)
     local result = {}
@@ -152,10 +156,51 @@ for _, path in ipairs(config_files) do
     end
 end
 
--- Merge all configs
+-- Merge all configs loaded so far
 local config = {}
 for _, cfg in ipairs(configs) do
     config = merge_config(config, cfg)
+end
+
+-- Determine project name from CLI arg or config
+local project = cli_arg ~= "" and cli_arg or config.project or ""
+
+-- If project name is set (from CLI or config), try to load project-specific config
+if project ~= "" then
+    local project_config = project .. ".claude-cage.config"
+    local f = io.open(project_config, "r")
+    if f then
+        f:close()
+        -- Reset configs table to reload just the project config
+        local project_configs = {}
+        local old_claude_cage = claude_cage
+        function claude_cage(tbl)
+            table.insert(project_configs, tbl)
+        end
+
+        local success, err = pcall(function()
+            dofile(project_config)
+        end)
+
+        -- Restore original function
+        claude_cage = old_claude_cage
+
+        if not success then
+            io.stderr:write("Error loading project config file: " .. project_config .. "\n")
+            io.stderr:write(tostring(err) .. "\n")
+            os.exit(1)
+        end
+
+        -- Merge project-specific configs on top of main config
+        for _, cfg in ipairs(project_configs) do
+            config = merge_config(config, cfg)
+        end
+    end
+end
+
+-- Update project from CLI arg if provided (CLI arg takes precedence)
+if cli_arg ~= "" then
+    config.project = cli_arg
 end
 
 -- Set defaults
@@ -165,7 +210,6 @@ local userMode = config.userMode or "single"  -- Options: "single" or "per-proje
 local userAppend = config.userAppend or ""
 local source = config.source or ""
 local sync = config.sync or ""
-local syncPrepend = config.syncPrepend or ".caged-"
 local mountBase = config.mountBase or ""
 local mounted = config.mounted or ""
 local directMount = config.directMount or false
@@ -198,11 +242,12 @@ else
 end
 
 -- If sync is empty, determine from project or source
+-- Structure: .caged/project-name/sync
 if sync == "" then
     if project ~= "" then
-        sync = syncPrepend .. project
+        sync = ".caged/" .. project .. "/sync"
     elseif source ~= "" then
-        sync = syncPrepend .. source
+        sync = ".caged/" .. source .. "/sync"
     end
 end
 
@@ -255,7 +300,7 @@ if config.belowPath then
 end
 
 -- Output basic config (use | delimiter to preserve empty fields)
-print(user .. "|" .. source .. "|" .. sync .. "|" .. syncPrepend .. "|" .. mountBase .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner))
+print(user .. "|" .. source .. "|" .. sync .. "|" .. mountBase .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner))
 
 -- Output exclude patterns for validation (pipe-separated)
 local function array_to_string(arr)
@@ -305,7 +350,7 @@ fi
 
 # Parse the lua output (only if lua succeeded)
 {
-    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_syncPrepend cfg_mountBase cfg_mounted cfg_exclude cfg_showBanner
+    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_mountBase cfg_mounted cfg_exclude cfg_showBanner
     read -r cfg_excludePath
     read -r cfg_excludeName
     read -r cfg_excludeRegex
@@ -338,6 +383,7 @@ test_mode=false
 cleanup_mode=false
 source_arg=""
 start_subdir=""
+project_arg=""
 
 for arg in "$@"; do
     if [ "$arg" = "--test" ]; then
@@ -347,22 +393,16 @@ for arg in "$@"; do
     elif [ "$arg" = "--cleanup" ]; then
         cleanup_mode=true
     else
+        # Non-flag argument is either project name or subdirectory (depending on mode)
         source_arg="$arg"
     fi
 done
 
 # Handle command-line argument based on mode
-if [ -n "$source_arg" ]; then
-    if [ "$cfg_directMount" = "true" ]; then
-        # In directMount mode, argument is the subdirectory to start in
-        start_subdir="$source_arg"
-    else
-        # In sync mode, command-line arguments are not supported
-        echo "Hold on now. You can't pass a directory argument in sync mode."
-        echo "The source directory is set in the config file only."
-        echo "If you want to specify a starting directory, use directMount mode."
-        exit 1
-    fi
+# The argument was already processed by Lua as either project name or will be used as subdir
+if [ -n "$source_arg" ] && [ "$cfg_directMount" = "true" ]; then
+    # In directMount mode, argument is the subdirectory to start in
+    start_subdir="$source_arg"
 fi
 
 # In directMount mode, default source to current directory if not set
@@ -373,8 +413,9 @@ fi
 # Validate required config
 if [ -z "$cfg_project" ]; then
     echo "Listen to me very carefully now."
-    echo "You need to put a 'project' in that ./claude-cage.config file."
-    echo "Somethin' like: project = \"myproject\""
+    echo "You need to specify a project name either:"
+    echo "  1. In the claude-cage.config file: project = \"myproject\""
+    echo "  2. On the command line: sudo claude-cage myproject"
     echo "Can't proceed without it."
     exit 1
 fi
@@ -623,10 +664,6 @@ fi
 
 # Set computed values
 cfg_user="${cfg_user:-claude}"
-if [ -z "$cfg_sync" ]; then
-    cfg_syncPrepend="${cfg_syncPrepend:-claude-}"
-    cfg_sync="${cfg_syncPrepend}${cfg_source}"
-fi
 if [ -z "$cfg_mounted" ]; then
     cfg_mounted="$cfg_source"
 fi
@@ -746,12 +783,12 @@ else
     iptables_chain="CLAUDE_CAGE_${cfg_user}"
 fi
 
-# PID file to track running processes (local to this project directory)
-pid_file="claude-cage.pid"
+# PID file to track running processes (in .caged/project-name/)
+pid_file=".caged/$cfg_project/claude-cage.pid"
 
 # Instance tracking files
 # Local instance file (tracks instances of THIS project)
-local_instance_file="claude-cage.instances"
+local_instance_file=".caged/$cfg_project/claude-cage.instances"
 
 # Global instance file (tracks all projects for this user in single-user mode)
 if [[ "$cfg_user" == *"-"* ]]; then
@@ -1104,7 +1141,7 @@ setup_network_restrictions() {
 # Check for excluded files in sync directory (skip in directMount mode)
 # Only check patterns that changed since last run
 if [ "$cfg_directMount" != "true" ] && [ -d "$cfg_sync" ]; then
-    config_cache=".claude-cage-excludes.${cfg_project}"
+    config_cache=".caged/${cfg_project}/excludes-cache"
     current_excludes="${cfg_excludePath}|${cfg_excludeName}|${cfg_excludeRegex}|${cfg_belowPath}"
 
     # Check if exclude patterns changed since last run
@@ -1220,6 +1257,17 @@ if [ "$skip_setup" = false ]; then
     # Create mount point if it doesn't exist
     mkdir -p "$mount_point"
 
+    # Create .caged/project-name/ directory for instance/PID files
+    mkdir -p ".caged/$cfg_project"
+
+    # In sync mode, create sync directory and set ownership
+    if [ "$cfg_directMount" != "true" ]; then
+        mkdir -p "$cfg_sync"
+    fi
+
+    # Set ownership of .caged directory and everything under it to original user
+    chown -R "$original_user:$original_user" ".caged"
+
     # Check if mount point is already mounted (different project using same destination)
     if mountpoint -q "$mount_point" 2>/dev/null; then
         echo "Hold on now. That mount point's already in use."
@@ -1269,8 +1317,9 @@ if [ "$skip_setup" = false ]; then
         fi
 
         # Run initial sync, then ongoing sync as the original user
-        su -c "$unison_cmd_initial" "$original_user" >/dev/null 2>&1
-        su -c "$unison_cmd_ongoing -repeat $repeat_mode" "$original_user" >/dev/null 2>&1 &
+        # Pass command to bash to preserve quoting
+        su "$original_user" -c "bash -c '$unison_cmd_initial'" >/dev/null 2>&1
+        su "$original_user" -c "bash -c '$unison_cmd_ongoing -repeat $repeat_mode'" >/dev/null 2>&1 &
         unison_pid=$!
 
         bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"

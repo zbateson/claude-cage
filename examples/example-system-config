@@ -14,9 +14,6 @@ claude_cage {
     -- Most organizations should use single-user mode
     userMode = "single",
 
-    -- Sync directory prefix (default: ".caged-")
-    syncPrepend = ".caged-",
-
     -- ============================================================================
     -- ORGANIZATION-WIDE FILE EXCLUSIONS
     -- ============================================================================

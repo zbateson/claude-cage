@@ -272,7 +272,7 @@ tail -f /tmp/unison.log  # If logging enabled
 **Diagnosis:**
 ```bash
 # Check what's in sync directory
-ls -la .caged-myproject/
+ls -la .caged/myproject/sync/
 
 # Verify exclude patterns in config
 cat claude-cage.config
@@ -319,7 +319,7 @@ Conflict: file changed on both sides
 3. **Reset sync directory:**
    ```bash
    # Remove sync directory and let claude-cage recreate it
-   rm -rf .caged-myproject
+   rm -rf .caged/myproject
    sudo ./claude-cage
    ```
 
@@ -484,7 +484,7 @@ No space left on device
 1. **Check disk usage:**
    ```bash
    df -h
-   du -sh .caged-*
+   du -sh .caged/*/sync
    ```
 
 2. **Add more exclusions:**

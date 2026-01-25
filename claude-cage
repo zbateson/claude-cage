@@ -542,14 +542,15 @@ local userMode = config.userMode or "single"  -- Options: "single" or "per-proje
 local userAppend = config.userAppend or ""
 local source = config.source or ""
 local sync = config.sync or ""
-local mountBase = config.mountBase or ""
+local mountBase = config.mountBase  -- nil if not set, "" if explicitly empty
+local mountBaseExplicitlySet = config.mountBase ~= nil
 local mounted = config.mounted or ""
 local directMount = config.directMount or false
 local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
 
 -- If project is set and source is not, use project for source (sync mode only)
--- In direct mount mode, source should default to "." (handled in bash)
+-- In direct mount mode (workspace or project), source handling differs
 if project ~= "" and source == "" and not directMount then
     source = project
 end
@@ -583,9 +584,11 @@ if sync == "" then
     end
 end
 
--- Set mountBase default
-if mountBase == "" then
+-- Set mountBase default (only if not explicitly set in config)
+if not mountBaseExplicitlySet then
     mountBase = "caged"
+elseif mountBase == nil then
+    mountBase = ""
 end
 
 -- Set mounted default to project name
@@ -661,7 +664,7 @@ print(array_to_string(config.blockNetworks))
 -- Output project for validation
 print(project)
 
--- Output directMount setting
+-- Output directMount setting (false, "workspace", or "project")
 print(tostring(directMount))
 EOF
 )
@@ -713,6 +716,8 @@ fi
 # Parse command line arguments
 test_mode=false
 cleanup_mode=false
+claude_continue=false
+claude_resume=false
 source_arg=""
 start_subdir=""
 project_arg=""
@@ -724,6 +729,10 @@ for arg in "$@"; do
         cfg_showBanner="false"
     elif [ "$arg" = "--cleanup" ]; then
         cleanup_mode=true
+    elif [ "$arg" = "--continue" ]; then
+        claude_continue=true
+    elif [ "$arg" = "--resume" ]; then
+        claude_resume=true
     else
         # Non-flag argument is either project name or subdirectory (depending on mode)
         source_arg="$arg"
@@ -732,13 +741,13 @@ done
 
 # Handle command-line argument based on mode
 # The argument was already processed by Lua as either project name or will be used as subdir
-if [ -n "$source_arg" ] && [ "$cfg_directMount" = "true" ]; then
-    # In directMount mode, argument is the subdirectory to start in
+if [ -n "$source_arg" ] && [ "$cfg_directMount" = "workspace" -o "$cfg_directMount" = "project" ]; then
+    # In directMount mode, argument is the subdirectory/project to work in
     start_subdir="$source_arg"
 fi
 
 # In directMount mode, default source to current directory if not set
-if [ "$cfg_directMount" = "true" ] && [ -z "$cfg_source" ]; then
+if [ "$cfg_directMount" = "workspace" -o "$cfg_directMount" = "project" ] && [ -z "$cfg_source" ]; then
     cfg_source="."
 fi
 
@@ -759,6 +768,11 @@ fi
 pid_file=".caged/$cfg_project/claude-cage.pid"
 local_instance_file=".caged/$cfg_project/claude-cage.instances"
 
+# For direct mount mode, we track instances by mount point (not project)
+# This allows multiple projects under the same mount to share it
+# The mount point instance file is stored in the user's home directory
+# (will be set after user_home is determined)
+
 if [ -z "$cfg_source" ]; then
     echo "Hold on. Where's the source directory?"
     echo "I need that specified in the config or on the command line."
@@ -771,10 +785,10 @@ if [ ! -d "$cfg_source" ]; then
     exit 1
 fi
 
-# In directMount mode, require a starting subdirectory
-if [ "$cfg_directMount" = "true" ]; then
+# In directMount mode, require a starting subdirectory/project
+if [ "$cfg_directMount" = "workspace" ] || [ "$cfg_directMount" = "project" ]; then
     if [ -z "$start_subdir" ]; then
-        echo "Hold on now. In direct mount mode, you gotta tell me which project to start in."
+        echo "Hold on now. In direct mount mode, you gotta tell me which project to work in."
         echo "Run it like: sudo claude-cage <subdirectory>"
         echo "For example: sudo claude-cage my-project"
         exit 1
@@ -929,11 +943,15 @@ echo ""
 echo "Configuration:"
 echo "  Project:       $cfg_project"
 echo "  User:          $cfg_user"
-if [ "$cfg_directMount" = "true" ]; then
-    echo "  Mode:          Direct mount (no sync)"
+if [ "$cfg_directMount" = "workspace" ]; then
+    echo "  Mode:          Direct mount (workspace - access to sibling projects)"
+    echo "  Source:        $cfg_source"
     if [ -n "$start_subdir" ]; then
         echo "  Start dir:     $start_subdir"
     fi
+elif [ "$cfg_directMount" = "project" ]; then
+    echo "  Mode:          Direct mount (project only)"
+    echo "  Source:        $cfg_source/$start_subdir"
 else
     echo "  Mode:          Sync mode"
     echo "  Source:        $cfg_source"
@@ -1159,9 +1177,9 @@ fi
 # Prompt to continue if user wasn't already prompted during user creation
 if [ "$user_was_prompted" = "false" ]; then
     echo ""
-    read -p "Ready to proceed? [Y/n] " -n 1 -r -s key
+    read -p "Ready to proceed? [Y/n] " -n 1 -r key
     echo
-    if [[ "$key" == $'\e' ]] || [[ $key =~ ^[Nn]$ ]]; then
+    if [[ $key =~ ^[Nn]$ ]]; then
         echo "Alright, abortin' the mission."
         exit 0
     fi
@@ -1241,10 +1259,44 @@ if ! check_claude_installed "$cfg_user" "$user_home"; then
 fi
 
 # Construct mount point: /home/<user>/<mountBase>/<mounted>/ or /home/<user>/<mounted>/
-if [ -n "$cfg_mountBase" ]; then
-    mount_point="$user_home/${cfg_mountBase}/${cfg_mounted}"
+# In workspace mode, use source directory basename or "workspace" if source is "."
+# In project mode, use the project/subdirectory name
+if [ "$cfg_directMount" = "workspace" ]; then
+    # Workspace mode: mounted name based on source directory
+    if [ "$cfg_source" = "." ]; then
+        workspace_name=$(basename "$(pwd)")
+    else
+        workspace_name=$(basename "$cfg_source")
+    fi
+    if [ -n "$cfg_mountBase" ]; then
+        mount_point="$user_home/${cfg_mountBase}/${workspace_name}"
+    else
+        mount_point="$user_home/${workspace_name}"
+    fi
+elif [ "$cfg_directMount" = "project" ]; then
+    # Project mode: mounted name is the project subdirectory
+    if [ -n "$cfg_mountBase" ]; then
+        mount_point="$user_home/${cfg_mountBase}/${start_subdir}"
+    else
+        mount_point="$user_home/${start_subdir}"
+    fi
 else
-    mount_point="$user_home/${cfg_mounted}"
+    # Sync mode: use configured mounted name
+    if [ -n "$cfg_mountBase" ]; then
+        mount_point="$user_home/${cfg_mountBase}/${cfg_mounted}"
+    else
+        mount_point="$user_home/${cfg_mounted}"
+    fi
+fi
+
+# For workspace direct mount mode, track instances by mount point instead of project
+# This allows multiple subdirectories under the same mount to share it
+if [ "$cfg_directMount" = "workspace" ]; then
+    # Create a safe filename from mount point path
+    mount_point_hash=$(echo "$mount_point" | md5sum | cut -d' ' -f1)
+    mount_instance_file="$user_home/.claude-cage-mount-$mount_point_hash"
+else
+    mount_instance_file=""
 fi
 
 # Track iptables chain name for cleanup
@@ -1273,7 +1325,34 @@ cleanup() {
     echo ""
     echo "Alright, shuttin' down operations..."
 
-    # Remove this instance from the local instance file
+    # For workspace direct mount mode, track by mount point instead of project
+    # This ensures we only unmount when the last instance using that mount exits
+    should_unmount=true
+
+    if [ "$cfg_directMount" = "workspace" ] && [ -n "$mount_instance_file" ] && [ -f "$mount_instance_file" ]; then
+        # Remove this instance from mount point tracker
+        sed -i "/^$instance_id$/d" "$mount_instance_file"
+
+        # Check if other instances are still using this mount point
+        remaining_mount=()
+        while IFS= read -r inst_id; do
+            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
+                remaining_mount+=("$inst_id")
+            fi
+        done < "$mount_instance_file"
+
+        if [ ${#remaining_mount[@]} -gt 0 ]; then
+            echo "Other instances still usin' mount point (${remaining_mount[*]}). Leavin' it mounted."
+            # Update instance file to remove dead instances
+            printf "%s\n" "${remaining_mount[@]}" > "$mount_instance_file"
+            should_unmount=false
+        else
+            # Last instance using this mount, clean up the instance file
+            rm -f "$mount_instance_file"
+        fi
+    fi
+
+    # Remove this instance from the local instance file (project tracking)
     if [ -f "$local_instance_file" ]; then
         sed -i "/^$instance_id$/d" "$local_instance_file"
 
@@ -1321,7 +1400,7 @@ cleanup() {
             # Update global instance file to remove dead instances
             printf "%s\n" "${remaining_global[@]}" > "$global_instance_file"
 
-            # Clean up local processes and mount
+            # Clean up local processes and mount (only if we should unmount)
             if [ -f "$pid_file" ]; then
                 echo "Stoppin' processes from $pid_file..."
                 while IFS= read -r pid; do
@@ -1332,7 +1411,7 @@ cleanup() {
                 rm -f "$pid_file"
             fi
 
-            if mountpoint -q "$mount_point" 2>/dev/null; then
+            if [ "$should_unmount" = "true" ] && mountpoint -q "$mount_point" 2>/dev/null; then
                 echo "Unmountin' $mount_point..."
                 umount -l "$mount_point" 2>/dev/null
             fi
@@ -1359,8 +1438,8 @@ cleanup() {
         rm -f "$pid_file"
     fi
 
-    # Unmount the bindfs mount
-    if mountpoint -q "$mount_point" 2>/dev/null; then
+    # Unmount the bindfs mount (only if we should)
+    if [ "$should_unmount" = "true" ] && mountpoint -q "$mount_point" 2>/dev/null; then
         echo "Unmountin' $mount_point..."
         umount -l "$mount_point" 2>/dev/null
     fi
@@ -1578,7 +1657,7 @@ setup_network_restrictions() {
 
 # Check for excluded files in sync directory (skip in directMount mode)
 # Only check patterns that changed since last run
-if [ "$cfg_directMount" != "true" ] && [ -d "$cfg_sync" ]; then
+if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] && [ -d "$cfg_sync" ]; then
     config_cache=".caged/${cfg_project}/excludes-cache"
     current_excludes="${cfg_excludePath}|${cfg_excludeName}|${cfg_excludeRegex}|${cfg_belowPath}"
 
@@ -1699,37 +1778,93 @@ if [ "$skip_setup" = false ]; then
     mkdir -p ".caged/$cfg_project"
 
     # In sync mode, create sync directory and set ownership
-    if [ "$cfg_directMount" != "true" ]; then
+    if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
         mkdir -p "$cfg_sync"
     fi
 
     # Set ownership of .caged directory and everything under it to original user
     chown -R "$original_user:$original_user" ".caged"
 
-    # Check if mount point is already mounted (different project using same destination)
+    # Check if mount point is already mounted
     if mountpoint -q "$mount_point" 2>/dev/null; then
-        echo "Hold on now. That mount point's already in use."
-        echo "Location: $mount_point"
-        echo ""
-        echo "Looks like another project's already mounted there."
-        echo "Either that project's still runnin', or cleanup didn't happen."
-        echo ""
-        echo "Try one of these:"
-        echo "  1. Set a different 'mounted' name in your config"
-        echo "  2. Run: sudo claude-cage --cleanup (if old instance is dead)"
-        echo "  3. Check what's mounted: mount | grep $mount_point"
-        exit 1
+        if [ "$cfg_directMount" = "workspace" ]; then
+            # In workspace mode, reusing an existing mount is fine
+            # Just register this instance and continue
+            echo "Mount point already exists at $mount_point. Reusin' it."
+            echo "$instance_id" >> "$mount_instance_file"
+            skip_mount=true
+        elif [ "$cfg_directMount" = "project" ]; then
+            # In project mode, mount point collision means another project is there
+            echo "Hold on now. That mount point's already in use."
+            echo "Location: $mount_point"
+            echo ""
+            echo "Another project's already mounted there."
+            echo "Either that project's still runnin', or cleanup didn't happen."
+            echo ""
+            echo "Try one of these:"
+            echo "  1. Run: sudo claude-cage --cleanup (if old instance is dead)"
+            echo "  2. Check what's mounted: mount | grep $mount_point"
+            exit 1
+        else
+            # In sync mode, an existing mount is a problem
+            echo "Hold on now. That mount point's already in use."
+            echo "Location: $mount_point"
+            echo ""
+            echo "Looks like another project's already mounted there."
+            echo "Either that project's still runnin', or cleanup didn't happen."
+            echo ""
+            echo "Try one of these:"
+            echo "  1. Set a different 'mounted' name in your config"
+            echo "  2. Run: sudo claude-cage --cleanup (if old instance is dead)"
+            echo "  3. Check what's mounted: mount | grep $mount_point"
+            exit 1
+        fi
+    else
+        skip_mount=false
     fi
 
-    if [ "$cfg_directMount" = "true" ]; then
-        # Direct mount mode: skip unison, mount source directly
-        echo "Direct mount mode: mountin' $cfg_source directly..."
-        # Quote paths properly to handle spaces
-        bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_source" "$mount_point"
-        bindfs_pid=$!
+    if [ "$cfg_directMount" = "workspace" ]; then
+        if [ "$skip_mount" = "false" ]; then
+            # Workspace mode: mount entire source directory
+            echo "Workspace mode: mountin' $cfg_source directly..."
+            # Quote paths properly to handle spaces
+            if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_source" "$mount_point"; then
+                echo "Now we got a problem. bindfs failed to mount."
+                echo "Check that bindfs is installed and $cfg_source exists."
+                exit 1
+            fi
 
-        # Write only bindfs PID to file
-        echo "$bindfs_pid" > "$pid_file"
+            # Verify mount succeeded
+            if ! mountpoint -q "$mount_point" 2>/dev/null; then
+                echo "Somethin' went wrong. Mount point ain't there after bindfs."
+                echo "Check your permissions and try again."
+                exit 1
+            fi
+
+            echo "Mount successful."
+
+            # Register this instance with the mount point tracker
+            echo "$instance_id" >> "$mount_instance_file"
+        fi
+        # Note: if skip_mount=true, instance was already registered earlier
+    elif [ "$cfg_directMount" = "project" ]; then
+        # Project mode: mount only the specific project subdirectory
+        echo "Project mode: mountin' $cfg_source/$start_subdir directly..."
+        # Quote paths properly to handle spaces
+        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_source/$start_subdir" "$mount_point"; then
+            echo "Now we got a problem. bindfs failed to mount."
+            echo "Check that bindfs is installed and $cfg_source/$start_subdir exists."
+            exit 1
+        fi
+
+        # Verify mount succeeded
+        if ! mountpoint -q "$mount_point" 2>/dev/null; then
+            echo "Somethin' went wrong. Mount point ain't there after bindfs."
+            echo "Check your permissions and try again."
+            exit 1
+        fi
+
+        echo "Mount successful."
     else
         # Sync mode: use unison + bindfs
         # Build unison command with exclude options
@@ -1762,14 +1897,24 @@ if [ "$skip_setup" = false ]; then
         su "$original_user" -c "bash -c '$unison_cmd_ongoing -repeat $repeat_mode'" >/dev/null 2>&1 &
         unison_pid=$!
 
-        bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"
-        bindfs_pid=$!
+        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"; then
+            echo "Now we got a problem. bindfs failed to mount."
+            echo "Check that bindfs is installed and $cfg_sync exists."
+            # Kill unison since we're bailing
+            kill "$unison_pid" 2>/dev/null
+            exit 1
+        fi
 
-        # Write PIDs to file for cleanup
-        {
-            echo "$unison_pid"
-            echo "$bindfs_pid"
-        } > "$pid_file"
+        # Verify mount succeeded
+        if ! mountpoint -q "$mount_point" 2>/dev/null; then
+            echo "Somethin' went wrong. Mount point ain't there after bindfs."
+            echo "Check your permissions and try again."
+            kill "$unison_pid" 2>/dev/null
+            exit 1
+        fi
+
+        # Write unison PID to file for cleanup (bindfs doesn't run as a daemon)
+        echo "$unison_pid" > "$pid_file"
     fi
 else
     # Verify mount point still exists
@@ -1793,36 +1938,40 @@ if [ "$test_mode" = true ]; then
     echo ""
     echo "=== TEST MODE ==="
     echo "Alright, everything's ready. Switchin' you over to user '$cfg_user' so you can test things out."
-    if [ "$cfg_directMount" = "true" ] && [ -n "$start_subdir" ]; then
-        if [ -n "$cfg_mountBase" ]; then
-            echo "Your files are mounted at: ~/$cfg_mountBase/$cfg_mounted"
-        else
-            echo "Your files are mounted at: ~/$cfg_mounted"
-        fi
+    if [ "$cfg_directMount" = "workspace" ]; then
+        echo "Your files are mounted at: $mount_point"
         echo "Startin' you in subdirectory: $start_subdir"
-        echo "When you're done pokin' around, type 'exit' and we'll clean up."
+        echo "You can access sibling projects from the mount root."
+    elif [ "$cfg_directMount" = "project" ]; then
+        echo "Your files are mounted at: $mount_point"
+        echo "Only this project is accessible (no sibling projects)."
     else
-        if [ -n "$cfg_mountBase" ]; then
-            echo "Your files are mounted at: ~/$cfg_mountBase/$cfg_mounted"
-            echo "Just 'cd $cfg_mountBase/$cfg_mounted' to get to 'em."
-        else
-            echo "Your files are mounted at: ~/$cfg_mounted"
-            echo "Just 'cd $cfg_mounted' to get to 'em."
-        fi
-        echo "When you're done pokin' around, type 'exit' and we'll clean up."
+        echo "Your files are mounted at: $mount_point"
     fi
+    echo "When you're done pokin' around, type 'exit' and we'll clean up."
     echo "================="
     echo ""
     su - "$cfg_user"
     exit_code=$?
 else
+    # Build claude command with optional flags
+    claude_cmd="claude"
+    if [ "$claude_continue" = true ]; then
+        claude_cmd="claude --continue"
+    elif [ "$claude_resume" = true ]; then
+        claude_cmd="claude --resume"
+    fi
+
     # Run Claude as the caged user in the mounted directory
-    if [ "$cfg_directMount" = "true" ] && [ -n "$start_subdir" ]; then
-        # In directMount mode, start in the specified subdirectory
-        su - "$cfg_user" -c "cd $mount_point/$start_subdir && claude"
+    if [ "$cfg_directMount" = "workspace" ]; then
+        # Workspace mode: start in the specified subdirectory within the mount
+        su - "$cfg_user" -c "cd \"$mount_point/$start_subdir\" && $claude_cmd"
+    elif [ "$cfg_directMount" = "project" ]; then
+        # Project mode: start at the mount point root (which is the project dir)
+        su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
     else
-        # In sync mode, start in the mount point root
-        su - "$cfg_user" -c "cd $mount_point && claude"
+        # Sync mode: start in the mount point root
+        su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
     fi
     exit_code=$?
 fi

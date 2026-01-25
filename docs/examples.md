@@ -190,24 +190,39 @@ sudo ./claude-cage
 1. **Set up for a collection of projects** (`claude-cage.config` in `/home/user/Projects/public/`):
 
 ```lua
+-- Workspace mode: Claude can access sibling projects
 claude_cage {
     project = "public-projects",
-    directMount = true
+    directMount = "workspace"
+}
+
+-- Or project mode: Claude isolated to one project
+claude_cage {
+    project = "my-web-app",
+    directMount = "project"
 }
 ```
 
-2. **Run claude-cage, specify which project to start in**:
+2. **Run claude-cage, specify which project to work in**:
 
 ```bash
 cd ~/Projects/public
 sudo claude-cage my-web-app
 ```
 
-3. **File flow:**
-   - Claude starts in `/home/claude/public/my-web-app`
+3. **File flow (workspace mode):**
+   - Mount point: `/home/claude/caged/public/`
+   - Claude starts in `/home/claude/caged/public/my-web-app`
    - Changes happen directly to `~/Projects/public/my-web-app`
    - No sync, no duplication
-   - Claude can access other projects in `~/Projects/public/` if needed
+   - Claude can access other projects in the mount via `cd ..`
+
+3. **File flow (project mode):**
+   - Mount point: `/home/claude/caged/my-web-app/`
+   - Claude starts at mount root (the project directory)
+   - Changes happen directly to `~/Projects/public/my-web-app`
+   - No sync, no duplication
+   - Claude cannot access sibling projects
 
 4. **Make changes with Claude Code**
 

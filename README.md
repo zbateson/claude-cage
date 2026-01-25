@@ -129,11 +129,19 @@ claude_cage {
 .caged
 ```
 
-**Direct mount mode** (for large collections - no copying, no syncing):
+**Direct mount - workspace mode** (mount entire directory, access sibling projects):
 ```lua
 claude_cage {
     project = "public-projects",
-    directMount = true
+    directMount = "workspace"
+}
+```
+
+**Direct mount - project mode** (mount only the specified project):
+```lua
+claude_cage {
+    project = "my-project",
+    directMount = "project"
 }
 ```
 
@@ -175,6 +183,12 @@ sudo claude-cage my-project       # Argument is subdirectory to start in (projec
 **Test mode** (verify setup without launching Claude):
 ```bash
 sudo claude-cage --test
+```
+
+**Resume previous conversation**:
+```bash
+sudo claude-cage --continue  # Resume most recent conversation
+sudo claude-cage --resume    # Pick from conversation list
 ```
 
 That's it. Clean and simple.
@@ -344,9 +358,19 @@ claude_cage {
 ### Direct Mount Mode (Large Collections)
 
 ```lua
+-- Workspace mode: Claude can access sibling projects
 claude_cage {
     project = "open-source",
-    directMount = true,
+    directMount = "workspace",
+
+    networkMode = "blocklist",
+    blockNetworks = { "192.168.1.0/24" }
+}
+
+-- Project mode: Claude isolated to one project
+claude_cage {
+    project = "my-project",
+    directMount = "project",
 
     networkMode = "blocklist",
     blockNetworks = { "192.168.1.0/24" }

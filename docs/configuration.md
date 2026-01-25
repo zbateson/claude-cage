@@ -137,14 +137,19 @@ userAppend = "custom"  -- Creates user "claude-custom"
 
 ### directMount
 
-Enable direct mount mode.
+Mount mode selection.
 
 - Default: `false`
-- `false`: Sync mode - creates sync directory with unison
-- `true`: Direct mount mode - mounts source directly without syncing
+- `false`: Sync mode - creates sync directory with unison, enables file exclusion
+- `"workspace"`: Direct mount - mounts entire source directory, Claude can access sibling projects
+- `"project"`: Direct mount - mounts only the specified project subdirectory, no sibling access
+
+In both direct mount modes, the command-line argument specifies the project to work in (required).
 
 ```lua
-directMount = false  -- Use sync mode (default)
+directMount = false       -- Sync mode (default)
+directMount = "workspace" -- Mount entire source, access siblings
+directMount = "project"   -- Mount only the project, isolated
 ```
 
 ## Directory Options
@@ -343,14 +348,33 @@ claude_cage {
 }
 ```
 
-### Direct Mount Mode
+### Direct Mount - Workspace Mode
+
+Mount entire directory, Claude can access sibling projects:
 
 ```lua
 claude_cage {
     project = "public-projects",
-    directMount = true,
+    directMount = "workspace",
     source = ".",
-    mounted = "public",
+    -- Mount point name derived from source directory basename
+
+    -- Network restrictions (optional)
+    networkMode = "blocklist",
+    blockIPs = { "169.254.169.254" }  -- Block AWS metadata
+}
+```
+
+### Direct Mount - Project Mode
+
+Mount only the specified project, no sibling access:
+
+```lua
+claude_cage {
+    project = "my-project",
+    directMount = "project",
+    source = ".",
+    -- Mount point name is the project subdirectory name
 
     -- Network restrictions (optional)
     networkMode = "blocklist",

@@ -502,7 +502,11 @@ No space left on device
 
 3. **Switch to direct mount mode:**
    ```lua
-   directMount = true  -- No sync, no duplication
+   -- Workspace mode: access sibling projects
+   directMount = "workspace"  -- No sync, no duplication
+
+   -- Or project mode: isolated to one project
+   directMount = "project"  -- No sync, no duplication
    ```
 
 ### Permission mismatch in source

@@ -6,68 +6,67 @@
 
 ```lua
 -- Build artifacts by name (matches anywhere in tree)
-excludeName = { "target", "build", "dist", "out" }
+exclude = { name = { "target", "build", "dist", "out" } }
 ```
 
 ### Secrets and Credentials
 
 ```lua
 -- Secret files by name (matches anywhere)
-excludeName = { ".env", "credentials.json", "secrets.json", "secrets" }
+exclude = { name = { ".env", "credentials.json", "secrets.json", "secrets" } }
 ```
 
 ### IDE and Editor Files
 
 ```lua
-excludeName = { ".idea", ".vscode" }
+exclude = { name = { ".idea", ".vscode" } }
 ```
 
 ### Temporary Files
 
 ```lua
 -- Temporary files by name anywhere in the tree
-excludeName = { "*.tmp", "*.swp", ".DS_Store", "*~" }
+exclude = { name = { "*.tmp", "*.swp", ".DS_Store", "*~" } }
 ```
 
 ### Large Dependency Folders
 
 ```lua
 -- Exclude by name (matches anywhere in the tree)
--- Use excludeName, not belowPath, for directories that can appear in subdirectories
-excludeName = { "node_modules", "vendor", ".venv", "target", "__pycache__" }
+-- Use exclude.name, not exclude.belowPath, for directories that can appear in subdirectories
+exclude = { name = { "node_modules", "vendor", ".venv", "target", "__pycache__" } }
 ```
 
 ### Log Files
 
 ```lua
 -- Log files using regex
-excludeRegex = { ".*\\.log$", ".*\\.log\\..*" }
+exclude = { regex = { ".*\\.log$", ".*\\.log\\..*" } }
 ```
 
 ### Comprehensive Example
 
 ```lua
 claude_cage {
-    project = "my-app",
+    -- project is derived from directory structure
 
-    excludePath = {
-        "target",
-        ".env",
-        "src/main/resources/application-local.properties"
-    },
-
-    excludeName = {
-        "*.tmp",
-        ".DS_Store",
-        "node_modules"  -- Use excludeName for dirs that can appear anywhere
-    },
-
-    belowPath = {
-        ".git"  -- Use belowPath for root-level directories only
-    },
-
-    excludeRegex = {
-        ".*\\.log$"
+    exclude = {
+        path = {
+            "src/main/resources/application-local.properties"  -- Specific path from root
+        },
+        name = {
+            ".env",         -- Can appear anywhere
+            "target",       -- Build output can appear anywhere
+            "*.tmp",
+            ".DS_Store",
+            "node_modules"  -- Use exclude.name for dirs that can appear anywhere
+        },
+        belowPath = {
+            ".git"  -- Use belowPath for root-level directories only
+        },
+        regex = {
+            ".*\\.log$"
+        }
     }
 }
 ```
@@ -88,7 +87,7 @@ git reflog
 
 1. **Exclude `.git`** (default in example configs)
    ```lua
-   belowPath = { ".git" }
+   exclude = { belowPath = { ".git" } }
    ```
    - **Pro:** Git history is completely inaccessible to Claude
    - **Pro:** Faster sync (no git objects to scan)
@@ -126,26 +125,31 @@ git reflog
 Build processes can copy excluded files to different locations. Exclude both the source and the output.
 
 ```lua
-excludePath = {
-    ".env",                    -- Source secret file
-    "dist",                    -- Build output that might contain copied secrets
-    "build",                   -- Another common build output
-    "public/config"            -- Bundled config that might include secrets
+exclude = {
+    name = {
+        ".env",                    -- Source secret file (can appear anywhere)
+        "dist",                    -- Build output that might contain copied secrets
+        "build"                    -- Another common build output
+    },
+    path = {
+        "public/config"            -- Specific bundled config path
+    }
 }
 ```
 
 ### Docker Project
 
 ```lua
-excludePath = {
-    ".env",
-    "secrets/",
-    "docker-compose.override.yml"
-},
-
-belowPath = {
-    "dist",                    -- Exclude entire build output
-    ".docker"                  -- Docker build context might copy secrets
+exclude = {
+    path = {
+        "secrets/",
+        "docker-compose.override.yml"
+    },
+    name = {
+        ".env",                    -- Can appear anywhere
+        "dist",                    -- Build output (can appear anywhere)
+        ".docker"                  -- Docker build context might copy secrets
+    }
 }
 ```
 
@@ -155,33 +159,34 @@ belowPath = {
 
 **Scenario:** Working on a web application with sensitive environment files.
 
-1. **Configure your project** (`claude-cage.config`):
+1. **Configure your project** (`claude-cage.config` in parent directory):
 
 ```lua
 claude_cage {
-    project = "my-web-app",
-    source = "src",
-
-    excludeName = { ".env", "node_modules", "dist" },
-    belowPath = { ".git" }
+    -- project is derived from directory structure
+    exclude = {
+        name = { ".env", "node_modules", "dist" },
+        belowPath = { ".git" }
+    }
 }
 ```
 
-2. **Run claude-cage**:
+2. **Run claude-cage from project subdirectory**:
 
 ```bash
-sudo ./claude-cage
+cd ~/Projects/my-web-app
+sudo claude-cage
 ```
 
 3. **File flow:**
    - Claude works in `/home/claude/caged/my-web-app/`
    - Changes sync bidirectionally
-   - `./src` ↔ `./.caged/my-web-app/sync` ↔ `/home/claude/caged/my-web-app/`
+   - `~/Projects/my-web-app` ↔ `.caged/my-web-app/sync` ↔ `/home/claude/caged/my-web-app/`
    - Sync directory (`.caged/my-web-app/`) is hidden
 
 4. **Make changes with Claude Code**
 
-5. **Changes automatically appear in `./src`**
+5. **Changes automatically appear in `~/Projects/my-web-app`**
 
 ### Direct Mount Mode Workflow
 
@@ -192,13 +197,11 @@ sudo ./claude-cage
 ```lua
 -- Workspace mode: Claude can access sibling projects
 claude_cage {
-    project = "public-projects",
     directMount = "workspace"
 }
 
 -- Or project mode: Claude isolated to one project
 claude_cage {
-    project = "my-web-app",
     directMount = "project"
 }
 ```
@@ -234,11 +237,10 @@ sudo claude-cage my-web-app
 
 ```lua
 claude_cage {
-    project = "nodejs-app",
-    source = ".",
-
-    excludeName = { ".env", "*.log", "node_modules", "dist", "build" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "*.log", "node_modules", "dist", "build" },
+        belowPath = { ".git" }
+    },
 
     networkMode = "blocklist",
     blockIPs = { "127.0.0.1" },
@@ -250,11 +252,10 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "python-app",
-    source = ".",
-
-    excludeName = { ".env", "credentials.json", "*.pyc", "*.pyo", ".venv", "__pycache__", ".pytest_cache" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "credentials.json", "*.pyc", "*.pyo", ".venv", "__pycache__", ".pytest_cache" },
+        belowPath = { ".git" }
+    },
 
     networkMode = "blocklist",
     blockNetworks = { "192.168.1.0/24" }
@@ -265,19 +266,17 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "java-app",
-    source = ".",
-
-    -- Wildcards work in excludeName
-    excludeName = {
-        "application-*.properties",
-        "application-*.yml",
-        "*.class",
-        "target",
-        ".m2"
-    },
-
-    belowPath = { ".git" }
+    exclude = {
+        -- Wildcards work in exclude.name
+        name = {
+            "application-*.properties",
+            "application-*.yml",
+            "*.class",
+            "target",
+            ".m2"
+        },
+        belowPath = { ".git" }
+    }
 }
 ```
 
@@ -285,11 +284,10 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "rust-app",
-    source = ".",
-
-    excludeName = { "*.rlib", "*.rmeta", "target" },
-    belowPath = { ".git" }
+    exclude = {
+        name = { "*.rlib", "*.rmeta", "target" },
+        belowPath = { ".git" }
+    }
 }
 ```
 
@@ -297,23 +295,21 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "monorepo",
-    source = ".",
-
-    excludeName = {
-        ".env",
-        "*.pyc",
-        "*.class",
-        ".DS_Store",
-        "node_modules",        -- JavaScript
-        ".venv",               -- Python
-        "target",              -- Rust/Java
-        "vendor",              -- PHP/Go
-        "dist",                -- Build output
-        "build"                -- Build output
-    },
-
-    belowPath = { ".git" }
+    exclude = {
+        name = {
+            ".env",
+            "*.pyc",
+            "*.class",
+            ".DS_Store",
+            "node_modules",        -- JavaScript
+            ".venv",               -- Python
+            "target",              -- Rust/Java
+            "vendor",              -- PHP/Go
+            "dist",                -- Build output
+            "build"                -- Build output
+        },
+        belowPath = { ".git" }
+    }
 }
 ```
 
@@ -321,23 +317,22 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "secure-project",
     userMode = "per-project",
-    source = "src",
 
     -- Aggressive file exclusions
-    excludePath = {
-        ".env",
-        "secrets/",
-        "credentials/",
-        "config/production.yml"
-    },
-
-    excludeName = {
-        "*secret*",
-        "*credential*",
-        "*.key",
-        "*.pem"
+    exclude = {
+        path = {
+            "secrets/",
+            "credentials/",
+            "config/production.yml"
+        },
+        name = {
+            ".env",           -- Can appear anywhere
+            "*secret*",
+            "*credential*",
+            "*.key",
+            "*.pem"
+        }
     },
 
     -- Strict network allowlist
@@ -353,11 +348,10 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "fullstack-app",
-    source = ".",
-
-    excludeName = { ".env", "node_modules", "dist" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "node_modules", "dist" },
+        belowPath = { ".git" }
+    },
 
     -- Block most localhost, allow specific services
     networkMode = "blocklist",
@@ -375,46 +369,52 @@ claude_cage {
 **Multi-project workspace (shared parent directory):**
 
 ```lua
--- claude-cage.config (shared settings)
+-- ~/Projects/claude-cage.config (shared settings)
 claude_cage {
-    excludeName = { ".env", "node_modules" },
-    belowPath = { ".git" }
+    exclude = {
+        name = { ".env", "node_modules" },
+        belowPath = { ".git" }
+    }
 }
 ```
 
 ```lua
--- frontend.claude-cage.config
+-- ~/Projects/frontend.claude-cage.config (optional overrides)
 claude_cage {
-    source = "frontend"
+    -- Project-specific excludes merged with shared config
+    exclude = { name = { "dist", ".next" } }
 }
 ```
 
 ```lua
--- backend.claude-cage.config
+-- ~/Projects/backend.claude-cage.config (optional overrides)
 claude_cage {
-    source = "backend"
+    -- Project-specific excludes merged with shared config
+    exclude = { name = { "target", "*.class" } }
 }
 ```
 
-Run: `sudo claude-cage frontend` or `sudo claude-cage backend`
+Run by cd'ing into project subdirectory:
+```bash
+cd ~/Projects/frontend && sudo claude-cage  # Project "frontend" derived from directory
+cd ~/Projects/backend && sudo claude-cage   # Project "backend" derived from directory
+```
 
 **Separate project directories (different locations):**
 
 ```lua
 -- ~/frontend/claude-cage.config
 claude_cage {
-    project = "frontend",
-    source = "."
+    exclude = { name = { ".env", "node_modules" } }
 }
 
 -- ~/backend/claude-cage.config
 claude_cage {
-    project = "backend",
-    source = "."
+    exclude = { name = { ".env", "target" } }
 }
 ```
 
-Run `sudo claude-cage` in each directory. Both share the `claude` user in single-user mode (default).
+Run `sudo claude-cage` in each directory. Project name derived from directory. Both share the `claude` user in single-user mode (default).
 
 **Per-project user isolation:**
 
@@ -492,9 +492,7 @@ If you're currently running Claude Code directly without isolation:
 2. **Create config:**
    ```lua
    claude_cage {
-       project = "my-project",
-       source = ".",
-       excludePath = { ".env" }
+       exclude = { name = { ".env" } }
    }
    ```
 

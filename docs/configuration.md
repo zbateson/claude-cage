@@ -14,37 +14,45 @@ Configs are loaded in priority order (later overrides earlier):
    - Per-user preferences
    - Overrides system defaults
 
-3. **Local config** (**required**): `./claude-cage.config`
-   - Workspace-level settings (directory where claude-cage runs)
-   - Must exist to run the script
+3. **Local config** (**required**): `claude-cage.config`
+   - Found by searching up the directory tree from current working directory
+   - The directory containing this file becomes the "config root"
    - Overrides system and user configs
 
 4. **Project config** (optional): `projectname.claude-cage.config`
    - Project-specific overrides
-   - Loaded when project name specified on command line
-   - Example: `backend.claude-cage.config` loaded when running `sudo claude-cage backend`
+   - Loaded based on derived project name (first directory component after config root)
+   - Example: Running from `~/Projects/backend/src` with config at `~/Projects/claude-cage.config`
+     loads `backend.claude-cage.config` if it exists
    - Overrides all other configs
 
-**Security note**: The local config is required to prevent accidentally running the script in unintended directories.
+**Config search:** The script searches for `claude-cage.config` starting from your current directory and going up the tree. Use `--config /path/to/config` to specify an explicit location.
+
+**Security note**: A config file is required to prevent accidentally running the script in unintended directories.
 
 ### Multi-Project Workspaces
 
 For workspaces containing multiple projects:
 
-1. Create `claude-cage.config` with shared settings (common excludes, network rules)
-2. Create project-specific configs if needed to override workspace settings: `backend.claude-cage.config`, `frontend.claude-cage.config`
-3. Run with project name: `sudo claude-cage backend`
+1. Create `claude-cage.config` at the parent directory with shared settings
+2. Create project-specific configs if needed: `backend.claude-cage.config`, `frontend.claude-cage.config`
+3. cd into the project subdirectory and run: `cd backend && sudo claude-cage`
 
-The project name can come from either:
-- Command line argument (takes precedence): `sudo claude-cage backend`
-- The `project` field in `claude-cage.config`
+The project name is derived automatically from the directory structure:
+- Config at `~/Projects/claude-cage.config`
+- Running from `~/Projects/backend/src`
+- Project name: `backend` (first directory component after config root)
+
+You can also override the project name:
+- Command line argument: `sudo claude-cage backend`
+- The `project` field in config file
 
 ### Merge Behavior
 
 - **Simple values** (user, source, sync, etc.): Later configs override earlier ones
-- **Arrays** (excludeName, excludePath, excludeRegex, belowPath, network arrays): Values are **merged** across all configs
+- **Arrays** (exclude.name, exclude.path, etc., and network arrays): Values are **merged** across all configs
 
-Example: If system config has `excludePath = ["config/production.yml"]` and local config has `excludePath = ["deploy/secrets.txt"]`, the final excludePath list will be `["config/production.yml", "deploy/secrets.txt"]`.
+Example: If system config has `exclude = { path = {"config/production.yml"} }` and local config has `exclude = { path = {"deploy/secrets.txt"} }`, the final exclude.path list will be `{"config/production.yml", "deploy/secrets.txt"}`.
 
 ## Configuration File Syntax
 
@@ -52,36 +60,44 @@ All config files use Lua syntax and must contain a `claude_cage` block:
 
 ```lua
 claude_cage {
-    project = "myproject",
+    -- project is derived from directory structure (optional to specify)
+    exclude = {
+        name = { ".env", "node_modules" },
+        belowPath = { ".git" }
+    }
     -- other options...
 }
 ```
 
 ## Core Options
 
-### project (required)
+### project (optional)
 
 Project name used as identifier.
 
-- **Required**: Must be specified either in config file OR on command line
-- Command line takes precedence: `sudo claude-cage backend` overrides config
-- In sync mode: Used as default for `userAppend` and `sync` directory name
-- In direct mount mode: Used as identifier and for per-project username (if userMode = "per-project")
+- **Optional**: Derived from directory structure if not specified
+- Derivation: First directory component of path from config root to current directory
+- Example: Config at `~/Projects/claude-cage.config`, running from `~/Projects/myapp/src`
+  → project = "myapp"
+- Command line overrides derived value: `sudo claude-cage backend`
+- In sync mode: Used for `sync` directory name and `userAppend` (if per-project mode)
+- In direct mount mode: Used as identifier
 
 ```lua
-project = "backend"
+project = "backend"  -- Optional: override derived project name
 ```
 
 **Multi-project workspace usage:**
 
-For workspaces with multiple projects in subdirectories, omit `project` from `claude-cage.config` and specify it on the command line:
+Create config at parent level, cd into project subdirectory:
 
 ```bash
-sudo claude-cage backend    # Loads backend.claude-cage.config (if exists)
-sudo claude-cage frontend   # Loads frontend.claude-cage.config (if exists)
-```
+cd ~/Projects/backend    # Project derived as "backend"
+sudo claude-cage         # Loads backend.claude-cage.config if exists
 
-This only applies when the local `claude-cage.config` doesn't specify a project name.
+cd ~/Projects/frontend   # Project derived as "frontend"
+sudo claude-cage         # Loads frontend.claude-cage.config if exists
+```
 
 ### user
 
@@ -144,7 +160,7 @@ Mount mode selection.
 - `"workspace"`: Direct mount - mounts entire source directory, Claude can access sibling projects
 - `"project"`: Direct mount - mounts only the specified project subdirectory, no sibling access
 
-In both direct mount modes, the command-line argument specifies the project to work in (required).
+In direct mount modes, either cd into a project subdirectory or provide a command-line argument specifying the subdirectory to start in.
 
 ```lua
 directMount = false       -- Sync mode (default)
@@ -158,24 +174,26 @@ directMount = "project"   -- Mount only the project, isolated
 
 Source directory to sync/mount.
 
-- In sync mode: Defaults to project name if not specified
-- In direct mount mode: Defaults to `"."` (current directory) if not set
+- **Sync mode**: Defaults to the project subdirectory (`config_root/project`)
+- **Direct mount workspace**: Defaults to the config root directory
+- **Direct mount project**: Defaults to the project subdirectory (`config_root/project`)
 - Explicitly set to override the default
 
 ```lua
-source = "my-directory"
+source = "my-directory"  -- Override to use a different subdirectory
 ```
+
+**Important for sync mode:** You cannot run from the config root directory itself. The script requires you to be in a subdirectory to prevent the `.caged` directory from being synced into itself.
 
 ### sync
 
 Sync directory name (ignored in direct mount mode).
 
-- Default: Auto-generated as `.caged/project-name/sync`
-- If not set and `project` is set: `.caged/project/sync`
-- If not set and no `project`: `.caged/source/sync`
+- Default: Auto-generated as `.caged/<project>/sync`
 - Only used in sync mode
-- Structure: `.caged/project-name/sync` and `.caged/project-name/excludes-cache`
-- Add `.caged` to `.gitignore` if running from within a git repository
+- Structure: `.caged/<project>/sync` and `.caged/<project>/excludes-cache`
+- **Important:** Add `.caged` to `.gitignore` if running from within a git repository
+- The `.caged` directory is automatically excluded from syncing to prevent recursion
 
 ```lua
 sync = ".caged/myproject/sync"  -- Only needed if you want to override default
@@ -218,9 +236,24 @@ showBanner = true
 
 ## File Exclusion Options (Sync Mode Only)
 
-All exclude options are arrays that can contain multiple patterns. They are merged across all config levels.
+All exclude options are grouped under the `exclude` object. Arrays within are merged across all config levels.
 
-### excludePath
+**Note:** The `.caged` directory is automatically excluded in sync mode to prevent recursion issues. You don't need to add it to your config.
+
+### exclude
+
+The exclude object contains four types of patterns:
+
+```lua
+exclude = {
+    path = { "config/production.yml" },     -- Exact paths from root
+    name = { ".env", "node_modules" },      -- Names anywhere in tree
+    belowPath = { ".git" },                 -- Path + everything below
+    regex = { ".*\\.log$" }                 -- Regex patterns
+}
+```
+
+### exclude.path
 
 Ignore exact paths relative to the replica root.
 
@@ -228,10 +261,12 @@ Ignore exact paths relative to the replica root.
 - Unison option: `-ignore "Path <item>"`
 
 ```lua
-excludePath = { "config/production.yml", "deploy/secrets.txt" }
+exclude = {
+    path = { "config/production.yml", "deploy/secrets.txt" }
+}
 ```
 
-### excludeName
+### exclude.name
 
 Ignore files/folders by name anywhere in the directory tree.
 
@@ -240,10 +275,12 @@ Ignore files/folders by name anywhere in the directory tree.
 - Unison option: `-ignore "Name <item>"`
 
 ```lua
-excludeName = { "*.tmp", ".DS_Store", "node_modules" }
+exclude = {
+    name = { "*.tmp", ".DS_Store", "node_modules" }
+}
 ```
 
-### excludeRegex
+### exclude.regex
 
 Ignore paths matching regular expressions.
 
@@ -252,36 +289,40 @@ Ignore paths matching regular expressions.
 - Unison option: `-ignore "Regex <item>"`
 
 ```lua
-excludeRegex = { ".*\\.log$", "^temp/.*" }
+exclude = {
+    regex = { ".*\\.log$", "^temp/.*" }
+}
 ```
 
-### belowPath
+### exclude.belowPath
 
 Ignore a specific path from the root and everything below (inside) it.
 
 - **Important:** `belowPath` only matches paths from the root, not anywhere in the tree
 - Use for: Specific directory trees at known root-level locations (like `.git`)
-- For directories that can appear anywhere (like `node_modules`), use `excludeName` instead
+- For directories that can appear anywhere (like `node_modules`), use `exclude.name` instead
 - Unison option: `-ignore "BelowPath <item>"`
 
 ```lua
-belowPath = { ".git" }  -- Only matches .git at root, not subdirs/frontend/.git
+exclude = {
+    belowPath = { ".git" }  -- Only matches .git at root, not subdirs/frontend/.git
+}
 ```
 
-**Common mistake:** Using `belowPath = { "node_modules" }` only excludes `node_modules` at the root. In monorepos or projects with subdirectories, use `excludeName = { "node_modules" }` to match anywhere.
+**Common mistake:** Using `exclude = { belowPath = { "node_modules" } }` only excludes `node_modules` at the root. In monorepos or projects with subdirectories, use `exclude = { name = { "node_modules" } }` to match anywhere.
 
-**Performance note:** When `unison-fsmonitor` is not available, unison falls back to polling mode (checking for changes every second). Large directories can contain thousands of files, making each poll slow. Use `excludeName` to exclude common large directories like `node_modules`, `target`, `.venv` anywhere in the tree.
+**Performance note:** When `unison-fsmonitor` is not available, unison falls back to polling mode (checking for changes every second). Large directories can contain thousands of files, making each poll slow. Use `exclude.name` to exclude common large directories like `node_modules`, `target`, `.venv` anywhere in the tree.
 
 ### Choosing the Right Exclude Type
 
-- **excludePath**: Specific files/directories at known paths from root (e.g., `config/production.yml`)
-- **excludeName**: Files/directories by name anywhere in the tree (e.g., `.env`, `node_modules`, `target`)
+- **exclude.path**: Specific files/directories at known paths from root (e.g., `config/production.yml`)
+- **exclude.name**: Files/directories by name anywhere in the tree (e.g., `.env`, `node_modules`, `target`)
   - Use wildcards: `*.key`, `application-*.properties`
   - Most common for excluding dependencies and build outputs
-- **belowPath**: Specific path from root and everything below it (e.g., `.git`)
+- **exclude.belowPath**: Specific path from root and everything below it (e.g., `.git`)
   - Only matches at specified path, not anywhere in tree
-  - Use `excludeName` for directories that can appear in multiple locations
-- **excludeRegex**: Complex patterns that wildcards can't handle
+  - Use `exclude.name` for directories that can appear in multiple locations
+- **exclude.regex**: Complex patterns that wildcards can't handle
 
 ## Network Restriction Options
 
@@ -332,13 +373,11 @@ blockNetworks = { "192.168.1.0/24", "10.0.0.0/8:22,3389" }
 
 ```lua
 claude_cage {
-    project = "my-web-app",
-    userMode = "single",
-    source = "my-directory",
-
     -- File exclusions
-    excludeName = { ".env", "*.tmp", ".DS_Store", "node_modules", "dist" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "*.tmp", ".DS_Store", "node_modules", "dist" },
+        belowPath = { ".git" }
+    },
 
     -- Network restrictions
     networkMode = "blocklist",
@@ -354,10 +393,7 @@ Mount entire directory, Claude can access sibling projects:
 
 ```lua
 claude_cage {
-    project = "public-projects",
     directMount = "workspace",
-    source = ".",
-    -- Mount point name derived from source directory basename
 
     -- Network restrictions (optional)
     networkMode = "blocklist",
@@ -371,10 +407,7 @@ Mount only the specified project, no sibling access:
 
 ```lua
 claude_cage {
-    project = "my-project",
     directMount = "project",
-    source = ".",
-    -- Mount point name is the project subdirectory name
 
     -- Network restrictions (optional)
     networkMode = "blocklist",
@@ -386,12 +419,12 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "secure-project",
     userMode = "per-project",
-    source = "src",
 
-    excludeName = { ".env", "credentials.json", "secrets" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "credentials.json", "secrets" },
+        belowPath = { ".git" }
+    },
 
     networkMode = "allowlist",
     allowedDomains = { "github.com:443", "api.company.com:443" },
@@ -401,15 +434,16 @@ claude_cage {
 
 ### Multi-Project Workspace
 
-**claude-cage.config** (shared settings):
+**~/Projects/claude-cage.config** (shared settings):
 ```lua
 claude_cage {
-    -- No project specified - must provide on command line
-    -- source will be overridden by project configs
+    -- Project derived from directory structure when you cd into subdirectory
 
     -- Shared excludes for all projects
-    excludeName = { ".env", "node_modules", "dist", ".DS_Store" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "node_modules", "dist", ".DS_Store" },
+        belowPath = { ".git" }
+    },
 
     -- Shared network restrictions
     networkMode = "blocklist",
@@ -418,19 +452,19 @@ claude_cage {
 }
 ```
 
-**backend.claude-cage.config**:
+**backend.claude-cage.config** (optional project-specific overrides):
 ```lua
 claude_cage {
-    source = "backend",
-    -- Additional backend-specific excludes
-    excludeName = { "target", "*.class" }
+    -- Additional backend-specific excludes (merged with shared config)
+    exclude = {
+        name = { "target", "*.class" }
+    }
 }
 ```
 
-**frontend.claude-cage.config**:
+**frontend.claude-cage.config** (optional project-specific overrides):
 ```lua
 claude_cage {
-    source = "frontend",
     -- Frontend dev server allowed
     allowedIPs = { "127.0.0.1:3000" }
 }
@@ -438,8 +472,8 @@ claude_cage {
 
 **Usage**:
 ```bash
-sudo claude-cage backend   # Merges claude-cage.config + backend.claude-cage.config
-sudo claude-cage frontend  # Merges claude-cage.config + frontend.claude-cage.config
+cd ~/Projects/backend && sudo claude-cage   # Project "backend" derived from directory
+cd ~/Projects/frontend && sudo claude-cage  # Project "frontend" derived from directory
 ```
 
 ## Global Configuration
@@ -454,8 +488,10 @@ Use for system-wide defaults that apply to all users.
 -- /etc/claude-cage/config
 claude_cage {
     -- Common excludes for all projects
-    excludeName = { ".DS_Store", "*.swp" },
-    excludePath = { ".git" },
+    exclude = {
+        name = { ".DS_Store", "*.swp" },
+        belowPath = { ".git" }
+    },
 
     -- Default network restrictions
     networkMode = "blocklist",
@@ -476,7 +512,9 @@ claude_cage {
     userMode = "single",
 
     -- Your preferred excludes
-    excludeName = { "*~", ".*.swp" },
+    exclude = {
+        name = { "*~", ".*.swp" }
+    },
 
     -- Your network preferences
     networkMode = "blocklist",

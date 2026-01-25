@@ -396,31 +396,107 @@ original_user="${SUDO_USER:-$USER}"
 # Define config file paths
 system_config="/etc/claude-cage/config"
 user_config="/home/${original_user}/.config/claude-cage/config"
-local_config="claude-cage.config"
 
-# Local config is required
-if [ ! -f "$local_config" ]; then
-    echo "Hold on now. I'm lookin' for a file called '$local_config' and it ain't here."
-    echo "Can't take off without that config file in this directory."
-    echo "You understand what I'm tellin' you?"
-    exit 1
+# Parse --config flag early (before config search)
+explicit_config=""
+config_next=false
+for arg in "$@"; do
+    if [ "$config_next" = true ]; then
+        explicit_config="$arg"
+        config_next=false
+    elif [ "$arg" = "--config" ]; then
+        config_next=true
+    fi
+done
+
+# Function to search for config file up the directory tree
+find_config() {
+    local dir="$1"
+    while [ "$dir" != "/" ]; do
+        if [ -f "$dir/claude-cage.config" ]; then
+            echo "$dir"
+            return 0
+        fi
+        dir=$(dirname "$dir")
+    done
+    return 1
+}
+
+# Determine config file location
+if [ -n "$explicit_config" ]; then
+    # Explicit config specified with --config
+    if [ ! -f "$explicit_config" ]; then
+        echo "Hold on now. That config file '$explicit_config' ain't there."
+        echo "Check your path and try again."
+        exit 1
+    fi
+    local_config="$explicit_config"
+    config_root=$(dirname "$(realpath "$explicit_config")")
+else
+    # Search up directory tree for config
+    current_dir=$(pwd)
+    config_root=$(find_config "$current_dir")
+    if [ -z "$config_root" ]; then
+        echo "Hold on now. I'm lookin' for a file called 'claude-cage.config' and it ain't here."
+        echo "Searched from $(pwd) all the way up to /."
+        echo "Can't take off without that config file somewhere above this directory."
+        echo "You understand what I'm tellin' you?"
+        exit 1
+    fi
+    local_config="$config_root/claude-cage.config"
+fi
+
+# Compute the relative path from config root to current working directory
+current_dir=$(pwd)
+config_root_real=$(realpath "$config_root")
+current_dir_real=$(realpath "$current_dir")
+
+# Calculate relative path from config root to CWD
+if [ "$config_root_real" = "$current_dir_real" ]; then
+    relative_path=""
+else
+    # Strip config_root prefix from current_dir to get relative path
+    relative_path="${current_dir_real#$config_root_real/}"
+fi
+
+# Derive project name and start subdirectory from directory structure
+# Project = first component of relative path (or basename of config root if at root)
+# Start subdir = remainder of relative path
+if [ -n "$relative_path" ]; then
+    derived_project=$(echo "$relative_path" | cut -d'/' -f1)
+    start_subdir_from_path=$(echo "$relative_path" | cut -d'/' -f2- -s)
+else
+    derived_project=$(basename "$config_root_real")
+    start_subdir_from_path=""
 fi
 
 # Parse command line arguments BEFORE running Lua
 # Need to extract non-flag argument to pass to Lua
 cli_project_arg=""
+skip_next=false
 for arg in "$@"; do
-    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ]; then
+    if [ "$skip_next" = true ]; then
+        skip_next=false
+        continue
+    fi
+    if [ "$arg" = "--config" ]; then
+        skip_next=true
+        continue
+    fi
+    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ]; then
         cli_project_arg="$arg"
         break
     fi
 done
 
 # Extract config values using Lua with multi-level loading
-# Pass command-line project argument to Lua
-lua_output=$(lua - "$cli_project_arg" <<EOF 2>&1
--- Get command-line project argument
+# Pass command-line project argument and derived values to Lua
+lua_output=$(lua - "$cli_project_arg" "$derived_project" "$config_root_real" "$relative_path" <<EOF 2>&1
+-- Get command-line project argument and derived values
 local cli_arg = arg[1] or ""
+local derived_project = arg[2] or ""
+local config_root = arg[3] or ""
+local relative_path = arg[4] or ""
 
 -- Function to merge two tables (later overrides earlier)
 local function merge_config(base, override)
@@ -428,12 +504,19 @@ local function merge_config(base, override)
 
     -- Copy base config
     for k, v in pairs(base) do
-        result[k] = v
+        if type(v) == "table" then
+            result[k] = {}
+            for k2, v2 in pairs(v) do
+                result[k][k2] = v2
+            end
+        else
+            result[k] = v
+        end
     end
 
     -- Override with new values
     for k, v in pairs(override) do
-        local array_fields = {"excludeName", "excludePath", "excludeRegex", "belowPath", "allowedDomains", "allowedIPs", "allowedNetworks", "blockDomains", "blockIPs", "blockNetworks"}
+        local array_fields = {"allowedDomains", "allowedIPs", "allowedNetworks", "blockDomains", "blockIPs", "blockNetworks"}
         local is_array_field = false
         for _, field in ipairs(array_fields) do
             if k == field then
@@ -447,6 +530,17 @@ local function merge_config(base, override)
             result[k] = result[k] or {}
             for _, item in ipairs(v) do
                 table.insert(result[k], item)
+            end
+        elseif k == "exclude" and type(v) == "table" then
+            -- Merge exclude sub-fields (path, name, belowPath, regex)
+            result.exclude = result.exclude or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.exclude[subkey] = result.exclude[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.exclude[subkey], item)
+                    end
+                end
             end
         else
             -- Override value
@@ -533,9 +627,10 @@ if cli_arg ~= "" then
     project = cli_arg
 end
 
--- Set defaults from config (but don't override project if already set from CLI)
+-- Set defaults from config, using derived values as fallbacks
+-- Priority: CLI arg > config > derived from directory structure
 if project == "" then
-    project = config.project or ""
+    project = config.project or derived_project
 end
 local user = config.user or "claude"
 local userMode = config.userMode or "single"  -- Options: "single" or "per-project"
@@ -549,10 +644,29 @@ local directMount = config.directMount or false
 local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
 
--- If project is set and source is not, use project for source (sync mode only)
--- In direct mount mode (workspace or project), source handling differs
-if project ~= "" and source == "" and not directMount then
-    source = project
+-- Source defaults to the project directory (config_root/project)
+-- This ensures we sync the specific project, not the entire parent workspace
+-- In direct mount modes, source is the config root (mount the whole workspace or just project)
+if source == "" then
+    if directMount == "workspace" then
+        -- Workspace mode: mount the entire config root
+        source = config_root
+    elseif directMount == "project" then
+        -- Project mode: mount just the project subdirectory
+        if relative_path ~= "" then
+            source = config_root .. "/" .. project
+        else
+            source = config_root
+        end
+    else
+        -- Sync mode: sync the project directory (first component of relative path)
+        if relative_path ~= "" then
+            source = config_root .. "/" .. project
+        else
+            -- At config root - this will be caught by validation later
+            source = config_root
+        end
+    end
 end
 
 -- Determine username based on userMode
@@ -574,13 +688,14 @@ else
     error("Invalid userMode: must be 'single' or 'per-project'")
 end
 
--- If sync is empty, determine from project or source
--- Structure: .caged/project-name/sync
+-- If sync is empty, determine from project
+-- Structure: config_root/.caged/project-name/sync
+-- The .caged directory is always at the config root for consistency
 if sync == "" then
     if project ~= "" then
-        sync = ".caged/" .. project .. "/sync"
-    elseif source ~= "" then
-        sync = ".caged/" .. source .. "/sync"
+        sync = config_root .. "/.caged/" .. project .. "/sync"
+    else
+        sync = config_root .. "/.caged/default/sync"
     end
 end
 
@@ -605,31 +720,37 @@ local networkMode = config.networkMode or "disabled"
 
 -- Build exclude arguments for unison
 local exclude_args = ""
+local exclude = config.exclude or {}
 
--- excludeName: Ignore files/folders by name anywhere in the tree
-if config.excludeName then
-    for _, item in ipairs(config.excludeName) do
+-- In sync mode, always exclude .caged to prevent recursion issues
+if not directMount or directMount == false then
+    exclude_args = exclude_args .. '-ignore "Name .caged" '
+end
+
+-- exclude.name: Ignore files/folders by name anywhere in the tree
+if exclude.name then
+    for _, item in ipairs(exclude.name) do
         exclude_args = exclude_args .. '-ignore "Name ' .. item .. '" '
     end
 end
 
--- excludePath: Ignore exact paths relative to replica root
-if config.excludePath then
-    for _, item in ipairs(config.excludePath) do
+-- exclude.path: Ignore exact paths relative to replica root
+if exclude.path then
+    for _, item in ipairs(exclude.path) do
         exclude_args = exclude_args .. '-ignore "Path ' .. item .. '" '
     end
 end
 
--- excludeRegex: Ignore paths matching regex patterns
-if config.excludeRegex then
-    for _, item in ipairs(config.excludeRegex) do
+-- exclude.regex: Ignore paths matching regex patterns
+if exclude.regex then
+    for _, item in ipairs(exclude.regex) do
         exclude_args = exclude_args .. '-ignore "Regex ' .. item .. '" '
     end
 end
 
--- belowPath: Ignore everything below a certain path
-if config.belowPath then
-    for _, item in ipairs(config.belowPath) do
+-- exclude.belowPath: Ignore everything below a certain path
+if exclude.belowPath then
+    for _, item in ipairs(exclude.belowPath) do
         exclude_args = exclude_args .. '-ignore "BelowPath ' .. item .. '" '
     end
 end
@@ -647,10 +768,10 @@ local function array_to_string(arr)
     return table.concat(result, "|")
 end
 
-print(array_to_string(config.excludePath))
-print(array_to_string(config.excludeName))
-print(array_to_string(config.excludeRegex))
-print(array_to_string(config.belowPath))
+print(array_to_string(exclude.path))
+print(array_to_string(exclude.name))
+print(array_to_string(exclude.regex))
+print(array_to_string(exclude.belowPath))
 
 -- Output network configuration
 print(networkMode)
@@ -666,6 +787,12 @@ print(project)
 
 -- Output directMount setting (false, "workspace", or "project")
 print(tostring(directMount))
+
+-- Output relative_path for start subdirectory (bash will use this)
+print(relative_path)
+
+-- Output config_root for source directory
+print(config_root)
 EOF
 )
 lua_exit_code=$?
@@ -686,10 +813,10 @@ fi
 # Parse the lua output (only if lua succeeded)
 {
     IFS='|' read -r cfg_user cfg_source cfg_sync cfg_mountBase cfg_mounted cfg_exclude cfg_showBanner
-    read -r cfg_excludePath
-    read -r cfg_excludeName
-    read -r cfg_excludeRegex
-    read -r cfg_belowPath
+    read -r cfg_exclude_path
+    read -r cfg_exclude_name
+    read -r cfg_exclude_regex
+    read -r cfg_exclude_belowPath
     read -r cfg_networkMode
     read -r cfg_allowedDomains
     read -r cfg_allowedIPs
@@ -699,13 +826,15 @@ fi
     read -r cfg_blockNetworks
     read -r cfg_project
     read -r cfg_directMount
+    read -r cfg_relative_path
+    read -r cfg_config_root
 } <<< "$lua_output"
 
 # Replace EMPTY placeholder with empty string for array values
-[ "$cfg_excludePath" = "EMPTY" ] && cfg_excludePath=""
-[ "$cfg_excludeName" = "EMPTY" ] && cfg_excludeName=""
-[ "$cfg_excludeRegex" = "EMPTY" ] && cfg_excludeRegex=""
-[ "$cfg_belowPath" = "EMPTY" ] && cfg_belowPath=""
+[ "$cfg_exclude_path" = "EMPTY" ] && cfg_exclude_path=""
+[ "$cfg_exclude_name" = "EMPTY" ] && cfg_exclude_name=""
+[ "$cfg_exclude_regex" = "EMPTY" ] && cfg_exclude_regex=""
+[ "$cfg_exclude_belowPath" = "EMPTY" ] && cfg_exclude_belowPath=""
 [ "$cfg_allowedDomains" = "EMPTY" ] && cfg_allowedDomains=""
 [ "$cfg_allowedIPs" = "EMPTY" ] && cfg_allowedIPs=""
 [ "$cfg_allowedNetworks" = "EMPTY" ] && cfg_allowedNetworks=""
@@ -721,8 +850,13 @@ claude_resume=false
 source_arg=""
 start_subdir=""
 project_arg=""
+skip_next_arg=false
 
 for arg in "$@"; do
+    if [ "$skip_next_arg" = true ]; then
+        skip_next_arg=false
+        continue
+    fi
     if [ "$arg" = "--test" ]; then
         test_mode=true
     elif [ "$arg" = "--no-banner" ]; then
@@ -733,49 +867,84 @@ for arg in "$@"; do
         claude_continue=true
     elif [ "$arg" = "--resume" ]; then
         claude_resume=true
+    elif [ "$arg" = "--config" ]; then
+        skip_next_arg=true
     else
         # Non-flag argument is either project name or subdirectory (depending on mode)
         source_arg="$arg"
     fi
 done
 
-# Handle command-line argument based on mode
-# The argument was already processed by Lua as either project name or will be used as subdir
+# Handle start_subdir based on mode and relative path
+# For sync mode: start_subdir is the path WITHIN the project (after the first component)
+# For direct mount workspace: start_subdir is the full relative path
+# For direct mount project: start_subdir is the path within the project
+if [ "$cfg_directMount" = "workspace" ]; then
+    # Workspace mode: full relative path from config root
+    start_subdir="$cfg_relative_path"
+elif [ "$cfg_directMount" = "project" ]; then
+    # Project mode: path within project (after first component)
+    if [ -n "$cfg_relative_path" ]; then
+        start_subdir=$(echo "$cfg_relative_path" | cut -d'/' -f2- -s)
+    fi
+else
+    # Sync mode: path within project (after first component)
+    if [ -n "$cfg_relative_path" ]; then
+        start_subdir=$(echo "$cfg_relative_path" | cut -d'/' -f2- -s)
+    fi
+fi
+
+# Command-line argument can override start_subdir in direct mount modes
 if [ -n "$source_arg" ] && [ "$cfg_directMount" = "workspace" -o "$cfg_directMount" = "project" ]; then
-    # In directMount mode, argument is the subdirectory/project to work in
     start_subdir="$source_arg"
 fi
 
-# In directMount mode, default source to current directory if not set
-if [ "$cfg_directMount" = "workspace" -o "$cfg_directMount" = "project" ] && [ -z "$cfg_source" ]; then
-    cfg_source="."
-fi
+# Source is now derived from config root by Lua
+# No need to set default here
 
 # Define cage_home_base early (needed by cleanup mode)
 cage_home_base="/home/.claude-cage"
 
-# Validate required config
+# Project is now derived from directory structure if not in config
+# It will only be empty if both config and directory structure failed
 if [ -z "$cfg_project" ]; then
     echo "Listen to me very carefully now."
-    echo "You need to specify a project name either:"
-    echo "  1. In the claude-cage.config file: project = \"myproject\""
-    echo "  2. On the command line: sudo claude-cage myproject"
-    echo "Can't proceed without it."
+    echo "Couldn't figure out a project name."
+    echo "This shouldn't happen since it's derived from the directory structure."
+    echo "Check your config file location and try again."
     exit 1
 fi
 
+# In sync mode, validate we're not at the config root
+# Running from config root would cause the .caged directory to be synced into itself
+if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
+    if [ -z "$cfg_relative_path" ]; then
+        echo "Hold on now. You're tryin' to run sync mode from the config root directory."
+        echo "That ain't gonna work. The .caged directory would end up syncing into itself."
+        echo ""
+        echo "You got a few options:"
+        echo "  1. cd into a subdirectory and run from there"
+        echo "  2. Use direct mount mode: directMount = \"workspace\" or \"project\""
+        echo "  3. Move your config file up one level"
+        exit 1
+    fi
+fi
+
 # Define PID and instance file paths early (needed for cleanup mode)
-pid_file=".caged/$cfg_project/claude-cage.pid"
-local_instance_file=".caged/$cfg_project/claude-cage.instances"
+# These are at the config root to be consistent regardless of where you run from
+pid_file="$cfg_config_root/.caged/$cfg_project/claude-cage.pid"
+local_instance_file="$cfg_config_root/.caged/$cfg_project/claude-cage.instances"
 
 # For direct mount mode, we track instances by mount point (not project)
 # This allows multiple projects under the same mount to share it
 # The mount point instance file is stored in the user's home directory
 # (will be set after user_home is determined)
 
+# Source is derived from config_root, which should always exist
 if [ -z "$cfg_source" ]; then
     echo "Hold on. Where's the source directory?"
-    echo "I need that specified in the config or on the command line."
+    echo "This shouldn't happen since it's derived from the config location."
+    echo "Check your setup and try again."
     exit 1
 fi
 
@@ -785,10 +954,11 @@ if [ ! -d "$cfg_source" ]; then
     exit 1
 fi
 
-# In directMount mode, require a starting subdirectory/project
+# In directMount mode, require a starting subdirectory/project if not at a subdirectory already
 if [ "$cfg_directMount" = "workspace" ] || [ "$cfg_directMount" = "project" ]; then
     if [ -z "$start_subdir" ]; then
         echo "Hold on now. In direct mount mode, you gotta tell me which project to work in."
+        echo "Either cd into a project subdirectory, or specify it on the command line."
         echo "Run it like: sudo claude-cage <subdirectory>"
         echo "For example: sudo claude-cage my-project"
         exit 1
@@ -806,7 +976,7 @@ fi
 if [ "$cleanup_mode" = true ]; then
     # Now check for root
     if [ "$EUID" -ne 0 ]; then
-        echo "Gonna need you to run this as root. Use sudo."
+        echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
         exit 1
     fi
 
@@ -930,7 +1100,7 @@ fi
 
 # Now check for root after validating config
 if [ "$EUID" -ne 0 ]; then
-    echo "Gonna need you to run this as root. Use sudo."
+    echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
     exit 1
 fi
 
@@ -951,11 +1121,17 @@ if [ "$cfg_directMount" = "workspace" ]; then
     fi
 elif [ "$cfg_directMount" = "project" ]; then
     echo "  Mode:          Direct mount (project only)"
-    echo "  Source:        $cfg_source/$start_subdir"
+    echo "  Source:        $cfg_source"
+    if [ -n "$start_subdir" ]; then
+        echo "  Start dir:     $start_subdir"
+    fi
 else
     echo "  Mode:          Sync mode"
     echo "  Source:        $cfg_source"
     echo "  Sync:          $cfg_sync"
+    if [ -n "$start_subdir" ]; then
+        echo "  Start dir:     $start_subdir"
+    fi
 fi
 if [ -n "$cfg_mountBase" ]; then
     echo "  Mount point:   /home/$cfg_user/$cfg_mountBase/$cfg_mounted"
@@ -965,31 +1141,31 @@ fi
 echo "  Network mode:  $cfg_networkMode"
 echo ""
 echo "Excludes:"
-if [ -n "$cfg_excludePath" ]; then
-    IFS='|' read -ra paths <<< "$cfg_excludePath"
+if [ -n "$cfg_exclude_path" ]; then
+    IFS='|' read -ra paths <<< "$cfg_exclude_path"
     for path in "${paths[@]}"; do
         echo "  Path:          $path"
     done
 fi
-if [ -n "$cfg_excludeName" ]; then
-    IFS='|' read -ra names <<< "$cfg_excludeName"
+if [ -n "$cfg_exclude_name" ]; then
+    IFS='|' read -ra names <<< "$cfg_exclude_name"
     for name in "${names[@]}"; do
         echo "  Name:          $name"
     done
 fi
-if [ -n "$cfg_excludeRegex" ]; then
-    IFS='|' read -ra regexes <<< "$cfg_excludeRegex"
+if [ -n "$cfg_exclude_regex" ]; then
+    IFS='|' read -ra regexes <<< "$cfg_exclude_regex"
     for regex in "${regexes[@]}"; do
         echo "  Regex:         $regex"
     done
 fi
-if [ -n "$cfg_belowPath" ]; then
-    IFS='|' read -ra belows <<< "$cfg_belowPath"
+if [ -n "$cfg_exclude_belowPath" ]; then
+    IFS='|' read -ra belows <<< "$cfg_exclude_belowPath"
     for below in "${belows[@]}"; do
         echo "  Below path:    $below"
     done
 fi
-if [ -z "$cfg_excludePath$cfg_excludeName$cfg_excludeRegex$cfg_belowPath" ]; then
+if [ -z "$cfg_exclude_path$cfg_exclude_name$cfg_exclude_regex$cfg_exclude_belowPath" ]; then
     echo "  (none)"
 fi
 echo ""
@@ -1658,8 +1834,8 @@ setup_network_restrictions() {
 # Check for excluded files in sync directory (skip in directMount mode)
 # Only check patterns that changed since last run
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] && [ -d "$cfg_sync" ]; then
-    config_cache=".caged/${cfg_project}/excludes-cache"
-    current_excludes="${cfg_excludePath}|${cfg_excludeName}|${cfg_excludeRegex}|${cfg_belowPath}"
+    config_cache="$cfg_config_root/.caged/${cfg_project}/excludes-cache"
+    current_excludes="${cfg_exclude_path}|${cfg_exclude_name}|${cfg_exclude_regex}|${cfg_exclude_belowPath}"
 
     # Check if exclude patterns changed since last run
     if [ -f "$config_cache" ]; then
@@ -1674,9 +1850,9 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] 
             # Only check patterns that are new (weren't in previous config)
             # This is a simplified check - we scan all current excludes and warn the user
 
-            # Check excludePath patterns
-            if [ -n "$cfg_excludePath" ]; then
-                IFS='|' read -ra paths <<< "$cfg_excludePath"
+            # Check exclude.path patterns
+            if [ -n "$cfg_exclude_path" ]; then
+                IFS='|' read -ra paths <<< "$cfg_exclude_path"
                 for pattern in "${paths[@]}"; do
                     if [ -e "$cfg_sync/$pattern" ]; then
                         excluded_files+=("$cfg_sync/$pattern")
@@ -1684,9 +1860,9 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] 
                 done
             fi
 
-            # Check excludeName patterns
-            if [ -n "$cfg_excludeName" ]; then
-                IFS='|' read -ra names <<< "$cfg_excludeName"
+            # Check exclude.name patterns
+            if [ -n "$cfg_exclude_name" ]; then
+                IFS='|' read -ra names <<< "$cfg_exclude_name"
                 for pattern in "${names[@]}"; do
                     while IFS= read -r -d '' file; do
                         excluded_files+=("$file")
@@ -1694,9 +1870,9 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] 
                 done
             fi
 
-            # Check excludeRegex patterns
-            if [ -n "$cfg_excludeRegex" ]; then
-                IFS='|' read -ra regexes <<< "$cfg_excludeRegex"
+            # Check exclude.regex patterns
+            if [ -n "$cfg_exclude_regex" ]; then
+                IFS='|' read -ra regexes <<< "$cfg_exclude_regex"
                 for pattern in "${regexes[@]}"; do
                     while IFS= read -r -d '' file; do
                         excluded_files+=("$file")
@@ -1705,8 +1881,9 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] 
             fi
 
             # Check belowPath patterns
-            if [ -n "$cfg_belowPath" ]; then
-                IFS='|' read -ra paths <<< "$cfg_belowPath"
+            # Check exclude.belowPath patterns
+            if [ -n "$cfg_exclude_belowPath" ]; then
+                IFS='|' read -ra paths <<< "$cfg_exclude_belowPath"
                 for pattern in "${paths[@]}"; do
                     if [ -d "$cfg_sync/$pattern" ]; then
                         excluded_files+=("$cfg_sync/$pattern")
@@ -1774,8 +1951,8 @@ if [ "$skip_setup" = false ]; then
     # Create mount point if it doesn't exist
     mkdir -p "$mount_point"
 
-    # Create .caged/project-name/ directory for instance/PID files
-    mkdir -p ".caged/$cfg_project"
+    # Create .caged/project-name/ directory for instance/PID files at config root
+    mkdir -p "$cfg_config_root/.caged/$cfg_project"
 
     # In sync mode, create sync directory and set ownership
     if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
@@ -1783,7 +1960,7 @@ if [ "$skip_setup" = false ]; then
     fi
 
     # Set ownership of .caged directory and everything under it to original user
-    chown -R "$original_user:$original_user" ".caged"
+    chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
 
     # Check if mount point is already mounted
     if mountpoint -q "$mount_point" 2>/dev/null; then
@@ -1828,7 +2005,7 @@ if [ "$skip_setup" = false ]; then
             # Workspace mode: mount entire source directory
             echo "Workspace mode: mountin' $cfg_source directly..."
             # Quote paths properly to handle spaces
-            if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_source" "$mount_point"; then
+            if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source" "$mount_point"; then
                 echo "Now we got a problem. bindfs failed to mount."
                 echo "Check that bindfs is installed and $cfg_source exists."
                 exit 1
@@ -1851,7 +2028,7 @@ if [ "$skip_setup" = false ]; then
         # Project mode: mount only the specific project subdirectory
         echo "Project mode: mountin' $cfg_source/$start_subdir directly..."
         # Quote paths properly to handle spaces
-        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_source/$start_subdir" "$mount_point"; then
+        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source/$start_subdir" "$mount_point"; then
             echo "Now we got a problem. bindfs failed to mount."
             echo "Check that bindfs is installed and $cfg_source/$start_subdir exists."
             exit 1
@@ -1869,13 +2046,13 @@ if [ "$skip_setup" = false ]; then
         # Sync mode: use unison + bindfs
         # Build unison command with exclude options
         # Quote paths to handle spaces properly
-        unison_cmd_base="unison \"./$cfg_source\" \"./$cfg_sync\" -batch -confirmbigdel=false"
+        unison_cmd_base="unison \"$cfg_source\" \"$cfg_sync\" -batch -confirmbigdel=false"
         if [ -n "$cfg_exclude" ]; then
             unison_cmd_base="$unison_cmd_base $cfg_exclude"
         fi
 
         # Initial sync: force from source to sync to establish clean starting state
-        unison_cmd_initial="$unison_cmd_base -force \"./$cfg_source\" -prefer \"./$cfg_source\""
+        unison_cmd_initial="$unison_cmd_base -force \"$cfg_source\" -prefer \"$cfg_source\""
 
         # Ongoing sync: bidirectional with auto-resolution
         unison_cmd_ongoing="$unison_cmd_base -auto"
@@ -1897,7 +2074,7 @@ if [ "$skip_setup" = false ]; then
         su "$original_user" -c "bash -c '$unison_cmd_ongoing -repeat $repeat_mode'" >/dev/null 2>&1 &
         unison_pid=$!
 
-        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"; then
+        if ! bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_sync" "$mount_point"; then
             echo "Now we got a problem. bindfs failed to mount."
             echo "Check that bindfs is installed and $cfg_sync exists."
             # Kill unison since we're bailing
@@ -1940,14 +2117,21 @@ if [ "$test_mode" = true ]; then
     echo "Alright, everything's ready. Switchin' you over to user '$cfg_user' so you can test things out."
     if [ "$cfg_directMount" = "workspace" ]; then
         echo "Your files are mounted at: $mount_point"
-        echo "Startin' you in subdirectory: $start_subdir"
+        echo "Navigate to your project with: cd $mount_point/$start_subdir"
         echo "You can access sibling projects from the mount root."
     elif [ "$cfg_directMount" = "project" ]; then
         echo "Your files are mounted at: $mount_point"
+        echo "Navigate there with: cd $mount_point"
         echo "Only this project is accessible (no sibling projects)."
     else
         echo "Your files are mounted at: $mount_point"
+        if [ -n "$start_subdir" ]; then
+            echo "Navigate to your project with: cd $mount_point/$start_subdir"
+        else
+            echo "Navigate there with: cd $mount_point"
+        fi
     fi
+    echo ""
     echo "When you're done pokin' around, type 'exit' and we'll clean up."
     echo "================="
     echo ""
@@ -1970,8 +2154,12 @@ else
         # Project mode: start at the mount point root (which is the project dir)
         su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
     else
-        # Sync mode: start in the mount point root
-        su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
+        # Sync mode: start in the subdirectory corresponding to CWD relative to config root
+        if [ -n "$start_subdir" ]; then
+            su - "$cfg_user" -c "cd \"$mount_point/$start_subdir\" && $claude_cmd"
+        else
+            su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
+        fi
     fi
     exit_code=$?
 fi

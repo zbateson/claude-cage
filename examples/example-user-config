@@ -24,27 +24,27 @@ claude_cage {
     -- Add your personal excludes (merged with system excludes)
     -- These arrays are merged with system and project configs
 
-    excludeName = {
-        ".env",              -- Environment files (anywhere)
-        "secrets.json",      -- Secret files (anywhere)
-        "*.key",             -- Private keys (anywhere)
-        "*.pem",             -- Certificates (anywhere)
-        "*.tmp",             -- Temporary files
-        "node_modules",      -- JavaScript dependencies
-        "target",            -- Java/Rust build output
-        ".venv",             -- Python virtual environments
-        "vendor",            -- PHP/Go dependencies
-        "__pycache__",       -- Python bytecode
-        "build",             -- Build output
-        "dist"               -- Distribution output
-    },
-
-    belowPath = {
-        ".git"              -- Git repository at root (blocks git history)
-    },
-
-    excludeRegex = {
-        ".*\\.log$"         -- Log files
+    exclude = {
+        name = {
+            ".env",              -- Environment files (anywhere)
+            "secrets.json",      -- Secret files (anywhere)
+            "*.key",             -- Private keys (anywhere)
+            "*.pem",             -- Certificates (anywhere)
+            "*.tmp",             -- Temporary files
+            "node_modules",      -- JavaScript dependencies
+            "target",            -- Java/Rust build output
+            ".venv",             -- Python virtual environments
+            "vendor",            -- PHP/Go dependencies
+            "__pycache__",       -- Python bytecode
+            "build",             -- Build output
+            "dist"               -- Distribution output
+        },
+        belowPath = {
+            ".git"               -- Git repository at root (blocks git history)
+        },
+        regex = {
+            ".*\\.log$"          -- Log files
+        }
     },
 
     -- ============================================================================

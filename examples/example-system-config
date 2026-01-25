@@ -21,22 +21,23 @@ claude_cage {
     -- Common excludes that apply to all projects
     -- These arrays are merged with user and project configs
 
-    excludeName = {
-        ".DS_Store",         -- macOS metadata
-        "*.swp",             -- Vim swap files
-        "*~",                -- Backup files
-        "Thumbs.db",         -- Windows thumbnails
-        "node_modules",      -- JavaScript dependencies (anywhere in tree)
-        "target",            -- Java/Rust build output (anywhere)
-        ".venv",             -- Python virtual environments (anywhere)
-        "vendor",            -- PHP/Go dependencies (anywhere)
-        "__pycache__",       -- Python bytecode (anywhere)
-        "build",             -- Common build output (anywhere)
-        "dist"               -- Common distribution output (anywhere)
-    },
-
-    belowPath = {
-        ".git"              -- Git repository at root (blocks git history)
+    exclude = {
+        name = {
+            ".DS_Store",         -- macOS metadata
+            "*.swp",             -- Vim swap files
+            "*~",                -- Backup files
+            "Thumbs.db",         -- Windows thumbnails
+            "node_modules",      -- JavaScript dependencies (anywhere in tree)
+            "target",            -- Java/Rust build output (anywhere)
+            ".venv",             -- Python virtual environments (anywhere)
+            "vendor",            -- PHP/Go dependencies (anywhere)
+            "__pycache__",       -- Python bytecode (anywhere)
+            "build",             -- Common build output (anywhere)
+            "dist"               -- Common distribution output (anywhere)
+        },
+        belowPath = {
+            ".git"               -- Git repository at root (blocks git history)
+        }
     },
 
     -- ============================================================================

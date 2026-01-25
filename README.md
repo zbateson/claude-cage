@@ -112,27 +112,29 @@ sudo cp claude-cage /usr/local/bin/
 
 ### 2. Configure
 
-Now you gotta create `claude-cage.config` in your project directory:
+Create `claude-cage.config` in your project root (or parent directory):
 
-**Sync mode** (for single projects with secrets to exclude):
+**Config file search:** The script searches for `claude-cage.config` starting from your current directory going up the tree. The directory containing the config becomes your "project boundary."
+
+**Sync mode** (for projects with secrets to exclude):
 ```lua
 claude_cage {
-    project = "myproject",
-    source = ".",
-    excludeName = { ".env", "node_modules", "dist" },
-    belowPath = { ".git" }
+    -- project is derived from directory structure - no need to specify!
+    exclude = {
+        name = { ".env", "node_modules", "dist" },
+        belowPath = { ".git" }
+    }
 }
 ```
 
-**Important:** If you run claude-cage from within your git repository, add to `.gitignore`:
-```
-.caged
-```
+**Important for sync mode:**
+- Add `.caged` to your `.gitignore`
+- You must run from a **subdirectory** of the config root (not from the same directory)
+- `.caged` is automatically excluded to prevent recursion
 
 **Direct mount - workspace mode** (mount entire directory, access sibling projects):
 ```lua
 claude_cage {
-    project = "public-projects",
     directMount = "workspace"
 }
 ```
@@ -140,26 +142,22 @@ claude_cage {
 **Direct mount - project mode** (mount only the specified project):
 ```lua
 claude_cage {
-    project = "my-project",
     directMount = "project"
 }
 ```
 
-**Multi-project workspace** (shared parent directory with multiple projects):
+**Multi-project workspace** (config at parent level):
 ```lua
--- claude-cage.config (shared settings - no project field needed)
+-- ~/Projects/claude-cage.config (shared settings)
 claude_cage {
-    excludeName = { ".env", "node_modules" },
-    belowPath = { ".git" }
+    exclude = {
+        name = { ".env", "node_modules" },
+        belowPath = { ".git" }
+    }
 }
 ```
-```lua
--- backend.claude-cage.config (project name comes from command line)
-claude_cage {
-    source = "backend"
-}
-```
-Then run: `sudo claude-cage backend`  <!-- project name provided here -->
+Then cd into a project and run: `cd ~/Projects/backend && sudo claude-cage`
+The project name "backend" is derived automatically from the directory structure.
 
 📖 **[Full Configuration Reference →](docs/configuration.md)**
 📖 **[Configuration Examples →](docs/examples.md)**
@@ -168,16 +166,21 @@ Then run: `sudo claude-cage backend`  <!-- project name provided here -->
 
 Now we're ready to fly.
 
-**Sync mode:**
+**Sync mode** (run from a subdirectory of config root):
 ```bash
-sudo claude-cage                  # Uses project name from config (project field required)
-sudo claude-cage backend          # Provides project name via command line (loads backend.claude-cage.config if exists)
+cd ~/Projects/myapp              # cd into project subdirectory
+sudo claude-cage                 # Project name derived from directory (myapp)
 ```
 
 **Direct mount mode** (specify subdirectory to start in):
 ```bash
 cd ~/Projects/public
-sudo claude-cage my-project       # Argument is subdirectory to start in (project field still required in config)
+sudo claude-cage my-project      # Argument is subdirectory to start in
+```
+
+**Explicit config location:**
+```bash
+sudo claude-cage --config /path/to/claude-cage.config
 ```
 
 **Test mode** (verify setup without launching Claude):
@@ -187,8 +190,8 @@ sudo claude-cage --test
 
 **Resume previous conversation**:
 ```bash
-sudo claude-cage --continue  # Resume most recent conversation
-sudo claude-cage --resume    # Pick from conversation list
+sudo claude-cage --continue      # Resume most recent conversation
+sudo claude-cage --resume        # Pick from conversation list
 ```
 
 That's it. Clean and simple.
@@ -200,10 +203,12 @@ That's it. Clean and simple.
 Exclude sensitive files from Claude's view:
 
 ```lua
-excludePath = { "config/production.yml" }        -- Specific paths from root
-excludeName = { ".env", "node_modules", "*.pem" } -- By name anywhere in tree
-belowPath = { ".git" }                           -- Path from root + everything below
-excludeRegex = { ".*\\.log$" }                   -- Regex patterns
+exclude = {
+    path = { "config/production.yml" },        -- Specific paths from root
+    name = { ".env", "node_modules", "*.pem" }, -- By name anywhere in tree
+    belowPath = { ".git" },                    -- Path from root + everything below
+    regex = { ".*\\.log$" }                    -- Regex patterns
+}
 ```
 
 **Important:** Files matching exclude patterns are never synced - they literally don't exist in Claude's environment.
@@ -227,17 +232,19 @@ If your build process (webpack, bundlers, Docker, test scripts) copies excluded 
 
 **Recommended excludes for most projects:**
 ```lua
-excludeName = {
-    ".env",           -- Environment files (anywhere in tree)
-    "secrets.json",   -- Secret files (anywhere)
-    "*.key", "*.pem", -- Certificate files (anywhere)
-    "node_modules",   -- npm/yarn dependencies (anywhere)
-    "target",         -- Maven/Cargo build output (anywhere)
-    ".venv",          -- Python virtual environment (anywhere)
-    "vendor"          -- PHP/Go dependencies (anywhere)
-}
-belowPath = {
-    ".git"            -- Git history at root (Claude can't use git)
+exclude = {
+    name = {
+        ".env",           -- Environment files (anywhere in tree)
+        "secrets.json",   -- Secret files (anywhere)
+        "*.key", "*.pem", -- Certificate files (anywhere)
+        "node_modules",   -- npm/yarn dependencies (anywhere)
+        "target",         -- Maven/Cargo build output (anywhere)
+        ".venv",          -- Python virtual environment (anywhere)
+        "vendor"          -- PHP/Go dependencies (anywhere)
+    },
+    belowPath = {
+        ".git"            -- Git history at root (Claude can't use git)
+    }
 }
 ```
 
@@ -343,11 +350,10 @@ You need more details? I got you covered:
 
 ```lua
 claude_cage {
-    project = "webapp",
-    source = ".",
-
-    excludeName = { ".env", "node_modules", "dist" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "node_modules", "dist" },
+        belowPath = { ".git" }
+    },
 
     networkMode = "blocklist",
     blockIPs = { "127.0.0.1" },
@@ -360,7 +366,6 @@ claude_cage {
 ```lua
 -- Workspace mode: Claude can access sibling projects
 claude_cage {
-    project = "open-source",
     directMount = "workspace",
 
     networkMode = "blocklist",
@@ -369,7 +374,6 @@ claude_cage {
 
 -- Project mode: Claude isolated to one project
 claude_cage {
-    project = "my-project",
     directMount = "project",
 
     networkMode = "blocklist",
@@ -381,11 +385,12 @@ claude_cage {
 
 ```lua
 claude_cage {
-    project = "production",
     userMode = "per-project",
 
-    excludeName = { ".env", "*secret*", "*.key", "*.pem", "credentials.json", "secrets" },
-    belowPath = { ".git" },
+    exclude = {
+        name = { ".env", "*secret*", "*.key", "*.pem", "credentials.json", "secrets" },
+        belowPath = { ".git" }
+    },
 
     networkMode = "allowlist",
     allowedDomains = { "github.com:443" }

@@ -1,5 +1,5 @@
 #!/usr/bin/env lua
--- Test config loading hierarchy
+-- Test config loading hierarchy with new exclude object syntax
 
 -- Function to merge two tables (later overrides earlier)
 local function merge_config(base, override)
@@ -12,20 +12,16 @@ local function merge_config(base, override)
 
     -- Override with new values
     for k, v in pairs(override) do
-        local array_fields = {"excludeName", "excludePath", "excludeRegex", "belowPath"}
-        local is_array_field = false
-        for _, field in ipairs(array_fields) do
-            if k == field then
-                is_array_field = true
-                break
-            end
-        end
-
-        if is_array_field and type(v) == "table" then
-            -- Merge array fields
-            result[k] = result[k] or {}
-            for _, item in ipairs(v) do
-                table.insert(result[k], item)
+        if k == "exclude" and type(v) == "table" then
+            -- Merge exclude sub-fields (path, name, belowPath, regex)
+            result.exclude = result.exclude or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.exclude[subkey] = result.exclude[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.exclude[subkey], item)
+                    end
+                end
             end
         else
             -- Override value
@@ -47,25 +43,31 @@ print("Loading system config...")
 claude_cage {
     user = "claude",
     syncPrepend = "claude-",
-    excludePath = { "target", ".git" },
-    excludeName = { "*.tmp" },
-    belowPath = { "node_modules" }
+    exclude = {
+        path = { "target", ".git" },
+        name = { "*.tmp" },
+        belowPath = { "node_modules" }
+    }
 }
 
 -- Simulate user config
 print("Loading user config...")
 claude_cage {
     syncPrepend = "my-claude-",
-    excludeRegex = { ".*\\.log$" },
-    excludeName = { ".DS_Store" }
+    exclude = {
+        regex = { ".*\\.log$" },
+        name = { ".DS_Store" }
+    }
 }
 
 -- Simulate local config
 print("Loading local config...")
 claude_cage {
     source = "my-project",
-    excludePath = { "secrets.txt" },
-    excludeName = { "*.swp" },
+    exclude = {
+        path = { "secrets.txt" },
+        name = { "*.swp" }
+    },
     mounted = "my-project"
 }
 
@@ -91,10 +93,11 @@ local function print_array(name, arr)
     end
 end
 
-print_array("excludePath", config.excludePath)
-print_array("excludeName", config.excludeName)
-print_array("excludeRegex", config.excludeRegex)
-print_array("belowPath", config.belowPath)
+local exclude = config.exclude or {}
+print_array("exclude.path", exclude.path)
+print_array("exclude.name", exclude.name)
+print_array("exclude.regex", exclude.regex)
+print_array("exclude.belowPath", exclude.belowPath)
 
 -- Test expected results
 print("\n=== Test Results ===")
@@ -102,8 +105,8 @@ assert(config.user == "claude", "user should be 'claude'")
 assert(config.source == "my-project", "source should be 'my-project'")
 assert(config.syncPrepend == "my-claude-", "syncPrepend should be 'my-claude-' (overridden by user)")
 assert(config.mounted == "my-project", "mounted should be 'my-project'")
-assert(#config.excludePath == 3, "excludePath should have 3 items (merged from system and local)")
-assert(#config.excludeName == 3, "excludeName should have 3 items (merged from all configs)")
-assert(#config.excludeRegex == 1, "excludeRegex should have 1 item (from user)")
-assert(#config.belowPath == 1, "belowPath should have 1 item (from system)")
+assert(#exclude.path == 3, "exclude.path should have 3 items (merged from system and local)")
+assert(#exclude.name == 3, "exclude.name should have 3 items (merged from all configs)")
+assert(#exclude.regex == 1, "exclude.regex should have 1 item (from user)")
+assert(#exclude.belowPath == 1, "exclude.belowPath should have 1 item (from system)")
 print("✓ All tests passed!")

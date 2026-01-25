@@ -80,9 +80,9 @@ No file monitoring helper program found
 1. **Use polling mode (automatic fallback):**
    - claude-cage detects the missing binary and uses `-repeat 1` instead
    - Changes are detected every second (still very responsive)
-   - **Important:** Exclude large directories with `excludeName` to keep polling fast
+   - **Important:** Exclude large directories with `exclude.name` to keep polling fast
    ```lua
-   excludeName = { "node_modules", "target", ".venv", "vendor" }
+   exclude = { name = { "node_modules", "target", ".venv", "vendor" } }
    ```
 
 2. **Install unison-fsmonitor (optimal performance):**
@@ -118,7 +118,7 @@ No file monitoring helper program found
 - **Watch mode** (with unison-fsmonitor): Instant change detection, no polling overhead
 - **Polling mode** (without unison-fsmonitor): 1 second latency, scans entire source tree every second
 
-For most development workflows, polling mode works fine. Use `belowPath` to exclude large directories and keep it responsive.
+For most development workflows, polling mode works fine. Use `exclude.name` to exclude large directories anywhere in the tree and keep it responsive.
 
 ## Configuration Errors
 
@@ -126,18 +126,19 @@ For most development workflows, polling mode works fine. Use `belowPath` to excl
 
 **Error:**
 ```
-Error: No claude-cage.config found in current directory
+Hold on now. I'm lookin' for a file called 'claude-cage.config' and it ain't here.
+Searched from /path/to/current/dir all the way up to /.
 ```
 
-**Cause:** The required local config file doesn't exist.
+**Cause:** The required config file doesn't exist anywhere in the directory tree above your current location.
 
 **Solution:**
-Create a `claude-cage.config` file in your project directory:
+Create a `claude-cage.config` file in your project directory or a parent directory:
 
 ```lua
 claude_cage {
-    project = "myproject",
-    source = "."
+    -- Minimal config - project derived from directory structure
+    exclude = { name = { ".env" } }
 }
 ```
 
@@ -181,11 +182,11 @@ lua: ./claude-cage.config:5: syntax error
 - Comments use double dash: `-- comment`
 
 ```lua
--- WRONG
-excludePath = [ "target" "dist" ]
+-- WRONG (square brackets, missing commas)
+exclude = { name = [ "target" "dist" ] }
 
--- CORRECT
-excludePath = { "target", "dist" }
+-- CORRECT (curly braces, commas between items)
+exclude = { name = { "target", "dist" } }
 ```
 
 ## Permission Issues
@@ -194,7 +195,7 @@ excludePath = { "target", "dist" }
 
 **Error:**
 ```
-Gonna need you to run this as root. Use sudo.
+Gonna need you to run this as root. Use sudo, Bay-BEE!
 ```
 
 **Cause:** Script requires root privileges for bindfs mounting.
@@ -271,12 +272,12 @@ tail -f /tmp/unison.log  # If logging enabled
 
 2. **Check exclude patterns:**
    - File might be excluded by your config
-   - Verify excludePath, excludeName, excludeRegex, belowPath
+   - Verify exclude.path, exclude.name, exclude.regex, exclude.belowPath
 
 3. **Check file permissions:**
    ```bash
-   ls -la source-directory/
-   ls -la .caged-directory/
+   ls -la your-source-directory/
+   ls -la .caged/your-project/sync/
    ```
 
 ### Excluded files still appearing
@@ -304,10 +305,12 @@ cat claude-cage.config
 2. **Exclude pattern doesn't match:**
    ```lua
    -- Use the right exclude type
-   excludePath = { "config/prod.yml" }  -- Exact path from root
-   excludeName = { ".env", "*.log" }    -- By name anywhere in tree
-   belowPath = { ".git", "secrets" }    -- Entire directory trees
-   excludeRegex = { ".*\\.log$" }       -- Regex (escape backslashes)
+   exclude = {
+       path = { "config/prod.yml" },     -- Exact path from root
+       name = { ".env", "*.log" },       -- By name anywhere in tree
+       belowPath = { ".git", "secrets" }, -- Entire directory trees at root
+       regex = { ".*\\.log$" }            -- Regex (escape backslashes)
+   }
    ```
 
 ### Unison conflicts
@@ -497,7 +500,7 @@ No space left on device
 
 2. **Add more exclusions:**
    ```lua
-   belowPath = { "node_modules", "target", "dist" }
+   exclude = { name = { "node_modules", "target", "dist" } }
    ```
 
 3. **Switch to direct mount mode:**

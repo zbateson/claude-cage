@@ -559,7 +559,7 @@ sudo iptables -D OUTPUT -m owner --uid-owner claude -j REJECT
 
 **Problem:** claude user still exists after exit.
 
-**Cause:** User existed before claude-cage ran, or persistUser = true.
+**Cause:** User existed before claude-cage ran.
 
 **Solution:**
 ```bash

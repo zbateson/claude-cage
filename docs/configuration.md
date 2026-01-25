@@ -32,7 +32,7 @@ Configs are loaded in priority order (later overrides earlier):
 For workspaces containing multiple projects:
 
 1. Create `claude-cage.config` with shared settings (common excludes, network rules)
-2. Create project-specific configs: `backend.claude-cage.config`, `frontend.claude-cage.config`
+2. Create project-specific configs if needed to override workspace settings: `backend.claude-cage.config`, `frontend.claude-cage.config`
 3. Run with project name: `sudo claude-cage backend`
 
 The project name can come from either:
@@ -72,12 +72,16 @@ Project name used as identifier.
 project = "backend"
 ```
 
-**Multi-project usage:**
+**Multi-project workspace usage:**
+
+For workspaces with multiple projects in subdirectories, omit `project` from `claude-cage.config` and specify it on the command line:
+
 ```bash
-# Omit from claude-cage.config, specify on command line
-sudo claude-cage backend    # Uses backend.claude-cage.config if exists
-sudo claude-cage frontend   # Uses frontend.claude-cage.config if exists
+sudo claude-cage backend    # Loads backend.claude-cage.config (if exists)
+sudo claude-cage frontend   # Loads frontend.claude-cage.config (if exists)
 ```
+
+This only applies when the local `claude-cage.config` doesn't specify a project name.
 
 ### user
 
@@ -127,19 +131,6 @@ Custom suffix for per-project mode.
 ```lua
 userMode = "per-project"
 userAppend = "custom"  -- Creates user "claude-custom"
-```
-
-### persistUser
-
-Whether to keep the user account after exit.
-
-- Default: `false`
-- `false`: User is deleted when claude-cage exits (unless it existed before this run)
-- `true`: User persists between runs
-- Safety: If user existed before run, it will never be deleted
-
-```lua
-persistUser = false
 ```
 
 ## Mode Selection
@@ -372,7 +363,6 @@ claude_cage {
 claude_cage {
     project = "secure-project",
     userMode = "per-project",
-    persistUser = true,
     source = "src",
 
     excludeName = { ".env", "credentials.json", "secrets" },

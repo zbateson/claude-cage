@@ -19,7 +19,7 @@ Changes sync bidirectionally between source and sync. Excluded files never make 
 1. **Source directory** - Your entire directory tree (like `/home/user/Projects/public/`)
 2. **Mounted directory** - Direct bindfs mount with permission mapping
 
-No sync. No duplication. Useful when you got yourself a big collection of open-source projects and you ain't gonna copy 20GB just to work on one. But remember - no exclude patterns in this mode. Claude sees everything.
+No sync. No duplication. Useful when you got yourself a big collection of open-source projects and you ain't gonna copy 20GB just to work on one. But remember - no exclude patterns in this mode. Claude sees everything in your source directory.
 
 **Network Isolation** (optional) - OS-level restrictions on top of Claude Code's sandbox:
 
@@ -188,7 +188,7 @@ excludeRegex = { ".*\\.log$" }                   -- Regex patterns
 **Build processes can copy excluded files to non-excluded locations.** If your webpack/bundler copies `.env` to `dist/`, you need to exclude both. [Learn more →](docs/examples.md#protecting-against-build-processes)
 
 **Git history can leak excluded files.** Even if you exclude `.env` today, if it's in your git history, Claude can dig it up with `git show` or `git log`. You got two choices:
-1. **Exclude `.git`** (default) - Claude won't have git access, but won't see your history either.
+1. **Exclude `.git`** - Claude won't have git access, but won't see your history either.
 2. **Include `.git`** - Claude can run git commands, but make damn sure you cleaned secrets from your history first. Use BFG Repo Cleaner or `git filter-branch` if you gotta.
 
 **Recommended excludes for most projects:**
@@ -232,7 +232,7 @@ allowedIPs = { "127.0.0.1:5432" }
 
 Now listen up. You got two ways to run this operation:
 
-**Single-user mode** (default, recommended):
+**Single-user mode** (default):
 - All your projects share one user (`claude`)
 - Login to Claude Code once, you're done
 - Keeps it simple, keeps it clean
@@ -281,7 +281,7 @@ Enable Claude Code's sandbox for additional protection:
 # Run in sync mode
 sudo claude-cage
 
-# Run in direct mount mode (specify subdirectory)
+# Run with project name (multi-project workspace or direct mount subdirectory)
 sudo claude-cage my-project
 
 # Test configuration without launching Claude

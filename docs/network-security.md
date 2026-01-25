@@ -18,6 +18,7 @@ Only allow specific IPs/domains, deny everything else. Provides maximum security
 
 ```lua
 claude_cage {
+    project = "myproject",  -- Required (or provide on command line)
     networkMode = "allowlist",
 
     allowedDomains = {
@@ -47,6 +48,7 @@ Block specific IPs/domains, allow everything else. More practical for most use c
 
 ```lua
 claude_cage {
+    project = "myproject",  -- Required (or provide on command line)
     networkMode = "blocklist",
 
     blockNetworks = {
@@ -76,6 +78,7 @@ In blocklist mode, you can use `allowedDomains`, `allowedIPs`, and `allowedNetwo
 
 ```lua
 claude_cage {
+    project = "myproject",  -- Required (or provide on command line)
     networkMode = "blocklist",
     blockIPs = { "127.0.0.1" },
     allowedIPs = { "127.0.0.1:5432" }  -- Exception
@@ -86,6 +89,7 @@ claude_cage {
 
 ```lua
 claude_cage {
+    project = "myproject",  -- Required (or provide on command line)
     networkMode = "blocklist",
     blockNetworks = { "192.168.0.0/16" },
     allowedIPs = {

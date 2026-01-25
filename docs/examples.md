@@ -106,9 +106,15 @@ git reflog
 
 3. **Clean git history first, then include `.git`**
    ```bash
-   # Use BFG Repo Cleaner to purge secrets
+   # Use git-filter-repo to purge secrets (recommended)
+   git filter-repo --path .env --invert-paths
+   git filter-repo --path secrets/ --invert-paths
+
+   # Or use BFG Repo Cleaner (alternative)
    bfg --delete-files .env
    bfg --replace-text passwords.txt
+
+   # Clean up after either method
    git reflog expire --expire=now --all
    git gc --prune=now --aggressive
    ```

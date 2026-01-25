@@ -135,19 +135,19 @@ claude_cage {
 
 **Multi-project workspace** (shared parent directory with multiple projects):
 ```lua
--- claude-cage.config (shared settings)
+-- claude-cage.config (shared settings - no project field needed)
 claude_cage {
     excludeName = { ".env", "node_modules" },
     belowPath = { ".git" }
 }
 ```
 ```lua
--- backend.claude-cage.config
+-- backend.claude-cage.config (project name comes from command line)
 claude_cage {
     source = "backend"
 }
 ```
-Then run: `sudo claude-cage backend`
+Then run: `sudo claude-cage backend`  <!-- project name provided here -->
 
 📖 **[Full Configuration Reference →](docs/configuration.md)**
 📖 **[Configuration Examples →](docs/examples.md)**
@@ -158,14 +158,14 @@ Now we're ready to fly.
 
 **Sync mode:**
 ```bash
-sudo claude-cage                  # Uses project name from config
-sudo claude-cage backend          # Uses backend.claude-cage.config (if exists)
+sudo claude-cage                  # Uses project name from config (project field required)
+sudo claude-cage backend          # Provides project name via command line (loads backend.claude-cage.config if exists)
 ```
 
 **Direct mount mode** (specify subdirectory to start in):
 ```bash
 cd ~/Projects/public
-sudo claude-cage my-project
+sudo claude-cage my-project       # Argument is subdirectory to start in (project field still required in config)
 ```
 
 **Test mode** (verify setup without launching Claude):
@@ -190,13 +190,22 @@ excludeRegex = { ".*\\.log$" }                   -- Regex patterns
 
 **Important:** Files matching exclude patterns are never synced - they literally don't exist in Claude's environment.
 
-⚠️ **Now listen carefully - this is important:**
+### ⚠️ **CRITICAL: Build Process Security Risk**
 
-**Build processes can copy excluded files to non-excluded locations.** If your webpack/bundler copies `.env` to `dist/`, you need to exclude both. [Learn more →](docs/examples.md#protecting-against-build-processes)
+**Build processes can expose your excluded files!** Listen to me very carefully now:
+
+If your build process (webpack, bundlers, Docker, test scripts) copies excluded files to non-excluded locations, Claude can access them through the copied versions.
+
+**Example vulnerability:**
+- You exclude `.env` (good)
+- Webpack reads `.env` and bundles it into `dist/bundle.js` (bad)
+- Claude can now read your secrets from `dist/bundle.js`
+
+**You MUST exclude build outputs too** if they might contain secrets. [Learn more →](docs/examples.md#protecting-against-build-processes)
 
 **Git history can leak excluded files.** Even if you exclude `.env` today, if it's in your git history, Claude can dig it up with `git show` or `git log`. You got two choices:
 1. **Exclude `.git`** - Claude won't have git access, but won't see your history either.
-2. **Include `.git`** - Claude can run git commands, but make damn sure you cleaned secrets from your history first. Use BFG Repo Cleaner or `git filter-branch` if you gotta.
+2. **Include `.git`** - Claude can run git commands, but make damn sure you cleaned secrets from your history first. Use `git-filter-repo` (recommended) or BFG Repo Cleaner to scrub your history clean.
 
 **Recommended excludes for most projects:**
 ```lua

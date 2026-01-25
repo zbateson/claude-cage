@@ -53,6 +53,16 @@ get_user_gid() {
     fi
 }
 
+# Get user home directory
+get_user_home() {
+    local username="$1"
+    if [ "$OS_TYPE" = "linux" ]; then
+        getent passwd "$username" 2>/dev/null | cut -d: -f6
+    elif [ "$OS_TYPE" = "macos" ]; then
+        dscl . -read /Users/"$username" NFSHomeDirectory 2>/dev/null | awk '{print $2}'
+    fi
+}
+
 # Create user
 create_user() {
     local username="$1"
@@ -792,7 +802,8 @@ if [ "$cleanup_mode" = true ]; then
 
     # Get user home directory
     if user_exists "$cfg_user"; then
-        user_home=$(eval echo ~"$cfg_user")
+        # Get home directory using OS abstraction function
+        user_home=$(get_user_home "$cfg_user")
     else
         # User doesn't exist, construct expected home path
         if [[ "$cfg_user" == *"-"* ]]; then
@@ -1086,6 +1097,25 @@ fi
 
 cfg_user="$sanitized_username"
 
+# Check if sanitized username conflicts with existing system user
+if [ "$original_username" != "$sanitized_username" ] && user_exists "$sanitized_username"; then
+    echo ""
+    echo "Hold on now. We got ourselves a situation here."
+    echo "After cleanin' up that username, it became '$sanitized_username'"
+    echo "But there's already a user with that name on this system."
+    echo ""
+    echo "You got two choices:"
+    echo "  1. Change the username in your config to somethin' else"
+    echo "  2. Continue if you're sure this is the right user to use"
+    echo ""
+    read -p "Continue with existing user '$sanitized_username'? [y/N] " -n 1 -r
+    echo
+    if ! [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "Smart move. Change that username and try again."
+        exit 1
+    fi
+fi
+
 # Track if user exists before we start
 user_existed_before=false
 if user_exists "$cfg_user"; then
@@ -1115,7 +1145,8 @@ if ! user_exists "$cfg_user"; then
         else
             # Single-user mode: default home directory
             create_user "$cfg_user" "" "false"
-            user_home=$(eval echo ~"$cfg_user")
+            # Get home directory using OS abstraction function
+            user_home=$(get_user_home "$cfg_user")
             echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
         fi
         echo "This user's temporary. Gone when we're done here."
@@ -1137,10 +1168,77 @@ if [ "$user_was_prompted" = "false" ]; then
 fi
 
 # Set user_home for later use
-user_home=$(eval echo ~"$cfg_user")
+# Get home directory using OS abstraction function
+user_home=$(get_user_home "$cfg_user")
 
 # Get user UID for cleanup function (needed for firewall rule deletion)
 user_uid=$(get_user_uid "$cfg_user")
+
+# Check if Claude Code is installed for the user
+check_claude_installed() {
+    local username="$1"
+    local home_dir="$2"
+
+    # Check if claude is in user's PATH (including ~/.local/bin)
+    if su - "$username" -c "command -v claude" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Also check common locations explicitly
+    if [ -x "$home_dir/.local/bin/claude" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+install_claude_code() {
+    local username="$1"
+    local home_dir="$2"
+
+    echo ""
+    echo "Now hold on. Claude Code ain't installed for user '$username'."
+    echo "Can't run this operation without the main man himself."
+    echo ""
+    read -p "Want me to install Claude Code for this user? [y/N] " -n 1 -r
+    echo
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Alright, we're bailin' out. Install Claude Code yourself and try again."
+        echo "Run this as the user: curl -fsSL https://claude.ai/install.sh | bash"
+        return 1
+    fi
+
+    # Check for curl
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Now we got a problem. Need curl to download, and it ain't here."
+        echo "Install curl and try again, or install Claude Code manually."
+        return 1
+    fi
+
+    echo "Alright, runnin' the official installer..."
+    echo "This might take a minute. Sit tight."
+
+    # Run the official Claude Code installer as the target user
+    if su - "$username" -c "curl -fsSL https://claude.ai/install.sh | bash" 2>&1; then
+        echo ""
+        echo "Done. Claude Code is locked and loaded."
+        return 0
+    else
+        echo ""
+        echo "The installer hit a snag. You might need to install manually."
+        echo "Try runnin' as the user: curl -fsSL https://claude.ai/install.sh | bash"
+        return 1
+    fi
+}
+
+# Check if Claude Code is available for the user
+if ! check_claude_installed "$cfg_user" "$user_home"; then
+    if ! install_claude_code "$cfg_user" "$user_home"; then
+        echo "Can't proceed without Claude Code installed. We're done here."
+        exit 1
+    fi
+fi
 
 # Construct mount point: /home/<user>/<mountBase>/<mounted>/ or /home/<user>/<mounted>/
 if [ -n "$cfg_mountBase" ]; then
@@ -1626,6 +1724,7 @@ if [ "$skip_setup" = false ]; then
     if [ "$cfg_directMount" = "true" ]; then
         # Direct mount mode: skip unison, mount source directly
         echo "Direct mount mode: mountin' $cfg_source directly..."
+        # Quote paths properly to handle spaces
         bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_source" "$mount_point"
         bindfs_pid=$!
 
@@ -1634,13 +1733,14 @@ if [ "$skip_setup" = false ]; then
     else
         # Sync mode: use unison + bindfs
         # Build unison command with exclude options
-        unison_cmd_base="unison ./$cfg_source ./$cfg_sync -batch -confirmbigdel=false"
+        # Quote paths to handle spaces properly
+        unison_cmd_base="unison \"./$cfg_source\" \"./$cfg_sync\" -batch -confirmbigdel=false"
         if [ -n "$cfg_exclude" ]; then
             unison_cmd_base="$unison_cmd_base $cfg_exclude"
         fi
 
         # Initial sync: force from source to sync to establish clean starting state
-        unison_cmd_initial="$unison_cmd_base -force ./$cfg_source -prefer ./$cfg_source"
+        unison_cmd_initial="$unison_cmd_base -force \"./$cfg_source\" -prefer \"./$cfg_source\""
 
         # Ongoing sync: bidirectional with auto-resolution
         unison_cmd_ongoing="$unison_cmd_base -auto"

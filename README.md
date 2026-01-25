@@ -82,6 +82,8 @@ brew install unison bindfs lua macfuse
 # Note: macFUSE may require enabling in System Settings > Privacy & Security
 ```
 
+**⚠️ macOS Warning:** Now I gotta be straight with you - macOS support ain't been tested yet. The code's there, but nobody's taken it for a spin on a Mac. You're flyin' blind on that one, friend. Use at your own risk and let us know if somethin' goes sideways.
+
 ## Quick Start
 
 ### 1. Install

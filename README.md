@@ -250,8 +250,8 @@ Now I'm gonna tell you somethin' important. You use `claude-cage` alongside Clau
 
 ```
 Layer 1: OS User Isolation (claude-cage)
-    └─> Layer 2: Application Sandbox (Claude Code /sandbox)
-        └─> Layer 3: OS Network Restrictions (iptables)
+    └─> Layer 2: OS Network Restrictions (iptables)
+        └─> Layer 3: Application Sandbox (Claude Code /sandbox)
             └─> Layer 4: Claude AI Safety Training
 ```
 

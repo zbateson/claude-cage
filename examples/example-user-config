@@ -33,13 +33,43 @@ claude_cage {
     -- Only applies when userMode = "per-project"
     -- userAppend = "custom-suffix",
 
-    -- Override default sync prefix if desired
-    -- syncPrepend = "my-custom-prefix-",
+    -- ============================================================================
+    -- MODE SELECTION (typically set per-project, not user-wide)
+    -- ============================================================================
+
+    -- Direct mount mode (default: false)
+    -- false: Sync mode - creates sync directory with unison, provides file exclusion
+    -- true: Direct mount mode - mounts source directly, no sync, no duplication
+    --       WARNING: No file exclusion in direct mount mode
+    -- Most users leave this unset here and configure per-project
+    -- directMount = false,
+
+    -- ============================================================================
+    -- SYNC MODE SETTINGS (ignored in direct mount mode)
+    -- ============================================================================
+
+    -- Override default sync prefix if desired (default: ".caged-")
+    -- Creates hidden sync directories to keep workspace clean
+    -- syncPrepend = ".caged-",
+
+    -- Mount configuration (optional)
+    -- mountBase: Base directory under user home (default: "caged")
+    --   Set to "" to mount directly under user home
+    -- mountBase = "caged",
+
+    -- mounted: Override final directory name (default: project name)
+    -- mounted = "",
 
     -- Show ASCII art banner (default: true)
     -- showBanner = false,
 
+    -- ============================================================================
+    -- FILE EXCLUSION (SYNC MODE ONLY - ignored in direct mount mode)
+    -- ============================================================================
+
     -- Add user-specific excludes (merged with system excludes)
+    -- WARNING: These only work in sync mode. Direct mount mode exposes all files.
+
     -- Use excludeRegex for pattern matching
     excludeRegex = {
         ".*\\.log$"
@@ -50,7 +80,10 @@ claude_cage {
         "*.tmp"
     },
 
-    -- Network restrictions (optional)
+    -- ============================================================================
+    -- NETWORK RESTRICTIONS (optional - defense in depth)
+    -- ============================================================================
+
     -- NOTE: In single-user mode (default), network rules are shared across all
     -- projects and persist until the last instance exits. In per-project mode,
     -- each project gets its own network rules.

@@ -32,10 +32,41 @@ claude_cage {
     -- Show ASCII art banner (default: true)
     -- showBanner = false,
 
-    -- Default prefix for sync directories
-    syncPrepend = "claude-",
+    -- ============================================================================
+    -- MODE SELECTION (typically set per-project, not system-wide)
+    -- ============================================================================
+
+    -- Direct mount mode (default: false)
+    -- false: Sync mode - creates sync directory with unison, provides file exclusion
+    -- true: Direct mount mode - mounts source directly, no sync, no duplication
+    --       WARNING: No file exclusion in direct mount mode
+    -- Most users leave this unset here and configure per-project
+    -- directMount = false,
+
+    -- ============================================================================
+    -- SYNC MODE SETTINGS (ignored in direct mount mode)
+    -- ============================================================================
+
+    -- Default prefix for sync directories (default: ".caged-")
+    -- Creates hidden sync directories to keep workspace clean
+    syncPrepend = ".caged-",
+
+    -- Mount configuration
+    -- mountBase: Base directory under user home (default: "caged")
+    --   Projects mount at /home/<user>/<mountBase>/<project>/
+    --   Set to "" to mount directly: /home/<user>/<project>/
+    -- mountBase = "caged",
+
+    -- mounted: Override the final directory name (default: project name)
+    -- mounted = "",
+
+    -- ============================================================================
+    -- FILE EXCLUSION (SYNC MODE ONLY - ignored in direct mount mode)
+    -- ============================================================================
 
     -- Common excludes that apply to all projects
+    -- WARNING: These only work in sync mode. Direct mount mode exposes all files.
+
     -- Use excludePath for specific directories at the root
     excludePath = {
         ".git",
@@ -54,7 +85,10 @@ claude_cage {
         "node_modules"
     },
 
-    -- Network restrictions (optional - defense in depth)
+    -- ============================================================================
+    -- NETWORK RESTRICTIONS (optional - defense in depth)
+    -- ============================================================================
+
     -- Default to disabled; users/projects can override
     -- NOTE: In single-user mode (default), network rules are shared across all
     -- projects and persist until the last instance exits. In per-project mode,

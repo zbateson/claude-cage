@@ -36,9 +36,20 @@ print_banner() {
 EOF
 )
 
+    # ANSI color codes
+    local yellow='\033[33m'
+    local reset='\033[0m'
+
     # Print banner line by line with a slight delay for "slide up" effect
+    local line_num=0
     while IFS= read -r line; do
-        echo "$line"
+        line_num=$((line_num + 1))
+        # Lines 4-9 are CLAUDE (after 3 blank lines), lines 23-28 are CAGE
+        if (( line_num >= 4 && line_num <= 9 )) || (( line_num >= 23 && line_num <= 28 )); then
+            echo -e "${yellow}${line}${reset}"
+        else
+            echo "$line"
+        fi
         sleep 0.01
     done <<< "$banner"
     sleep 0.3
@@ -154,13 +165,16 @@ local userMode = config.userMode or "single"  -- Options: "single" or "per-proje
 local userAppend = config.userAppend or ""
 local source = config.source or ""
 local sync = config.sync or ""
-local syncPrepend = config.syncPrepend or "claude-"
+local syncPrepend = config.syncPrepend or ".caged-"
+local mountBase = config.mountBase or ""
 local mounted = config.mounted or ""
+local directMount = config.directMount or false
 local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
 
--- If project is set and source is not, use project for source
-if project ~= "" and source == "" then
+-- If project is set and source is not, use project for source (sync mode only)
+-- In direct mount mode, source should default to "." (handled in bash)
+if project ~= "" and source == "" and not directMount then
     source = project
 end
 
@@ -192,9 +206,18 @@ if sync == "" then
     end
 end
 
--- If mounted is empty, use "claude" as default
+-- Set mountBase default
+if mountBase == "" then
+    mountBase = "caged"
+end
+
+-- Set mounted default to project name
 if mounted == "" then
-    mounted = "claude"
+    if project ~= "" then
+        mounted = project
+    else
+        mounted = "project"
+    end
 end
 
 -- Network configuration defaults
@@ -232,7 +255,7 @@ if config.belowPath then
 end
 
 -- Output basic config (use | delimiter to preserve empty fields)
-print(user .. "|" .. source .. "|" .. sync .. "|" .. syncPrepend .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner))
+print(user .. "|" .. source .. "|" .. sync .. "|" .. syncPrepend .. "|" .. mountBase .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner))
 
 -- Output exclude patterns for validation (pipe-separated)
 local function array_to_string(arr)
@@ -260,6 +283,9 @@ print(array_to_string(config.blockNetworks))
 
 -- Output project for validation
 print(project)
+
+-- Output directMount setting
+print(tostring(directMount))
 EOF
 )
 lua_exit_code=$?
@@ -279,7 +305,7 @@ fi
 
 # Parse the lua output (only if lua succeeded)
 {
-    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_syncPrepend cfg_mounted cfg_exclude cfg_showBanner
+    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_syncPrepend cfg_mountBase cfg_mounted cfg_exclude cfg_showBanner
     read -r cfg_excludePath
     read -r cfg_excludeName
     read -r cfg_excludeRegex
@@ -292,6 +318,7 @@ fi
     read -r cfg_blockIPs
     read -r cfg_blockNetworks
     read -r cfg_project
+    read -r cfg_directMount
 } <<< "$lua_output"
 
 # Replace EMPTY placeholder with empty string for array values
@@ -310,6 +337,7 @@ fi
 test_mode=false
 cleanup_mode=false
 source_arg=""
+start_subdir=""
 
 for arg in "$@"; do
     if [ "$arg" = "--test" ]; then
@@ -323,9 +351,23 @@ for arg in "$@"; do
     fi
 done
 
-# Allow source to be provided as command-line argument
+# Handle command-line argument based on mode
 if [ -n "$source_arg" ]; then
-    cfg_source="$source_arg"
+    if [ "$cfg_directMount" = "true" ]; then
+        # In directMount mode, argument is the subdirectory to start in
+        start_subdir="$source_arg"
+    else
+        # In sync mode, command-line arguments are not supported
+        echo "Hold on now. You can't pass a directory argument in sync mode."
+        echo "The source directory is set in the config file only."
+        echo "If you want to specify a starting directory, use directMount mode."
+        exit 1
+    fi
+fi
+
+# In directMount mode, default source to current directory if not set
+if [ "$cfg_directMount" = "true" ] && [ -z "$cfg_source" ]; then
+    cfg_source="."
 fi
 
 # Validate required config
@@ -349,6 +391,23 @@ if [ ! -d "$cfg_source" ]; then
     exit 1
 fi
 
+# In directMount mode, require a starting subdirectory
+if [ "$cfg_directMount" = "true" ]; then
+    if [ -z "$start_subdir" ]; then
+        echo "Hold on now. In direct mount mode, you gotta tell me which project to start in."
+        echo "Run it like: sudo claude-cage <subdirectory>"
+        echo "For example: sudo claude-cage my-project"
+        exit 1
+    fi
+
+    # Validate the subdirectory exists
+    if [ ! -d "$cfg_source/$start_subdir" ]; then
+        echo "Now we got a problem. That subdirectory '$cfg_source/$start_subdir' don't exist."
+        echo "Can't start Claude in somethin' that ain't there."
+        exit 1
+    fi
+fi
+
 # Handle cleanup mode
 if [ "$cleanup_mode" = true ]; then
     # Now check for root
@@ -367,12 +426,12 @@ if [ "$cleanup_mode" = true ]; then
         echo "Found mounted directory at $mount_point, unmountin' it now..."
         umount -l "$mount_point" 2>/dev/null
         if [ $? -eq 0 ]; then
-            echo "  Unmounted successfully."
+            echo "  Unmounted. All clear."
         else
-            echo "  Warning: Had trouble unmountin'. May need manual cleanup."
+            echo "  Had some trouble unmountin'. May need to clean that up yourself."
         fi
     else
-        echo "No mounted directory found at $mount_point"
+        echo "No mounted directory at $mount_point. Already clean."
     fi
 
     # Clean up iptables rules for this user
@@ -384,7 +443,7 @@ if [ "$cleanup_mode" = true ]; then
             iptables -D OUTPUT -j "$chain" 2>/dev/null
             iptables -F "$chain" 2>/dev/null
             iptables -X "$chain" 2>/dev/null
-            echo "  Cleaned up $chain"
+            echo "  Done. $chain is gone."
         done
     fi
 
@@ -394,11 +453,11 @@ if [ "$cleanup_mode" = true ]; then
         while IFS= read -r pid; do
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 kill "$pid" 2>/dev/null
-                echo "  Stopped process $pid"
+                echo "  Process $pid stopped."
             fi
         done < "$pid_file"
         rm -f "$pid_file"
-        echo "  PID file removed."
+        echo "  PID file's gone."
     else
         echo "No PID file found at $pid_file"
     fi
@@ -413,9 +472,9 @@ if [ "$cleanup_mode" = true ]; then
             echo "Alright, removin' user '$cfg_user'..."
             userdel -r "$cfg_user" 2>/dev/null || userdel "$cfg_user" 2>/dev/null
             if [ $? -eq 0 ]; then
-                echo "  User removed."
+                echo "  Done. User's gone."
             else
-                echo "  Warning: Had trouble removin' the user. May need manual cleanup."
+                echo "  Had some trouble removin' the user. May need to clean that up yourself."
             fi
         else
             echo "Leavin' user '$cfg_user' as is."
@@ -444,9 +503,21 @@ echo ""
 echo "Configuration:"
 echo "  Project:       $cfg_project"
 echo "  User:          $cfg_user"
-echo "  Source:        $cfg_source"
-echo "  Sync:          $cfg_sync"
-echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
+if [ "$cfg_directMount" = "true" ]; then
+    echo "  Mode:          Direct mount (no sync)"
+    if [ -n "$start_subdir" ]; then
+        echo "  Start dir:     $start_subdir"
+    fi
+else
+    echo "  Mode:          Sync mode"
+    echo "  Source:        $cfg_source"
+    echo "  Sync:          $cfg_sync"
+fi
+if [ -n "$cfg_mountBase" ]; then
+    echo "  Mount point:   /home/$cfg_user/$cfg_mountBase/$cfg_mounted"
+else
+    echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
+fi
 echo "  Network mode:  $cfg_networkMode"
 echo ""
 echo "Excludes:"
@@ -647,9 +718,9 @@ fi
 # Prompt to continue if user wasn't already prompted during user creation
 if [ "$user_was_prompted" = "false" ]; then
     echo ""
-    read -p "Ready to proceed? [Y/n] " -n 1 -r
+    read -p "Ready to proceed? [Y/n] " -n 1 -r -s key
     echo
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
+    if [[ "$key" == $'\e' ]] || [[ $key =~ ^[Nn]$ ]]; then
         echo "Alright, abortin' the mission."
         exit 0
     fi
@@ -657,7 +728,13 @@ fi
 
 # Set user_home for later use
 user_home=$(eval echo ~"$cfg_user")
-mount_point="$user_home/${cfg_mounted}"
+
+# Construct mount point: /home/<user>/<mountBase>/<mounted>/ or /home/<user>/<mounted>/
+if [ -n "$cfg_mountBase" ]; then
+    mount_point="$user_home/${cfg_mountBase}/${cfg_mounted}"
+else
+    mount_point="$user_home/${cfg_mounted}"
+fi
 
 # Track iptables chain name for cleanup
 # In single-user mode, use a shared chain name; otherwise use per-process chain
@@ -669,11 +746,21 @@ else
     iptables_chain="CLAUDE_CAGE_${cfg_user}"
 fi
 
-# PID file to track running processes
+# PID file to track running processes (local to this project directory)
 pid_file="claude-cage.pid"
 
-# Instance tracking file (tracks multiple instances)
-instance_file="claude-cage.instances"
+# Instance tracking files
+# Local instance file (tracks instances of THIS project)
+local_instance_file="claude-cage.instances"
+
+# Global instance file (tracks all projects for this user in single-user mode)
+if [[ "$cfg_user" == *"-"* ]]; then
+    # Per-project mode: only use local instance file
+    global_instance_file=""
+else
+    # Single-user mode: track instances globally in user's home
+    global_instance_file="$user_home/.claude-cage-instances"
+fi
 
 # This instance's ID
 instance_id="$$"
@@ -682,27 +769,75 @@ cleanup() {
     echo ""
     echo "Alright, shuttin' down operations..."
 
-    # Remove this instance from the instance file
-    if [ -f "$instance_file" ]; then
-        sed -i "/^$instance_id$/d" "$instance_file"
+    # Remove this instance from the local instance file
+    if [ -f "$local_instance_file" ]; then
+        sed -i "/^$instance_id$/d" "$local_instance_file"
 
-        # Check if there are other instances still running
-        remaining_instances=()
+        # Check if there are other instances of THIS project still running
+        remaining_local=()
         while IFS= read -r inst_id; do
             if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
-                remaining_instances+=("$inst_id")
+                remaining_local+=("$inst_id")
             fi
-        done < "$instance_file"
+        done < "$local_instance_file"
 
-        if [ ${#remaining_instances[@]} -gt 0 ]; then
-            echo "Other instances still runnin' (${remaining_instances[*]}). Leavin' processes alone."
-            # Update instance file to remove dead instances
-            printf "%s\n" "${remaining_instances[@]}" > "$instance_file"
+        if [ ${#remaining_local[@]} -gt 0 ]; then
+            echo "Other instances of this project still runnin' (${remaining_local[*]}). Leavin' processes alone."
+            # Update local instance file to remove dead instances
+            printf "%s\n" "${remaining_local[@]}" > "$local_instance_file"
+
+            # Still need to remove from global in single-user mode
+            if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
+                sed -i "/^$instance_id$/d" "$global_instance_file"
+            fi
+
             echo "This session's done. Stay safe out there."
             return
         else
-            # No more instances, remove the instance file
-            rm -f "$instance_file"
+            # No more instances of this project, remove the local instance file
+            rm -f "$local_instance_file"
+        fi
+    fi
+
+    # Remove from global instance file (single-user mode)
+    if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
+        sed -i "/^$instance_id$/d" "$global_instance_file"
+
+        # Check if there are other projects still running as this user
+        remaining_global=()
+        while IFS= read -r inst_id; do
+            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
+                remaining_global+=("$inst_id")
+            fi
+        done < "$global_instance_file" 2>/dev/null
+
+        if [ ${#remaining_global[@]} -gt 0 ]; then
+            echo "Other projects still runnin' as user $cfg_user (${remaining_global[*]})."
+            echo "Cleanin' up this project only. User and network rules stay in place."
+            # Update global instance file to remove dead instances
+            printf "%s\n" "${remaining_global[@]}" > "$global_instance_file"
+
+            # Clean up local processes and mount
+            if [ -f "$pid_file" ]; then
+                echo "Stoppin' processes from $pid_file..."
+                while IFS= read -r pid; do
+                    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                        kill "$pid" 2>/dev/null
+                    fi
+                done < "$pid_file"
+                rm -f "$pid_file"
+            fi
+
+            if mountpoint -q "$mount_point" 2>/dev/null; then
+                echo "Unmountin' $mount_point..."
+                umount -l "$mount_point" 2>/dev/null
+            fi
+
+            echo "This project's done. Other projects still flyin'. Stay safe out there."
+            return
+        else
+            # No more instances for this user, remove the global instance file
+            rm -f "$global_instance_file"
         fi
     fi
 
@@ -737,10 +872,19 @@ cleanup() {
         fi
     else
         # Single-user mode: only clean up if no other instances exist
-        # Check for any claude-cage.instances files under /home/.claude-cage
-        cage_instances=$(find /home/.claude-cage -name "claude-cage.instances" -type f 2>/dev/null | wc -l)
+        # Check the global instance file
+        has_other_instances=false
+        if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
+            # Check if there are any live instances in the global file
+            while IFS= read -r inst_id; do
+                if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
+                    has_other_instances=true
+                    break
+                fi
+            done < "$global_instance_file"
+        fi
 
-        if [ "$cage_instances" -eq 0 ] && iptables -L "$iptables_chain" >/dev/null 2>&1; then
+        if [ "$has_other_instances" = "false" ] && iptables -L "$iptables_chain" >/dev/null 2>&1; then
             echo "Last instance for user $cfg_user, cleanin' up network restrictions..."
             iptables -D OUTPUT -j "$iptables_chain" 2>/dev/null
             iptables -F "$iptables_chain" 2>/dev/null
@@ -791,20 +935,26 @@ add_iptables_rule() {
     local action="$2"  # ACCEPT or REJECT
     local ip="$3"
     local ports="$4"   # Empty or comma-separated ports
+    local insert_mode="${5:-append}"  # "insert" or "append" (default: append)
+
+    local iptables_cmd="iptables -A"
+    if [ "$insert_mode" = "insert" ]; then
+        iptables_cmd="iptables -I"
+    fi
 
     if [ -z "$ports" ]; then
         # No port restriction - allow/block all ports
-        iptables -A "$chain" -d "$ip" -j "$action"
+        $iptables_cmd "$chain" -d "$ip" -j "$action"
     else
         # Port restriction - apply to TCP and UDP
         if [[ "$ports" == *","* ]]; then
             # Multiple ports - use multiport
-            iptables -A "$chain" -p tcp -d "$ip" -m multiport --dports "$ports" -j "$action"
-            iptables -A "$chain" -p udp -d "$ip" -m multiport --dports "$ports" -j "$action"
+            $iptables_cmd "$chain" -p tcp -d "$ip" -m multiport --dports "$ports" -j "$action"
+            $iptables_cmd "$chain" -p udp -d "$ip" -m multiport --dports "$ports" -j "$action"
         else
             # Single port
-            iptables -A "$chain" -p tcp -d "$ip" --dport "$ports" -j "$action"
-            iptables -A "$chain" -p udp -d "$ip" --dport "$ports" -j "$action"
+            $iptables_cmd "$chain" -p tcp -d "$ip" --dport "$ports" -j "$action"
+            $iptables_cmd "$chain" -p udp -d "$ip" --dport "$ports" -j "$action"
         fi
     fi
 }
@@ -816,7 +966,7 @@ setup_network_restrictions() {
     user_uid=$(id -u "$cfg_user")
 
     if [ "$mode" = "disabled" ]; then
-        echo "Network isolation: disabled"
+        echo "Network restrictions: None. You're flyin' without that extra safety net."
         return 0
     fi
 
@@ -824,12 +974,21 @@ setup_network_restrictions() {
     local chain_exists=false
     if iptables -L "$iptables_chain" >/dev/null 2>&1; then
         chain_exists=true
-        echo "Adding network restrictions to existing chain (shared in single-user mode)..."
+        echo "Addin' network restrictions to existing chain (shared in single-user mode)..."
+
+        # Remove the final catch-all rule (could be ACCEPT or REJECT depending on previous mode)
+        # We need to remove it so we can add new rules, then re-add it at the end
+        # Try to get the last rule number and delete it
+        local last_rule_num=$(iptables -L "$iptables_chain" -n --line-numbers | grep -E "^[0-9]" | tail -1 | awk '{print $1}')
+        if [ -n "$last_rule_num" ]; then
+            echo "Removin' final rule (line $last_rule_num) to add new restrictions..."
+            iptables -D "$iptables_chain" "$last_rule_num" 2>/dev/null
+        fi
     else
-        echo "Setting up network restrictions (mode: $mode)..."
+        echo "Settin' up network restrictions (mode: $mode)..."
         # Create custom chain for claude-cage rules
         iptables -N "$iptables_chain" 2>/dev/null || {
-            echo "Warning: Could not create iptables chain. Network restrictions may not work."
+            echo "Hold on. Couldn't create iptables chain. Network restrictions may not work right."
             return 1
         }
         # Jump to our chain for output from cfg_user
@@ -837,10 +996,7 @@ setup_network_restrictions() {
     fi
 
     if [ "$mode" = "allowlist" ]; then
-        # If chain exists, remove the final REJECT rule so we can add more ACCEPT rules
-        if [ "$chain_exists" = true ]; then
-            iptables -D "$iptables_chain" -j REJECT 2>/dev/null
-        fi
+        # No need to remove final rule here - already done above if chain exists
 
         # Allow user-configured domains
         if [ -n "$cfg_allowedDomains" ]; then
@@ -875,14 +1031,17 @@ setup_network_restrictions() {
         iptables -A "$iptables_chain" -j REJECT
 
     elif [ "$mode" = "blocklist" ]; then
+        # No need to remove final rule here - already done above if chain exists
+
         # First, allow exceptions (these rules are processed first)
+        # Use INSERT mode so exceptions go at the beginning of the chain, before any existing blocks
         # Allow user-configured domains
         if [ -n "$cfg_allowedDomains" ]; then
             IFS='|' read -ra domains <<< "$cfg_allowedDomains"
             for domain_spec in "${domains[@]}"; do
                 IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
                 while IFS= read -r ip; do
-                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
+                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports" "insert"
                 done < <(resolve_domain "$domain")
             done
         fi
@@ -892,7 +1051,7 @@ setup_network_restrictions() {
             IFS='|' read -ra ips <<< "$cfg_allowedIPs"
             for ip_spec in "${ips[@]}"; do
                 IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
-                add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
+                add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports" "insert"
             done
         fi
 
@@ -901,7 +1060,7 @@ setup_network_restrictions() {
             IFS='|' read -ra networks <<< "$cfg_allowedNetworks"
             for network_spec in "${networks[@]}"; do
                 IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
-                add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports"
+                add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports" "insert"
             done
         fi
 
@@ -939,11 +1098,11 @@ setup_network_restrictions() {
         iptables -A "$iptables_chain" -j ACCEPT
     fi
 
-    echo "Network restrictions applied successfully"
+    echo "Network restrictions in place. Locked down tight."
 }
 
-# Check for excluded files in sync directory
-if [ -d "$cfg_sync" ]; then
+# Check for excluded files in sync directory (skip in directMount mode)
+if [ "$cfg_directMount" != "true" ] && [ -d "$cfg_sync" ]; then
     echo "Doin' a quick sweep of the sync directory..."
     excluded_files=()
 
@@ -1040,28 +1199,54 @@ if [ "$skip_setup" = false ]; then
     # Setup network restrictions if configured
     setup_network_restrictions "$cfg_networkMode"
 
-    # Build unison command with exclude options
-    unison_cmd="unison ./$cfg_source ./$cfg_sync -force ./$cfg_source -prefer ./$cfg_source -batch -confirmbigdel=false"
-    if [ -n "$cfg_exclude" ]; then
-        unison_cmd="$unison_cmd $cfg_exclude"
-    fi
-
-    # Run unison as the original user
-    su -c "$unison_cmd" "$original_user" >/dev/null 2>&1
-    su -c "$unison_cmd -repeat watch" "$original_user" >/dev/null 2>&1 &
-    unison_pid=$!
-
     # Create mount point if it doesn't exist
     mkdir -p "$mount_point"
 
-    bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"
-    bindfs_pid=$!
+    # Check if mount point is already mounted (different project using same destination)
+    if mountpoint -q "$mount_point" 2>/dev/null; then
+        echo "Hold on now. That mount point's already in use."
+        echo "Location: $mount_point"
+        echo ""
+        echo "Looks like another project's already mounted there."
+        echo "Either that project's still runnin', or cleanup didn't happen."
+        echo ""
+        echo "Try one of these:"
+        echo "  1. Set a different 'mounted' name in your config"
+        echo "  2. Run: sudo claude-cage --cleanup (if old instance is dead)"
+        echo "  3. Check what's mounted: mount | grep $mount_point"
+        exit 1
+    fi
 
-    # Write PIDs to file for cleanup
-    {
-        echo "$unison_pid"
-        echo "$bindfs_pid"
-    } > "$pid_file"
+    if [ "$cfg_directMount" = "true" ]; then
+        # Direct mount mode: skip unison, mount source directly
+        echo "Direct mount mode: mountin' $cfg_source directly..."
+        bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_source" "$mount_point"
+        bindfs_pid=$!
+
+        # Write only bindfs PID to file
+        echo "$bindfs_pid" > "$pid_file"
+    else
+        # Sync mode: use unison + bindfs
+        # Build unison command with exclude options
+        unison_cmd="unison ./$cfg_source ./$cfg_sync -force ./$cfg_source -prefer ./$cfg_source -batch -confirmbigdel=false"
+        if [ -n "$cfg_exclude" ]; then
+            unison_cmd="$unison_cmd $cfg_exclude"
+        fi
+
+        # Run unison as the original user
+        su -c "$unison_cmd" "$original_user" >/dev/null 2>&1
+        su -c "$unison_cmd -repeat watch" "$original_user" >/dev/null 2>&1 &
+        unison_pid=$!
+
+        bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "./$cfg_sync" "$mount_point"
+        bindfs_pid=$!
+
+        # Write PIDs to file for cleanup
+        {
+            echo "$unison_pid"
+            echo "$bindfs_pid"
+        } > "$pid_file"
+    fi
 else
     # Verify mount point still exists
     if ! mountpoint -q "$mount_point" 2>/dev/null; then
@@ -1069,27 +1254,52 @@ else
         echo "Somethin' went wrong. Run: sudo claude-cage --cleanup"
         exit 1
     fi
-    echo "Mount point verified at $mount_point"
+    echo "Mount point's still there at $mount_point. We're good."
 fi
 
 # Register this instance
-echo "$instance_id" >> "$instance_file"
+echo "$instance_id" >> "$local_instance_file"
+
+# In single-user mode, also register globally
+if [ -n "$global_instance_file" ]; then
+    echo "$instance_id" >> "$global_instance_file"
+fi
 
 if [ "$test_mode" = true ]; then
     echo ""
     echo "=== TEST MODE ==="
-    echo "Alright, everything's ready. Switchin' over to user '$cfg_user' for testin'."
-    echo "Your files are mounted at: ~/$cfg_mounted"
-    echo "Just 'cd $cfg_mounted' to get to 'em."
-    echo "When you're done, type 'exit' and we'll clean up."
+    echo "Alright, everything's ready. Switchin' you over to user '$cfg_user' so you can test things out."
+    if [ "$cfg_directMount" = "true" ] && [ -n "$start_subdir" ]; then
+        if [ -n "$cfg_mountBase" ]; then
+            echo "Your files are mounted at: ~/$cfg_mountBase/$cfg_mounted"
+        else
+            echo "Your files are mounted at: ~/$cfg_mounted"
+        fi
+        echo "Startin' you in subdirectory: $start_subdir"
+        echo "When you're done pokin' around, type 'exit' and we'll clean up."
+    else
+        if [ -n "$cfg_mountBase" ]; then
+            echo "Your files are mounted at: ~/$cfg_mountBase/$cfg_mounted"
+            echo "Just 'cd $cfg_mountBase/$cfg_mounted' to get to 'em."
+        else
+            echo "Your files are mounted at: ~/$cfg_mounted"
+            echo "Just 'cd $cfg_mounted' to get to 'em."
+        fi
+        echo "When you're done pokin' around, type 'exit' and we'll clean up."
+    fi
     echo "================="
     echo ""
     su - "$cfg_user"
     exit_code=$?
 else
-    # Run Claude as the original user, but in the mounted directory
-    # This preserves authentication while still working with isolated files
-    su - "$original_user" -c "cd $mount_point && claude"
+    # Run Claude as the caged user in the mounted directory
+    if [ "$cfg_directMount" = "true" ] && [ -n "$start_subdir" ]; then
+        # In directMount mode, start in the specified subdirectory
+        su - "$cfg_user" -c "cd $mount_point/$start_subdir && claude"
+    else
+        # In sync mode, start in the mount point root
+        su - "$cfg_user" -c "cd $mount_point && claude"
+    fi
     exit_code=$?
 fi
 

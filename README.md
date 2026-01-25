@@ -1,18 +1,25 @@
 # ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
-Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Three layers of file protection. Optional network isolation. Multiple barriers between your precious code and anything that might go wrong. That's how we do this right.
+Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Two modes of operation. Multiple layers of protection. Optional network isolation. Multiple barriers between your precious code and anything that might go wrong. That's how we do this right.
 
 ## What This Thing Does
 
-Listen up. `claude-cage` sets up a containment system - multiple layers of protection workin' together:
+Listen up. `claude-cage` sets up a containment system with OS-level user isolation. Two modes of operation:
 
-**File Isolation** - Three levels of security, each one watchin' the other:
+**Sync Mode** (default) - Three-layer file isolation:
 
 1. **Source directory** - That's your actual project files. Your life's work. The thing you came here to protect.
 2. **Sync directory** - A perfect copy, maintained by `unison`. Like a mirror, but better.
 3. **Mounted directory** - Where Claude Code operates. Permission-mapped through `bindfs`. Controlled. Contained.
 
-Every change Claude makes gets synced back to your source. But only the changes you allow. The rest? They stay on the outside where they belong.
+Every change Claude makes gets synced back to your source. But only the changes you allow through exclude patterns. The rest? They stay on the outside where they belong.
+
+**Direct Mount Mode** - Two-layer isolation for when you got a whole collection:
+
+1. **Source directory** - Your entire directory tree (like `/home/user/Projects/public/`)
+2. **Mounted directory** - Direct bindfs mount with permission mapping
+
+No sync. No duplication. Useful when you got yourself a big collection of open-source projects and you ain't gonna copy 20GB just to work on one. Claude can access the whole tree, you just tell it which project to start in. But remember - no exclude patterns in this mode. Claude sees everything.
 
 **Network Isolation** (optional) - OS-level restrictions on top of Claude Code's sandbox:
 
@@ -25,18 +32,20 @@ You don't have to use network restrictions. But they're there if you need 'em.
 
 ## ⚠️ Now Listen to Me Very Carefully
 
-**This tool uses bidirectional synchronization.** That means what happens in one place happens in the other. **Including deletions.** You understand what I'm tellin' you? You delete somethin' on one side, it's gone on the other. Gone.
+**Sync mode uses bidirectional synchronization.** That means what happens in one place happens in the other. **Including deletions.** You understand what I'm tellin' you? You delete somethin' on one side, it's gone on the other. Gone.
 
-**Before you even think about runnin' this:**
+**Before you even think about runnin' this in sync mode:**
 - ✅ **Commit and push everything to git** - Every last change. I mean it.
 - ✅ **Make yourself a backup** - A real one. The kind that'll still be there when you need it.
 - ✅ **Test this on somethin' that don't matter first** - Learn how it works before you bet the farm.
 - ✅ **Set up your exclude patterns right** - Protect what needs protectin'.
 
-**Here's what unison's gonna do:**
+**Here's what unison's gonna do in sync mode:**
 - Synchronize every modification you make, both ways
 - **Delete files** if they get deleted on either side
 - Propagate changes the second they happen in watch mode
+
+**Direct mount mode is different:** Changes happen directly to your source files. Right there. No sync, so no sync-related deletions to worry about. But here's what you gotta understand - also no file exclusion. Claude can see everything in that mounted tree. Every. Single. File. Only use direct mount with directories containing files you're comfortable exposin'. Got secrets in there? Then you got no business usin' direct mount. Simple as that.
 
 If you ain't sure about your setup, you test it on somethin' expendable first. That ain't a suggestion.
 
@@ -126,15 +135,14 @@ Check `examples/example-system-config` and `examples/example-user-config` for te
 
 ### Local Config (Required)
 
-Create `claude-cage.config` in your project directory. Here's how:
+Create `claude-cage.config` in your project directory.
+
+**Sync Mode Example** (default - for single projects with file exclusion):
 
 ```lua
 claude_cage {
-    -- Project name (recommended - sets defaults for other options)
+    -- Project name (required)
     project = "myproject",
-
-    -- User to run Claude Code as (default: "claude")
-    -- user = "claude",
 
     -- User isolation mode (default: "single" - RECOMMENDED)
     -- Options: "single" or "per-project"
@@ -142,21 +150,16 @@ claude_cage {
     -- Per-project mode creates separate users per project (requires login per user)
     -- userMode = "single",
 
-    -- Optional: Custom suffix for per-project mode
-    -- Only applies when userMode = "per-project"
-    -- If not set, uses project name
-    -- userAppend = "myproject",
-
     -- Source directory under current directory to allow reading from
-    -- If not provided, source must be provided as a command-line argument
     source = "my-directory",
 
     -- Sync directory for unison to sync source with
     -- If empty, uses syncPrepend + project (or source if no project)
-    -- sync = "claude-myproject",
+    -- sync = ".caged-myproject",
 
-    -- Prefix for auto-generated sync directory name
-    -- syncPrepend = "claude-",
+    -- Prefix for auto-generated sync directory name (default: ".caged-")
+    -- Creates hidden sync directories to keep workspace clean
+    -- syncPrepend = ".caged-",
 
     -- Files/folders that Claude should not have access to and should not be synced
     excludePath = { "target", "dist", ".env" },
@@ -165,16 +168,55 @@ claude_cage {
     belowPath = { "node_modules" },
 
     -- Mounted directory name created under the user's home directory
-    -- Default: "claude" (not based on source/project)
-    -- mounted = "claude"
+    -- Default: "caged" (not based on source/project)
+    -- mounted = "caged"
 }
 ```
+
+**Direct Mount Mode Example** (for when you got a big collection of projects):
+
+```lua
+claude_cage {
+    -- Project name (required)
+    project = "public-projects",
+
+    -- Enable direct mount mode (no sync, no duplication, no file exclusion)
+    directMount = true,
+
+    -- Source directory to mount (defaults to "." if you don't specify)
+    -- source = ".",
+
+    -- Mounted directory name
+    -- mounted = "public"
+}
+```
+
+### Choosing Between Sync Mode and Direct Mount Mode
+
+Listen up. These modes serve different purposes. Pick the right one for your situation:
+
+**Use Sync Mode When:**
+- You're workin' on a specific project with sensitive files
+- You need file-level exclusion security - secrets never make it to Claude's view
+- Storage space ain't a concern - duplicatin' the project's no problem
+- The project size is manageable (< 5GB typically)
+- You want the safety of exclude patterns watchin' your back
+
+**Use Direct Mount Mode When:**
+- You got yourself a large collection of projects - like 50 open-source repos
+- Storage space is tight - can't afford to duplicate 20GB just to work on one thing
+- **Every single file in that directory tree is safe** for Claude to see - I mean it, EVERY file
+- You want to work on one project but let Claude peek at the others if it needs to
+- You understand changes happen directly to source files - no sync layer protectin' you
+
+**Here's what you need to understand:** Sync mode protects you with file exclusion. That's your safety net. Direct mount mode? That gives you everything - no filters, no protection, just raw access to the whole tree. Only use direct mount when you trust every last file in there. You got secrets? API keys? Private data? Then direct mount ain't for you. That ain't a suggestion.
 
 ### Configuration Options
 
 - **project**: Project name (**required**)
-  - Automatically used as default for `userAppend` and `sync`
-  - Example: `project = "backend"` creates sync dir `"claude-backend"`
+  - In sync mode: Used as default for `userAppend` and `sync` directory name
+  - In direct mount mode: Used as identifier and for per-project username (if userMode = "per-project")
+  - Example: `project = "backend"` creates sync dir `".caged-backend"` (sync mode)
 - **user**: Base user account name to run Claude Code as (default: `"claude"`)
 - **userMode**: User isolation mode (default: `"single"`)
   - Options: `"single"` or `"per-project"`
@@ -188,19 +230,37 @@ claude_cage {
     - Username: `"claude-myproject"` (user + "-" + userAppend or project)
     - User home: `/home/.claude-cage/claude-myproject/`
     - Network rules: Project-specific, cleaned up when the project exits
-    - Claude Code authentication: **Requires login for each new project user** (see caveats below)
+    - Claude Code authentication: **Requires login for each new project user**
     - Use when: Different projects need different security policies
   - Users are automatically deleted when claude-cage exits (unless they existed before)
 - **userAppend**: (Optional) Custom suffix for per-project mode (default: uses `project` name)
   - Only applies when `userMode = "per-project"`
   - Example: `userAppend = "custom"` creates user `"claude-custom"` instead of `"claude-myproject"`
-- **source**: Source directory to sync (can be overridden via command-line)
-- **sync**: Sync directory name (default: auto-generated from `project` or `source`)
-  - If not set and `project` is set: `syncPrepend + project`
-  - If not set and no `project`: `syncPrepend + source`
-- **syncPrepend**: Prefix for auto-generated sync directory (default: `"claude-"`)
-- **mounted**: Directory name under `/home/<user>/` where files will be mounted (default: `"claude"`)
-  - Note: Default is `"claude"`, NOT the source directory name
+- **directMount**: Enable direct mount mode (default: `false`)
+  - `false`: Sync mode - creates sync directory with unison, gives you file exclusion protection
+  - `true`: Direct mount mode - mounts source directly without syncing, no duplication
+  - In direct mount mode, command-line argument specifies which subdirectory to start in (required)
+  - Use this when you got large directory trees and you can't afford to duplicate all that storage
+  - **Warning**: No file exclusion in direct mount mode - Claude can see every file in that tree
+- **source**: Source directory to sync/mount (depends on your mode)
+  - In sync mode: Gotta specify this in the config file - no command-line override
+  - In direct mount mode: Defaults to "." (current directory) if you don't set it
+- **sync**: Sync directory name (default: auto-generated from `project` or `source`, gets ignored in direct mount mode)
+  - If you don't set it and `project` is set: Uses `syncPrepend + project`
+  - If you don't set it and no `project`: Uses `syncPrepend + source`
+  - Only matters in sync mode
+- **syncPrepend**: Prefix for auto-generated sync directory (default: `".caged-"`)
+  - Creates hidden directories (starting with `.`) to keep your workspace clean
+  - Example: With `project = "backend"`, you get `.caged-backend/`
+  - Only matters in sync mode
+- **mountBase**: Base directory under user home where projects get mounted (default: `"caged"`)
+  - Set to `""` to mount directly under user home without a base directory
+  - Example: `mountBase = "caged"` → `/home/claude/caged/<project>/`
+  - Example: `mountBase = ""` → `/home/claude/<project>/` (no base directory)
+- **mounted**: Final directory name where Claude works (default: project name)
+  - This is the actual working directory where Claude starts
+  - Combined with `mountBase` to form the full path
+  - Example: With `mountBase = "caged"` and `mounted = "my-app"` → `/home/claude/caged/my-app/`
 - **showBanner**: Show ASCII art banner on startup (default: `true`)
   - Set to `false` to disable, or use `--no-banner` CLI flag
 
@@ -490,7 +550,6 @@ Here's how network restrictions work when you're runnin' multiple projects in si
 **The authentication situation:**
 - Every new project user needs its own Claude Code login. Every. Single. One.
 - Claude Code ties authentication to the user account - that's just how it is
-- Config syncing don't solve this. You still gotta authenticate.
 - You got ten projects? That's ten logins. Gets old real fast.
 
 **When you'd use per-project mode anyway:**
@@ -537,53 +596,61 @@ Create user 'claude'? [y/N]
 
 The user gets created with `--disabled-password` and `/bin/bash` shell - no password login, but can still run processes through `su`. That's how we launch Claude Code. Controlled access.
 
-**Claude Code Configuration Sync:**
-
-If you have Claude Code configured on your account (logged in, with settings, chat history, etc.), claude-cage automatically sets up bidirectional synchronization of your `~/.claude` directory:
-
-- Your authentication and settings are available to the caged user
-- No need to log in again
-- Chat history syncs between both users
-- Any settings changes or conversations sync back to your original user
-- Uses unison watch mode for real-time synchronization
-
-This means you can use Claude Code in the cage with all your existing configuration, and everything stays synchronized.
+**Important:** In single-user mode, you only need to authenticate once. In per-project mode, each new project user will require its own Claude Code authentication. See "Single-User vs Per-Project Mode" below for details.
 
 ### Basic Usage
 
-Run from the directory with your `claude-cage.config`:
+**Sync Mode** - Run from the directory with your `claude-cage.config`:
 
 ```bash
 sudo claude-cage
 ```
 
-### Override Source Directory
-
-You can override the source directory from the config. Useful if you're runnin' claude-cage from a directory that's got access to multiple projects, but you only want to open one:
+**Direct Mount Mode** - Tell it which subdirectory to start in:
 
 ```bash
-cd public
-sudo claude-cage mail-mime-parser
+cd /home/user/Projects/public
+sudo claude-cage my-project
 ```
+
+This mounts the entire `public` directory but starts Claude in the `my-project` subdirectory. Claude can still access all the other projects in the tree if it needs to.
+
+**Example use case:** Say you got 50 open-source projects totaling 20GB sitting in `/home/user/Projects/public/`. You want to work on one but you ain't gonna sync all 20GB. Here's what you do:
+
+1. Create `claude-cage.config` in `/home/user/Projects/public/`:
+   ```lua
+   claude_cage {
+       project = "public-projects",
+       directMount = true
+   }
+   ```
+
+2. Run it like this:
+   ```bash
+   cd /home/user/Projects/public
+   sudo claude-cage my-specific-project
+   ```
+
+3. That's it. Claude starts in `my-specific-project`, can access the whole `public` tree, no storage duplication. Clean and simple.
 
 ### Test Mode
 
-Test mode sets up the entire environment but switches you to an interactive bash shell instead of launching Claude Code. Perfect for verifying your configuration, testing network restrictions, or debugging issues:
+Test mode sets up the entire environment but gives you an interactive bash shell instead of launching Claude Code. Perfect for verifying your configuration, testing network restrictions, or debugging when things ain't workin' right:
 
 ```bash
 sudo claude-cage --test
 ```
 
 This will:
-- Create the user (if needed)
-- Set up file synchronization with unison
-- Apply network restrictions
+- Create the user (if it ain't there already)
+- Set up file synchronization (sync mode) or direct mount (direct mount mode)
+- Apply your network restrictions
 - Mount the directory with bindfs
-- Drop you into a bash shell as the configured user
+- Drop you into a bash shell as the configured user so you can poke around
 
 When you're done testing, type `exit` to trigger cleanup (unmount, network rule cleanup, optional user deletion).
 
-You can combine `--test` with a source directory override:
+**In direct mount mode**, combine `--test` with the subdirectory you want:
 
 ```bash
 sudo claude-cage --test my-project
@@ -610,9 +677,9 @@ This is useful when:
 
 **Note:** claude-cage creates `claude-cage.pid` and `claude-cage.instances` files in the working directory to track processes and running instances. Multiple instances can run simultaneously - they will share the same unison/bindfs processes. Cleanup only happens when the last instance exits.
 
-### Excluded Files Check
+### Excluded Files Check (Sync Mode Only)
 
-When you run `claude-cage`, it checks if any files in the sync directory match your exclude patterns. Security sweep. Standard procedure.
+When you run `claude-cage` in sync mode, it checks if any files in the sync directory match your exclude patterns. Security sweep. Standard procedure.
 
 This matters when:
 - You change your exclude configuration between runs
@@ -621,8 +688,8 @@ This matters when:
 If excluded files are found, you'll see this:
 ```
 WARNING: Found files/directories in sync directory that are now excluded:
-  - claude-my-directory/target
-  - claude-my-directory/.env
+  - .caged-my-directory/target
+  - .caged-my-directory/.env
 
 These files may have been created in a previous run with different exclude settings.
 They should be removed from the sync directory before continuing.
@@ -631,6 +698,8 @@ Remove these files? [y/N]
 ```
 
 Choose `y` to remove 'em automatically, or `N` to exit and handle it yourself. Your call.
+
+**Note:** This check don't apply in direct mount mode - there's no sync directory and no exclusion mechanism to check. Everything's exposed in direct mount. That's just how it is.
 
 ## Recommended: Use Sandbox Mode
 
@@ -661,10 +730,11 @@ Here's what you gotta understand about security - you don't rely on one lock. Yo
    - Can't access files owned by other users unless explicitly granted
    - The OS kernel itself enforces the isolation - that's hardware-level security
 
-2. **File Exclusion at Sync Level**
+2. **File Exclusion at Sync Level** (sync mode only)
    - Files matching your exclude patterns **never get synced** to the working directory
    - They literally don't exist in Claude's view - can't be read, can't be written, can't be accidentally leaked
    - Source of truth stays in your directory; Claude works on a filtered copy
+   - **Note:** In direct mount mode, all files are accessible - no exclusion layer protectin' you. That's the tradeoff.
 
 3. **Permission Mapping**
    - Files created by the `claude` user automatically appear as owned by you in the source
@@ -705,27 +775,35 @@ Layer 1: OS User Isolation (claude-cage)
 
 ## How It Works
 
-Here's the play-by-play:
+**Sync Mode** - Here's the play-by-play:
 
 1. **Unison** runs in watch mode, continuously syncing `source` ↔ `sync` directories
-2. **Unison** also syncs `~/.claude` (if it exists) between your user and the cage user
-   - Your Claude Code authentication, settings, and history stay synchronized
-   - No need to log in again inside the cage
-   - Changes sync bidirectionally in real-time
-3. **Bindfs** mounts the sync directory with permission mapping:
+2. **Bindfs** mounts the sync directory with permission mapping:
    - Files created by the Claude user appear as owned by you
    - Ensures proper permissions when files sync back to source
-4. **Claude Code** runs in the mounted directory, working on your files
-5. **All changes sync bidirectionally** in real-time
+3. **Claude Code** runs in the mounted directory, working on your files
+4. **All changes sync bidirectionally** in real-time
 
 Multiple layers. Each one doin' its job. That's how you keep things under control.
 
+**Direct Mount Mode** - Simpler operation for when you don't need all that sync business:
+
+1. **Bindfs** directly mounts the source directory with permission mapping:
+   - Files created by the Claude user appear as owned by you
+   - No sync layer - changes happen directly to your source files
+2. **Claude Code** starts in the subdirectory you specify but can access the entire mounted tree
+3. **All changes happen directly** to your source files in real-time - no middle layer
+
+Two layers instead of three. No sync, no duplication. Just OS-level user isolation with permission mapping. Faster setup, less overhead, but you lose the file exclusion safety net.
+
 ## Example Workflow
+
+**Sync Mode Workflow:**
 
 1. Configure your project:
    ```lua
    claude_cage {
-       source = "my-web-app",
+       project = "my-web-app",
        excludePath = { ".env", "dist" },
        belowPath = { "node_modules" }
    }
@@ -736,15 +814,33 @@ Multiple layers. Each one doin' its job. That's how you keep things under contro
    sudo ./claude-cage
    ```
 
-3. If you're already logged into Claude Code on your account:
-   - Your `~/.claude` config automatically syncs to the cage user
-   - No need to log in again
-   - Your chat history and settings are available
-
-4. Claude Code starts in `/home/claude/my-web-app`
-5. Make your changes with Claude Code
+3. Claude Code starts in `/home/claude/caged/` (default mount point)
+4. Make your changes with Claude Code
+5. Changes sync bidirectionally:
+   - `./my-web-app` ↔ `./.caged-my-web-app` ↔ `/home/claude/caged/`
+   - Sync directory (`.caged-my-web-app`) is hidden to keep your workspace clean
 6. File changes automatically appear in `./my-web-app`
-7. Settings changes and chat history sync back to your `~/.claude`
+
+**Direct Mount Mode Workflow:**
+
+1. Set it up for a collection of projects:
+   ```lua
+   claude_cage {
+       project = "public-projects",
+       directMount = true
+   }
+   ```
+
+2. Run claude-cage, tell it which project to start in:
+   ```bash
+   cd ~/Projects/public
+   sudo claude-cage my-web-app
+   ```
+
+3. Claude Code starts in `/home/claude/public/my-web-app`
+4. Make your changes with Claude Code
+5. Changes happen directly to `~/Projects/public/my-web-app` - no sync, straight to the source
+6. Claude can also access other projects in `~/Projects/public/` if it needs to look at somethin'
 
 Simple. Effective. Controlled.
 
@@ -837,8 +933,8 @@ sudo apt install inotify-tools
 ```
 
 **Error: source directory does not exist**
-- Check that the source directory exists in the current directory
-- Or provide the correct path as a command-line argument
+- In sync mode: Check that the source directory you specified in the config actually exists
+- In direct mount mode: Make sure you're in the right directory and the subdirectory you passed actually exists
 
 **Permission issues**
 - Ensure you run with `sudo`

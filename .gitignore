@@ -2,5 +2,5 @@
 claude-cage.pid
 claude-cage.instances
 
-# Sync directories (generated at runtime)
-claude-*
+# Sync directories (generated at runtime, hidden)
+.caged-*

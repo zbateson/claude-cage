@@ -2,11 +2,13 @@
 
 ## Installation Issues
 
-### lua is required but not installed
+### lua not installed
 
 **Error:**
 ```
-Error: lua is required but not installed
+Now listen carefully. We got a problem here.
+I need lua installed on this bird.
+Can't do nothin' without it.
 ```
 
 **Solution:**
@@ -18,36 +20,35 @@ sudo apt install lua
 sudo yum install lua
 ```
 
-### unison is required but not installed
+### inotify-tools not installed
 
 **Error:**
 ```
-Error: unison is required but not installed
+Hold on now. We got a problem here.
+Unison needs inotify-tools for file monitoring.
+Without it, this bird ain't gonna watch your files properly.
 ```
 
 **Solution:**
 ```bash
 # Ubuntu/Debian
-sudo apt install unison
+sudo apt install inotify-tools
 
 # RHEL/CentOS/Fedora
-sudo yum install unison
+sudo yum install inotify-tools
 ```
 
-### bindfs is required but not installed
+### unison or bindfs not installed
 
-**Error:**
-```
-Error: bindfs is required but not installed
-```
+The script doesn't check for these upfront. If they're missing, you'll see errors when the script tries to use them.
 
 **Solution:**
 ```bash
 # Ubuntu/Debian
-sudo apt install bindfs
+sudo apt install unison bindfs
 
 # RHEL/CentOS/Fedora
-sudo yum install bindfs
+sudo yum install unison bindfs
 ```
 
 ### No file monitoring helper program found
@@ -66,9 +67,9 @@ No file monitoring helper program found
 1. **Use polling mode (automatic fallback):**
    - claude-cage detects the missing binary and uses `-repeat 1` instead
    - Changes are detected every second (still very responsive)
-   - **Important:** Exclude large directories with `belowPath` to keep polling fast
+   - **Important:** Exclude large directories with `excludeName` to keep polling fast
    ```lua
-   belowPath = { "node_modules", "target", ".venv", "vendor" }
+   excludeName = { "node_modules", "target", ".venv", "vendor" }
    ```
 
 2. **Install unison-fsmonitor (optimal performance):**
@@ -180,7 +181,7 @@ excludePath = { "target", "dist" }
 
 **Error:**
 ```
-Permission denied
+Gonna need you to run this as root. Use sudo.
 ```
 
 **Cause:** Script requires root privileges for bindfs mounting.
@@ -424,7 +425,7 @@ ping 8.8.8.8  # Google DNS
 
 **Solution:**
 
-Switch to single-user mode (recommended):
+Switch to single-user mode:
 ```lua
 -- Change from
 userMode = "per-project"
@@ -553,20 +554,6 @@ sudo ./claude-cage --cleanup
 
 # Or manually remove rules
 sudo iptables -D OUTPUT -m owner --uid-owner claude -j REJECT
-```
-
-### User account not deleted
-
-**Problem:** claude user still exists after exit.
-
-**Cause:** User existed before claude-cage ran.
-
-**Solution:**
-```bash
-# Manual deletion
-sudo userdel -r claude
-
-# Or keep it (won't cause issues)
 ```
 
 ## Getting Help

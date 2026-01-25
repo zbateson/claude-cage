@@ -106,8 +106,8 @@ Create `claude-cage.config` in your project directory:
 claude_cage {
     project = "myproject",
     source = ".",
-    excludePath = { ".env", "dist" },
-    belowPath = { "node_modules" }
+    excludeName = { ".env", "node_modules", "dist" },
+    belowPath = { ".git" }
 }
 ```
 
@@ -149,15 +149,37 @@ That's it. Clean and simple.
 Exclude sensitive files from Claude's view:
 
 ```lua
-excludePath = { ".env", "secrets.json" }      -- Specific paths
-excludeName = { "*.tmp", ".DS_Store" }        -- By name anywhere
-belowPath = { "node_modules", "target" }      -- Entire directories
-excludeRegex = { ".*\\.log$" }                -- Regex patterns
+excludePath = { "config/production.yml" }        -- Specific paths from root
+excludeName = { ".env", "node_modules", "*.pem" } -- By name anywhere in tree
+belowPath = { ".git" }                           -- Path from root + everything below
+excludeRegex = { ".*\\.log$" }                   -- Regex patterns
 ```
 
 **Important:** Files matching exclude patterns are never synced - they literally don't exist in Claude's environment.
 
-⚠️ **Build processes can copy excluded files to non-excluded locations.** If your webpack/bundler copies `.env` to `dist/`, you need to exclude both. [Learn more →](docs/examples.md#protecting-against-build-processes)
+⚠️ **Now listen carefully - this is important:**
+
+**Build processes can copy excluded files to non-excluded locations.** If your webpack/bundler copies `.env` to `dist/`, you need to exclude both. [Learn more →](docs/examples.md#protecting-against-build-processes)
+
+**Git history can leak excluded files.** Even if you exclude `.env` today, if it's in your git history, Claude can dig it up with `git show` or `git log`. You got two choices:
+1. **Exclude `.git`** (default) - Claude won't have git access, but won't see your history either.
+2. **Include `.git`** - Claude can run git commands, but make damn sure you cleaned secrets from your history first. Use BFG Repo Cleaner or `git filter-branch` if you gotta.
+
+**Recommended excludes for most projects:**
+```lua
+excludeName = {
+    ".env",           -- Environment files (anywhere in tree)
+    "secrets.json",   -- Secret files (anywhere)
+    "*.key", "*.pem", -- Certificate files (anywhere)
+    "node_modules",   -- npm/yarn dependencies (anywhere)
+    "target",         -- Maven/Cargo build output (anywhere)
+    ".venv",          -- Python virtual environment (anywhere)
+    "vendor"          -- PHP/Go dependencies (anywhere)
+}
+belowPath = {
+    ".git"            -- Git history at root (Claude can't use git)
+}
+```
 
 ### Network Restrictions (Optional)
 
@@ -258,8 +280,8 @@ claude_cage {
     project = "webapp",
     source = ".",
 
-    excludePath = { ".env", "dist" },
-    belowPath = { "node_modules" },
+    excludeName = { ".env", "node_modules", "dist" },
+    belowPath = { ".git" },
 
     networkMode = "blocklist",
     blockIPs = { "127.0.0.1" },
@@ -272,10 +294,10 @@ claude_cage {
 ```lua
 claude_cage {
     project = "open-source",
-    directMount = true,  -- No duplication
+    directMount = true,
 
     networkMode = "blocklist",
-    blockNetworks = { "192.168.1.0/24" }  -- Block local network
+    blockNetworks = { "192.168.1.0/24" }
 }
 ```
 
@@ -286,8 +308,8 @@ claude_cage {
     project = "production",
     userMode = "per-project",
 
-    excludePath = { ".env", "secrets/", "credentials/" },
-    excludeName = { "*secret*", "*.key", "*.pem" },
+    excludeName = { ".env", "*secret*", "*.key", "*.pem", "credentials.json", "secrets" },
+    belowPath = { ".git" },
 
     networkMode = "allowlist",
     allowedDomains = { "github.com:443" }

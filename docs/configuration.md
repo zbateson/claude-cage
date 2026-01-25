@@ -26,7 +26,7 @@ Configs are loaded in priority order (later overrides earlier):
 - **Simple values** (user, source, sync, etc.): Later configs override earlier ones
 - **Arrays** (excludeName, excludePath, excludeRegex, belowPath, network arrays): Values are **merged** across all configs
 
-Example: If system config has `excludePath = [".git", "target"]` and local config has `excludePath = ["secrets.txt"]`, the final excludePath list will be `[".git", "target", "secrets.txt"]`.
+Example: If system config has `excludePath = ["config/production.yml"]` and local config has `excludePath = ["deploy/secrets.txt"]`, the final excludePath list will be `["config/production.yml", "deploy/secrets.txt"]`.
 
 ## Configuration File Syntax
 
@@ -214,7 +214,7 @@ Ignore exact paths relative to the replica root.
 - Unison option: `-ignore "Path <item>"`
 
 ```lua
-excludePath = { "target", "dist", ".env" }
+excludePath = { "config/production.yml", "deploy/secrets.txt" }
 ```
 
 ### excludeName
@@ -243,24 +243,30 @@ excludeRegex = { ".*\\.log$", "^temp/.*" }
 
 ### belowPath
 
-Ignore everything below (inside) a specific path.
+Ignore a specific path from the root and everything below (inside) it.
 
-- Use for: Entire directory trees you want to exclude
-- More efficient than excludePath for large directories
-- **Important for performance:** Excluding large directories like `node_modules`, `target`, `.venv` significantly reduces sync overhead
+- **Important:** `belowPath` only matches paths from the root, not anywhere in the tree
+- Use for: Specific directory trees at known root-level locations (like `.git`)
+- For directories that can appear anywhere (like `node_modules`), use `excludeName` instead
 - Unison option: `-ignore "BelowPath <item>"`
 
 ```lua
-belowPath = { "build/", "target/" }
+belowPath = { ".git" }  -- Only matches .git at root, not subdirs/frontend/.git
 ```
 
-**Performance note:** When `unison-fsmonitor` is not available, unison falls back to polling mode (checking for changes every second). Large directories like `node_modules` can contain thousands of files, making each poll slow. Always exclude these with `belowPath` to keep sync responsive.
+**Common mistake:** Using `belowPath = { "node_modules" }` only excludes `node_modules` at the root. In monorepos or projects with subdirectories, use `excludeName = { "node_modules" }` to match anywhere.
+
+**Performance note:** When `unison-fsmonitor` is not available, unison falls back to polling mode (checking for changes every second). Large directories can contain thousands of files, making each poll slow. Use `excludeName` to exclude common large directories like `node_modules`, `target`, `.venv` anywhere in the tree.
 
 ### Choosing the Right Exclude Type
 
-- **excludePath**: Specific files/directories at known locations
-- **excludeName**: Files that appear in multiple places with the same name
-- **belowPath**: Entire directory trees (more efficient than excludePath)
+- **excludePath**: Specific files/directories at known paths from root (e.g., `config/production.yml`)
+- **excludeName**: Files/directories by name anywhere in the tree (e.g., `.env`, `node_modules`, `target`)
+  - Use wildcards: `*.key`, `application-*.properties`
+  - Most common for excluding dependencies and build outputs
+- **belowPath**: Specific path from root and everything below it (e.g., `.git`)
+  - Only matches at specified path, not anywhere in tree
+  - Use `excludeName` for directories that can appear in multiple locations
 - **excludeRegex**: Complex patterns that wildcards can't handle
 
 ## Network Restriction Options
@@ -317,9 +323,8 @@ claude_cage {
     source = "my-directory",
 
     -- File exclusions
-    excludePath = { ".env", "dist" },
-    excludeName = { "*.tmp", ".DS_Store" },
-    belowPath = { "node_modules" },
+    excludeName = { ".env", "*.tmp", ".DS_Store", "node_modules", "dist" },
+    belowPath = { ".git" },
 
     -- Network restrictions
     networkMode = "blocklist",
@@ -353,7 +358,8 @@ claude_cage {
     persistUser = true,
     source = "src",
 
-    excludePath = { "secrets/", ".env" },
+    excludeName = { ".env", "credentials.json", "secrets" },
+    belowPath = { ".git" },
 
     networkMode = "allowlist",
     allowedDomains = { "github.com:443", "api.company.com:443" },

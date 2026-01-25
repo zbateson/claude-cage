@@ -1,120 +1,79 @@
 -- Example user config for claude-cage
 -- Place at: ~/.config/claude-cage/config
 --
--- This file overrides system defaults with user preferences.
+-- This file provides your personal defaults across all projects.
+-- Overrides system config (/etc/claude-cage/config)
 -- Projects can still override these in ./claude-cage.config (required)
 
 claude_cage {
-    -- Project name is required in local config (./claude-cage.config)
-    -- Not typically set in user config
-    -- project = "myproject",
+    -- ============================================================================
+    -- PERSONAL PREFERENCES
+    -- ============================================================================
 
-    -- Base user name (default: "claude")
-    -- user = "claude",
-
-    -- User isolation mode (default: "single")
-    -- Options: "single" or "per-project"
-    --
-    -- Single-user mode (RECOMMENDED): All projects share one user
-    --   - Username: "claude" (just the base username)
-    --   - User home: /home/claude/ (standard location)
-    --   - Network rules: Shared across projects, persist until last instance exits
-    --   - Claude Code authentication: Login once, works for all projects
-    --
-    -- Per-project mode: Each project gets its own user
-    --   - Username: "claude-myproject" (user + "-" + userAppend or project)
-    --   - User home: /home/.claude-cage/claude-myproject/
-    --   - Network rules: Project-specific, cleaned up when project exits
-    --   - Claude Code authentication: Requires login for each new project user
-    --
+    -- User mode (default: "single" - recommended)
+    -- Most users should use single-user mode for simpler authentication
     -- userMode = "single",
-
-    -- Optional: Custom suffix for per-project mode (overrides using project name)
-    -- Only applies when userMode = "per-project"
-    -- userAppend = "custom-suffix",
-
-    -- ============================================================================
-    -- MODE SELECTION (typically set per-project, not user-wide)
-    -- ============================================================================
-
-    -- Direct mount mode (default: false)
-    -- false: Sync mode - creates sync directory with unison, provides file exclusion
-    -- true: Direct mount mode - mounts source directly, no sync, no duplication
-    --       WARNING: No file exclusion in direct mount mode
-    -- Most users leave this unset here and configure per-project
-    -- directMount = false,
-
-    -- ============================================================================
-    -- SYNC MODE SETTINGS (ignored in direct mount mode)
-    -- ============================================================================
-
-    -- Override default sync prefix if desired (default: ".caged-")
-    -- Creates hidden sync directories to keep workspace clean
-    -- syncPrepend = ".caged-",
-
-    -- Mount configuration (optional)
-    -- mountBase: Base directory under user home (default: "caged")
-    --   Set to "" to mount directly under user home
-    -- mountBase = "caged",
-
-    -- mounted: Override final directory name (default: project name)
-    -- mounted = "",
 
     -- Show ASCII art banner (default: true)
     -- showBanner = false,
 
     -- ============================================================================
-    -- FILE EXCLUSION (SYNC MODE ONLY - ignored in direct mount mode)
+    -- PERSONAL FILE EXCLUSIONS
     -- ============================================================================
 
-    -- Add user-specific excludes (merged with system excludes)
-    -- WARNING: These only work in sync mode. Direct mount mode exposes all files.
+    -- Add your personal excludes (merged with system excludes)
+    -- These arrays are merged with system and project configs
 
-    -- Use excludeRegex for pattern matching
-    excludeRegex = {
-        ".*\\.log$"
-    },
-
-    -- Use excludeName for temporary files
     excludeName = {
-        "*.tmp"
+        ".env",              -- Environment files (anywhere)
+        "secrets.json",      -- Secret files (anywhere)
+        "*.key",             -- Private keys (anywhere)
+        "*.pem",             -- Certificates (anywhere)
+        "*.tmp",             -- Temporary files
+        "node_modules",      -- JavaScript dependencies
+        "target",            -- Java/Rust build output
+        ".venv",             -- Python virtual environments
+        "vendor",            -- PHP/Go dependencies
+        "__pycache__",       -- Python bytecode
+        "build",             -- Build output
+        "dist"               -- Distribution output
+    },
+
+    belowPath = {
+        ".git"              -- Git repository at root (blocks git history)
+    },
+
+    excludeRegex = {
+        ".*\\.log$"         -- Log files
     },
 
     -- ============================================================================
-    -- NETWORK RESTRICTIONS (optional - defense in depth)
+    -- PERSONAL NETWORK RESTRICTIONS
     -- ============================================================================
 
-    -- NOTE: In single-user mode (default), network rules are shared across all
-    -- projects and persist until the last instance exits. In per-project mode,
-    -- each project gets its own network rules.
-    -- networkMode = "blocklist",
+    -- Default network mode (blocklist is practical for most users)
+    networkMode = "blocklist",
 
-    -- Block private networks by default (uncomment networkMode to enable)
-    -- NOTE: If you need to allow specific services on blocked networks,
-    -- use allowedIPs or allowedNetworks exceptions (see below)
+    -- Block local and private networks by default
     blockNetworks = {
-        "127.0.0.1",             -- Localhost
-        "192.168.0.0/16",        -- Private networks
-        "10.0.0.0/8"             -- Corporate network
+        "127.0.0.1",        -- Block all localhost
+        "192.168.0.0/16",   -- Block home networks
+        "10.0.0.0/8",       -- Block office/corporate networks
+        "172.16.0.0/12"     -- Block corporate private networks
     },
 
-    -- Additional blocklist options
+    -- Block specific domains (uncomment as needed)
     -- blockDomains = {
-    --     "facebook.com",          -- Block social media
-    --     "twitter.com:443"        -- Block Twitter HTTPS only
-    -- },
-    -- blockIPs = {
-    --     "192.168.1.100:22"       -- Block SSH to your NAS
+    --     "secret-api.example.com"    -- Block internal API
     -- },
 
-    -- Blocklist exceptions: allow specific connections even when blocked
-    -- Example: Allow local database
-    -- allowedIPs = { "127.0.0.1:5432" },  -- Allow PostgreSQL
-
-    -- Or use allowlist for maximum security
-    -- networkMode = "allowlist",
-    -- allowedDomains = {
-    --     "github.com:443",        -- Only HTTPS to GitHub
-    --     "registry.npmjs.org:443" -- Only HTTPS to npm
-    -- }
+    -- Allow specific local services (uncomment as needed)
+    -- allowedIPs = {
+    --     "127.0.0.1:5432",   -- PostgreSQL
+    --     "127.0.0.1:3306",   -- MySQL
+    --     "127.0.0.1:6379",   -- Redis
+    --     "127.0.0.1:27017",  -- MongoDB
+    --     "127.0.0.1:3000",   -- Common dev server port
+    --     "127.0.0.1:8080"    -- Common dev server port
+    -- },
 }

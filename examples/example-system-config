@@ -1,125 +1,70 @@
 -- Example system-wide config for claude-cage
 -- Place at: /etc/claude-cage/config
 --
--- This file provides system-wide defaults for all users.
+-- This file provides organization-wide defaults for all users on the system.
 -- Users can override these in ~/.config/claude-cage/config
 -- Projects can override these in ./claude-cage.config (required)
 
 claude_cage {
-    -- Project name is required in local config (./claude-cage.config)
-    -- Not typically set in system-wide config
-    -- project = "myproject",
-
-    -- Default user to run claude as (default: "claude")
-    -- Users are automatically deleted on exit (unless they existed before)
-    -- user = "claude",
-
-    -- User isolation mode (default: "single")
-    -- Options: "single" or "per-project"
-    --
-    -- Single-user mode (RECOMMENDED): All projects share one user (e.g., "claude")
-    --   - User home: /home/claude/ (standard location)
-    --   - Network rules: Shared across all projects
-    --   - Claude Code authentication: Login once, works for all projects
-    --
-    -- Per-project mode: Each project gets its own user (e.g., "claude-myproject")
-    --   - User home: /home/.claude-cage/claude-myproject/
-    --   - Network rules: Project-specific
-    --   - Claude Code authentication: Requires login for each new project user
-    --
-    -- userMode = "single",
-
-    -- Show ASCII art banner (default: true)
-    -- showBanner = false,
-
     -- ============================================================================
-    -- MODE SELECTION (typically set per-project, not system-wide)
+    -- ORGANIZATIONAL DEFAULTS
     -- ============================================================================
 
-    -- Direct mount mode (default: false)
-    -- false: Sync mode - creates sync directory with unison, provides file exclusion
-    -- true: Direct mount mode - mounts source directly, no sync, no duplication
-    --       WARNING: No file exclusion in direct mount mode
-    -- Most users leave this unset here and configure per-project
-    -- directMount = false,
+    -- Default user mode (default: "single")
+    -- Most organizations should use single-user mode
+    userMode = "single",
 
-    -- ============================================================================
-    -- SYNC MODE SETTINGS (ignored in direct mount mode)
-    -- ============================================================================
-
-    -- Default prefix for sync directories (default: ".caged-")
-    -- Creates hidden sync directories to keep workspace clean
+    -- Sync directory prefix (default: ".caged-")
     syncPrepend = ".caged-",
 
-    -- Mount configuration
-    -- mountBase: Base directory under user home (default: "caged")
-    --   Projects mount at /home/<user>/<mountBase>/<project>/
-    --   Set to "" to mount directly: /home/<user>/<project>/
-    -- mountBase = "caged",
-
-    -- mounted: Override the final directory name (default: project name)
-    -- mounted = "",
-
     -- ============================================================================
-    -- FILE EXCLUSION (SYNC MODE ONLY - ignored in direct mount mode)
+    -- ORGANIZATION-WIDE FILE EXCLUSIONS
     -- ============================================================================
 
     -- Common excludes that apply to all projects
-    -- WARNING: These only work in sync mode. Direct mount mode exposes all files.
+    -- These arrays are merged with user and project configs
 
-    -- Use excludePath for specific directories at the root
-    excludePath = {
-        ".git",
-        "target"
-    },
-
-    -- Use excludeName for files/folders by name anywhere
     excludeName = {
-        ".DS_Store",
-        "*.swp",
-        "*~"
+        ".DS_Store",         -- macOS metadata
+        "*.swp",             -- Vim swap files
+        "*~",                -- Backup files
+        "Thumbs.db",         -- Windows thumbnails
+        "node_modules",      -- JavaScript dependencies (anywhere in tree)
+        "target",            -- Java/Rust build output (anywhere)
+        ".venv",             -- Python virtual environments (anywhere)
+        "vendor",            -- PHP/Go dependencies (anywhere)
+        "__pycache__",       -- Python bytecode (anywhere)
+        "build",             -- Common build output (anywhere)
+        "dist"               -- Common distribution output (anywhere)
     },
 
-    -- Use belowPath to exclude entire directory trees
     belowPath = {
-        "node_modules"
+        ".git"              -- Git repository at root (blocks git history)
     },
 
     -- ============================================================================
-    -- NETWORK RESTRICTIONS (optional - defense in depth)
+    -- ORGANIZATION-WIDE NETWORK RESTRICTIONS
     -- ============================================================================
 
-    -- Default to disabled; users/projects can override
-    -- NOTE: In single-user mode (default), network rules are shared across all
-    -- projects and persist until the last instance exits. In per-project mode,
-    -- each project gets its own network rules.
-    networkMode = "disabled",
+    -- Default network mode (recommended: "blocklist" for organizations)
+    networkMode = "blocklist",
 
-    -- Allowlist mode example: Only allow Claude's required domains
-    -- Claude Code requires these domains to function:
-    allowedDomains = { "api.anthropic.com", "claude.ai", "statsig.anthropic.com", "sentry.io" },
-
-    -- Block private networks by default (uncomment networkMode to enable)
-    -- NOTE: If you need to allow specific services on blocked networks,
-    -- use allowedIPs or allowedNetworks exceptions (see below)
-    -- networkMode = "blocklist",
+    -- Block local and private networks (customize for your organization)
     blockNetworks = {
-        "127.0.0.1",             -- Localhost
-        "192.168.0.0/16",        -- Private networks
-        "10.0.0.0/8"             -- Corporate network
+        "127.0.0.1",        -- Localhost
+        "192.168.0.0/16",   -- Home networks
+        "10.0.0.0/8",       -- Corporate internal network
+        "172.16.0.0/12"     -- Corporate private network
     },
 
-    -- Additional blocklist options
+    -- Block specific domains (uncomment as needed)
     -- blockDomains = {
-    --     "internal.company.com",  -- Block internal corporate domain
-    --     "malicious-site.com"     -- Block known malicious domains
-    -- },
-    -- blockIPs = {
-    --     "169.254.169.254",       -- Cloud metadata services (AWS, Azure, GCP)
-    --     "192.168.1.100:5432"     -- Block PostgreSQL on specific server
+    --     "secret-api.example.com"    -- Block internal API
     -- },
 
-    -- Blocklist exceptions: allow specific connections even when blocked
-    -- Example: Block all private network except specific development services
-    -- allowedIPs = { "127.0.0.1:5432", "192.168.1.50:3000" },  -- Allow PostgreSQL, dev server
+    -- Example: Allow specific development services on blocked networks
+    -- allowedIPs = {
+    --     "10.0.1.50:5432",   -- Corporate dev database
+    --     "10.0.1.51:6379"    -- Corporate dev Redis
+    -- },
 }

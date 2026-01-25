@@ -5,21 +5,21 @@
 ### Build Artifacts
 
 ```lua
--- Build artifacts at specific paths
-excludePath = { "target", "build", "dist", "out" }
+-- Build artifacts by name (matches anywhere in tree)
+excludeName = { "target", "build", "dist", "out" }
 ```
 
 ### Secrets and Credentials
 
 ```lua
--- Secrets at specific locations
-excludePath = { ".env", "credentials.json", "secrets/" }
+-- Secret files by name (matches anywhere)
+excludeName = { ".env", "credentials.json", "secrets.json", "secrets" }
 ```
 
 ### IDE and Editor Files
 
 ```lua
-excludePath = { ".idea", ".vscode" }
+excludeName = { ".idea", ".vscode" }
 ```
 
 ### Temporary Files
@@ -32,8 +32,9 @@ excludeName = { "*.tmp", "*.swp", ".DS_Store", "*~" }
 ### Large Dependency Folders
 
 ```lua
--- Node modules or large dependency folders (ignore entire tree)
-belowPath = { "node_modules", "vendor", ".venv" }
+-- Exclude by name (matches anywhere in the tree)
+-- Use excludeName, not belowPath, for directories that can appear in subdirectories
+excludeName = { "node_modules", "vendor", ".venv", "target", "__pycache__" }
 ```
 
 ### Log Files
@@ -69,6 +70,49 @@ claude_cage {
     }
 }
 ```
+
+### The .git Directory Dilemma
+
+**The problem:** Even if you exclude sensitive files like `.env`, if they're in your git history, Claude can access them through git commands.
+
+```bash
+# Claude could run these if .git is synced:
+git log --all --full-history -- .env
+git show HEAD~10:.env
+git stash list
+git reflog
+```
+
+**Your options:**
+
+1. **Exclude `.git`** (default in example configs)
+   ```lua
+   belowPath = { ".git" }
+   ```
+   - **Pro:** Git history is completely inaccessible to Claude
+   - **Pro:** Faster sync (no git objects to scan)
+   - **Con:** Claude cannot run git commands
+   - **Use when:** You have any secrets in git history, or you don't need Claude to use git
+
+2. **Include `.git` (Only if history is clean)**
+   ```lua
+   -- Don't exclude .git
+   ```
+   - **Pro:** Claude can run `git status`, `git add`, `git commit`, etc.
+   - **Con:** Claude can access entire git history
+   - **Use when:** You're absolutely certain no secrets are in git history AND you need Claude to use git
+   - **Before doing this:** Run `git log --all -p | grep -i "password\|secret\|api_key"` to check for secrets
+
+3. **Clean git history first, then include `.git`**
+   ```bash
+   # Use BFG Repo Cleaner to purge secrets
+   bfg --delete-files .env
+   bfg --replace-text passwords.txt
+   git reflog expire --expire=now --all
+   git gc --prune=now --aggressive
+   ```
+
+**Bottom line:** If you're not 100% sure your git history is clean, exclude `.git`. Claude can still work on your code without git access.
 
 ### Protecting Against Build Processes
 
@@ -171,9 +215,8 @@ claude_cage {
     project = "nodejs-app",
     source = ".",
 
-    excludePath = { ".env", "dist", "build" },
-    belowPath = { "node_modules" },
-    excludeName = { "*.log" },
+    excludeName = { ".env", "*.log", "node_modules", "dist", "build" },
+    belowPath = { ".git" },
 
     networkMode = "blocklist",
     blockIPs = { "127.0.0.1" },
@@ -188,28 +231,31 @@ claude_cage {
     project = "python-app",
     source = ".",
 
-    excludePath = { ".env", "credentials.json" },
-    belowPath = { ".venv", "__pycache__", ".pytest_cache" },
-    excludeName = { "*.pyc", "*.pyo" },
+    excludeName = { ".env", "credentials.json", "*.pyc", "*.pyo", ".venv", "__pycache__", ".pytest_cache" },
+    belowPath = { ".git" },
 
     networkMode = "blocklist",
     blockNetworks = { "192.168.1.0/24" }
 }
 ```
 
-### Java/Maven Project
+### Java/Maven/Spring Boot Project
 
 ```lua
 claude_cage {
     project = "java-app",
     source = ".",
 
-    excludePath = {
+    -- Wildcards work in excludeName
+    excludeName = {
+        "application-*.properties",
+        "application-*.yml",
+        "*.class",
         "target",
-        "src/main/resources/application-local.properties"
+        ".m2"
     },
-    belowPath = { ".m2/repository" },
-    excludeName = { "*.class" }
+
+    belowPath = { ".git" }
 }
 ```
 
@@ -220,8 +266,8 @@ claude_cage {
     project = "rust-app",
     source = ".",
 
-    belowPath = { "target" },
-    excludeName = { "*.rlib", "*.rmeta" }
+    excludeName = { "*.rlib", "*.rmeta", "target" },
+    belowPath = { ".git" }
 }
 ```
 
@@ -232,20 +278,20 @@ claude_cage {
     project = "monorepo",
     source = ".",
 
-    excludePath = { ".env", "dist", "build" },
-
-    belowPath = {
+    excludeName = {
+        ".env",
+        "*.pyc",
+        "*.class",
+        ".DS_Store",
         "node_modules",        -- JavaScript
         ".venv",               -- Python
         "target",              -- Rust/Java
-        "vendor"               -- PHP/Go
+        "vendor",              -- PHP/Go
+        "dist",                -- Build output
+        "build"                -- Build output
     },
 
-    excludeName = {
-        "*.pyc",
-        "*.class",
-        ".DS_Store"
-    }
+    belowPath = { ".git" }
 }
 ```
 
@@ -288,8 +334,8 @@ claude_cage {
     project = "fullstack-app",
     source = ".",
 
-    excludePath = { ".env", "dist" },
-    belowPath = { "node_modules" },
+    excludeName = { ".env", "node_modules", "dist" },
+    belowPath = { ".git" },
 
     -- Block most localhost, allow specific services
     networkMode = "blocklist",

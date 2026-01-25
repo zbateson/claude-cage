@@ -290,9 +290,10 @@ cat claude-cage.config
 2. **Exclude pattern doesn't match:**
    ```lua
    -- Use the right exclude type
-   excludePath = { ".env" }         -- Exact path
-   excludeName = { "*.log" }        -- By name anywhere
-   excludeRegex = { ".*\\.log$" }   -- Regex (escape backslashes)
+   excludePath = { "config/prod.yml" }  -- Exact path from root
+   excludeName = { ".env", "*.log" }    -- By name anywhere in tree
+   belowPath = { ".git", "secrets" }    -- Entire directory trees
+   excludeRegex = { ".*\\.log$" }       -- Regex (escape backslashes)
    ```
 
 ### Unison conflicts

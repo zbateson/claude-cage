@@ -213,24 +213,15 @@ exclude = {
 
 **Important:** Files matching exclude patterns are never synced - they literally don't exist in Claude's environment.
 
-### ⚠️ **CRITICAL: Build Process Security Risk**
+### ⚠️ **Watch Your Build Outputs**
 
-**Build processes can expose your excluded files!** Listen to me very carefully now:
+Build processes can leak excluded secrets. You exclude `.env`, but webpack bundles it into `dist/bundle.js` - now Claude can read it there. **Exclude build outputs too** if they might contain secrets.
 
-If your build process (webpack, bundlers, Docker, test scripts) copies excluded files to non-excluded locations, Claude can access them through the copied versions.
+**Git history can also leak.** Secrets in your commit history? Claude can `git show` them. Either exclude `.git` entirely, or scrub your history first with `git-filter-repo`.
 
-**Example vulnerability:**
-- You exclude `.env` (good)
-- Webpack reads `.env` and bundles it into `dist/bundle.js` (bad)
-- Claude can now read your secrets from `dist/bundle.js`
+📖 **[More on protecting against build processes →](docs/examples.md#protecting-against-build-processes)**
 
-**You MUST exclude build outputs too** if they might contain secrets. [Learn more →](docs/examples.md#protecting-against-build-processes)
-
-**Git history can leak excluded files.** Even if you exclude `.env` today, if it's in your git history, Claude can dig it up with `git show` or `git log`. You got two choices:
-1. **Exclude `.git`** - Claude won't have git access, but won't see your history either.
-2. **Include `.git`** - Claude can run git commands, but make damn sure you cleaned secrets from your history first. Use `git-filter-repo` (recommended) or BFG Repo Cleaner to scrub your history clean.
-
-**Recommended excludes for most projects:**
+**Recommended excludes:**
 ```lua
 exclude = {
     name = {
@@ -248,207 +239,52 @@ exclude = {
 }
 ```
 
+### State Isolation (Sync Mode)
+
+Sync mode's separate copies mean Claude's work doesn't stomp on yours. If you exclude build directories (`target/`, `dist/`), Claude can build in the cage without overwriting your local artifacts that may contain embedded credentials. You can keep working, testing, and verifying locally while Claude works in parallel. Direct mount shares one reality - Claude's builds replace yours.
+
 ### Network Restrictions (Optional)
 
-You want to add some OS-level network controls on top? Here's how you do it:
+OS-level network controls on top of Claude Code's sandbox:
 
-**Blocklist mode** - Keep Claude away from your infrastructure:
 ```lua
-networkMode = "blocklist"
-block = {
-    networks = { "192.168.1.0/24" },          -- Block home network
-    ips = { "169.254.169.254" }               -- Block AWS metadata
-}
+networkMode = "blocklist"                     -- or "allowlist"
+block = { networks = { "192.168.1.0/24" } }   -- Keep Claude off your LAN
 allow = { ips = { "127.0.0.1:5432" } }        -- Exception for PostgreSQL
-```
-
-**Allowlist mode** - Lock it down tight:
-```lua
-networkMode = "allowlist"
-allow = {
-    domains = { "github.com:443", "npmjs.org:443" },
-    ips = { "127.0.0.1:5432" }
-}
 ```
 
 📖 **[Network Security Guide →](docs/network-security.md)**
 
 ### User Isolation Modes
 
-Now listen up. You got two ways to run this operation:
+**Single-user mode** (default) - All projects share user `claude`. Login once, you're done.
 
-**Single-user mode** (default):
-- All your projects share one user (`claude`)
-- Login to Claude Code once, you're done
-- Keeps it simple, keeps it clean
-
-**Per-project mode**:
-- Each project gets its own user (`claude-projectname`)
-- Complete isolation between projects
-- Gotta login for each new project
+**Per-project mode** - Each project gets its own user (`claude-projectname`). Complete isolation, but gotta login for each.
 
 ```lua
-userMode = "single"        -- Default
--- or
-userMode = "per-project"   -- Maximum isolation
+userMode = "per-project"   -- Default is "single"
 ```
 
 ## Defense in Depth
 
-Now I'm gonna tell you somethin' important. You use `claude-cage` alongside Claude Code's sandbox, you got yourself multiple layers of protection:
+Use `claude-cage` alongside Claude Code's sandbox and you got multiple layers:
 
 ```
 Layer 1: OS User Isolation (claude-cage)
-    └─> Layer 2: OS Network Restrictions (iptables)
+    └─> Layer 2: OS Network Restrictions (iptables/pf)
         └─> Layer 3: Process Sandbox (Claude Code /sandbox)
-            └─> Layer 4: Claude AI Safety Training
 ```
 
-**What this gives you:**
-- Claude Code's sandbox got a bug? Linux user permissions still contain it.
-- Someone compromises the claude user? They still can't access your excluded files.
-- Privilege escalation attempt? Multiple barriers to get through.
+Bug in the sandbox? Linux permissions still contain it. Compromised claude user? They still can't access your excluded files. That's defense in depth.
 
-That's defense in depth. That's how you do this right.
-
-Enable Claude Code's sandbox for additional protection:
-```bash
-/sandbox
-```
-
-**Benefits:** Network isolation, 84% fewer permission prompts, auto-allow mode for bash commands.
-
-[Learn more about Claude Code's sandbox →](https://code.claude.com/docs/en/sandboxing)
-
-## Common Commands
-
-```bash
-# Run in sync mode
-sudo claude-cage
-
-# Run with project name (multi-project workspace or direct mount subdirectory)
-sudo claude-cage my-project
-
-# Test configuration without launching Claude
-sudo claude-cage --test
-
-# Preview commands without executing (no sudo required)
-claude-cage --dry-run
-
-# Test cross-platform (simulate macOS on Linux or vice-versa)
-claude-cage --dry-run --os macos
-
-# Clean up after interrupted session
-sudo claude-cage --cleanup
-
-# Disable banner
-sudo claude-cage --no-banner
-```
+📖 **[Claude Code sandbox docs →](https://docs.anthropic.com/en/docs/claude-code/security)**
 
 ## Documentation
-
-You need more details? I got you covered:
 
 - **[Configuration Reference](docs/configuration.md)** - Every config option, explained
 - **[Network Security](docs/network-security.md)** - How to lock down the network
 - **[Examples & Workflows](docs/examples.md)** - Common patterns, real use cases
 - **[Troubleshooting](docs/troubleshooting.md)** - When things go wrong, start here
-
-## Example Configurations
-
-### Node.js Project with Local DB
-
-```lua
-claude_cage {
-    exclude = {
-        name = { ".env", "node_modules", "dist" },
-        belowPath = { ".git" }
-    },
-
-    networkMode = "blocklist",
-    block = { ips = { "127.0.0.1" } },
-    allow = { ips = { "127.0.0.1:5432" } }  -- PostgreSQL only
-}
-```
-
-### Direct Mount Mode (Large Collections)
-
-```lua
--- Workspace mode: Claude can access sibling projects
-claude_cage {
-    directMount = "workspace",
-
-    networkMode = "blocklist",
-    block = { networks = { "192.168.1.0/24" } }
-}
-
--- Project mode: Claude isolated to one project
-claude_cage {
-    directMount = "project",
-
-    networkMode = "blocklist",
-    block = { networks = { "192.168.1.0/24" } }
-}
-```
-
-### Maximum Security Setup
-
-```lua
-claude_cage {
-    userMode = "per-project",
-
-    exclude = {
-        name = { ".env", "*secret*", "*.key", "*.pem", "credentials.json", "secrets" },
-        belowPath = { ".git" }
-    },
-
-    networkMode = "allowlist",
-    allow = { domains = { "github.com:443" } }
-}
-```
-
-📖 **[More examples →](docs/examples.md)**
-
-## How It Works
-
-**Sync Mode:**
-1. Unison watches and syncs `source` ↔ `sync` directories
-2. Bindfs mounts sync directory with permission mapping
-3. Claude Code runs in the mounted directory
-4. Changes sync bidirectionally in real-time
-
-**Direct Mount Mode:**
-1. Bindfs directly mounts source directory with permission mapping
-2. Claude Code starts in specified subdirectory
-3. Changes happen directly to source files
-
-Multiple layers. Each one doin' its job. That's how you keep things under control.
-
-## Troubleshooting Quick Reference
-
-Things ain't workin' right? Here's what you do:
-
-**Dependencies missing?**
-```bash
-sudo apt install unison bindfs lua inotify-tools
-```
-
-**Permission denied?**
-```bash
-sudo ./claude-cage  # Needs root for bindfs
-```
-
-**Files not syncing?**
-- Check your exclude patterns - file might be excluded
-- Try restartin': `sudo ./claude-cage`
-
-**Network rules not working?**
-```bash
-sudo ./claude-cage --cleanup
-sudo ./claude-cage
-```
-
-📖 **[Full troubleshooting guide →](docs/troubleshooting.md)**
 
 ## License
 

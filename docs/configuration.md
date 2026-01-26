@@ -184,6 +184,15 @@ directMount = "workspace" -- Mount entire source, access siblings
 directMount = "project"   -- Mount only the project, isolated
 ```
 
+**Choosing between modes:**
+
+Beyond file exclusion, sync mode provides **state isolation**. The separate copies mean Claude's builds and generated files don't interfere with yours:
+
+- **Sync mode**: Excluded build directories (`target/`, `dist/`, etc.) stay independent. Claude can build in the cage without overwriting your local build artifacts that may contain embedded credentials or environment-specific config.
+- **Direct mount**: Claude works directly on your files. Any builds Claude runs replace your builds. Use this when you don't need exclusions or state separation.
+
+See the README's "State Isolation" section for more details.
+
 ## Directory Options
 
 ### source

@@ -173,8 +173,8 @@ Network restrictions provide an additional layer of security:
 
 ```
 Layer 1: OS User Isolation (claude-cage)
-    └─> Layer 2: Application Sandbox (Claude Code)
-        └─> Layer 3: OS Network Restrictions (iptables)
+    └─> Layer 2: OS Network Restrictions (iptables/pf)
+        └─> Layer 3: Application Sandbox (Claude Code /sandbox)
             └─> Layer 4: Claude AI Safety Training
 ```
 

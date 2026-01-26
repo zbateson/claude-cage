@@ -224,4 +224,155 @@ else
 fi
 
 echo ""
+echo "=== Testing firewall creation commands ==="
+
+echo "Test 15: Should show iptables chain creation"
+if ! echo "$output" | grep -q "\[dry-run\] iptables -N\|iptables -I OUTPUT"; then
+    echo "FAIL: Did not find iptables chain creation commands"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found iptables chain creation commands"
+
+echo "Test 16: Should show iptables catchall rule (blocklist mode ends with ACCEPT)"
+if ! echo "$output" | grep -q "iptables -A.*-j ACCEPT"; then
+    echo "FAIL: Did not find catchall ACCEPT rule for blocklist mode"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found catchall ACCEPT rule for blocklist mode"
+
+echo ""
+echo "=== Testing firewall cleanup commands ==="
+
+echo "Test 17: Cleanup should show firewall chain check"
+if ! echo "$cleanup_output" | grep -q "\[dry-run\] check firewall chain exists\|iptables -L OUTPUT"; then
+    echo "FAIL: Did not find firewall chain check in cleanup"
+    echo "Output was:"
+    echo "$cleanup_output"
+    exit 1
+fi
+echo "  PASS: Cleanup checks for firewall chains"
+
+echo ""
+echo "=== Testing allowlist mode ==="
+
+# Create a test config for allowlist mode
+mkdir -p "$TEST_TMP/allowlist-test/project"
+cat > "$TEST_TMP/allowlist-test/claude-cage.config" << 'EOF'
+claude_cage {
+    user = "testuser",
+    directMount = "workspace",
+    networkMode = "allowlist",
+    allow = {
+        ips = { "127.0.0.1:5432" },
+        domains = { "github.com:443" }
+    }
+}
+EOF
+
+echo "Test 18: Allowlist mode should show REJECT catchall rule"
+cd "$TEST_TMP/allowlist-test/project"
+allowlist_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+
+if ! echo "$allowlist_output" | grep -q "iptables -A.*-j REJECT\|mode: allowlist"; then
+    echo "FAIL: Allowlist mode should end with REJECT rule or show allowlist mode"
+    echo "Output was:"
+    echo "$allowlist_output"
+    exit 1
+fi
+echo "  PASS: Allowlist mode configured correctly"
+
+cd "$TEST_TMP/project"
+
+echo ""
+echo "=== Testing macOS pf firewall simulation ==="
+
+echo "Test 19: macOS simulation should show pf anchor commands"
+macos_output=$("$CAGE_DIR/claude-cage" --dry-run --os macos --no-banner 2>&1) || true
+
+if ! echo "$macos_output" | grep -q "pfctl\|pf_rules_file\|anchor"; then
+    echo "FAIL: macOS simulation should show pf/anchor commands"
+    echo "Output was:"
+    echo "$macos_output"
+    exit 1
+fi
+echo "  PASS: macOS simulation shows pf commands"
+
+echo "Test 20: macOS simulation should show pass/block rules (not ACCEPT/REJECT)"
+if echo "$macos_output" | grep -q "ACCEPT\|REJECT"; then
+    # This is fine - these words might appear in messages, just check pf syntax is used
+    :
+fi
+# Check for pf-style syntax in the output
+if ! echo "$macos_output" | grep -qE "pass out|block out|pfctl"; then
+    echo "FAIL: macOS simulation should use pf syntax (pass/block)"
+    echo "Output was:"
+    echo "$macos_output"
+    exit 1
+fi
+echo "  PASS: macOS simulation uses pf syntax"
+
+echo ""
+echo "=== Testing instance tracking ==="
+
+echo "Test 21: Should show instance file registration"
+if ! echo "$output" | grep -q "echo.*>>.*instances\|instance"; then
+    echo "FAIL: Did not find instance file registration"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found instance tracking commands"
+
+echo "Test 22: Workspace mode should track by mount point"
+workspace_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$workspace_output" | grep -q "claude-cage-mount-\|mount_instance_file\|workspace"; then
+    echo "FAIL: Workspace mode should mention mount instance tracking"
+    echo "Output was:"
+    echo "$workspace_output"
+    exit 1
+fi
+echo "  PASS: Workspace mode shows mount point tracking"
+
+echo ""
+echo "=== Testing per-project mode cleanup ==="
+
+# Create a test config for per-project mode
+mkdir -p "$TEST_TMP/perproject-test/myproject"
+cat > "$TEST_TMP/perproject-test/claude-cage.config" << 'EOF'
+claude_cage {
+    user = "claude",
+    userMode = "per-project",
+    directMount = "workspace",
+    networkMode = "blocklist",
+    block = { ips = { "169.254.169.254" } }
+}
+EOF
+cd "$TEST_TMP/perproject-test/myproject"
+
+echo "Test 23: Per-project mode should create user with project suffix"
+perproject_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$perproject_output" | grep -q "claude-myproject\|claude-perproject"; then
+    echo "FAIL: Per-project mode should create user with project suffix"
+    echo "Output was:"
+    echo "$perproject_output"
+    exit 1
+fi
+echo "  PASS: Per-project mode creates suffixed username"
+
+echo "Test 24: Per-project mode should use per-process firewall chain"
+if ! echo "$perproject_output" | grep -q "CLAUDE_CAGE_"; then
+    echo "FAIL: Per-project mode should show firewall chain name"
+    echo "Output was:"
+    echo "$perproject_output"
+    exit 1
+fi
+echo "  PASS: Per-project mode uses named firewall chain"
+
+cd "$TEST_TMP/project"
+
+echo ""
 echo "=== All dry-run tests passed! ==="

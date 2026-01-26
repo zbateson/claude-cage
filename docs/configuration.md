@@ -149,6 +149,22 @@ userMode = "per-project"
 userAppend = "custom"  -- Creates user "claude-custom"
 ```
 
+### Username Validation
+
+The script automatically validates and sanitizes usernames:
+
+- **Character restrictions**: Only lowercase letters, digits, hyphens, and underscores allowed
+- **Starting character**: Must start with a letter or underscore
+- **Length limit**: Maximum 32 characters (Linux `useradd` restriction)
+- **Trailing characters**: Trailing hyphens/underscores are removed
+
+Invalid characters are replaced with hyphens, and uppercase letters are converted to lowercase. If the username exceeds 32 characters, it will be truncated and a warning displayed.
+
+**Example transformations:**
+- `Claude_User` → `claude_user` (lowercase)
+- `user@name` → `user-name` (invalid char replaced)
+- `claude-my-very-long-project-name-here` → `claude-my-very-long-project-nam` (truncated to 32 chars)
+
 ## Mode Selection
 
 ### directMount

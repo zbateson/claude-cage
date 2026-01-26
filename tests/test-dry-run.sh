@@ -375,4 +375,16 @@ echo "  PASS: Per-project mode uses named firewall chain"
 cd "$TEST_TMP/project"
 
 echo ""
+echo "=== Testing Claude Code settings sync ==="
+
+echo "Test 25: Should show rsync command for claude-settings.json"
+if ! echo "$output" | grep -q "rsync.*claude-settings.json\|\.claude/settings.json"; then
+    echo "FAIL: Did not find Claude settings sync command"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found Claude settings sync command"
+
+echo ""
 echo "=== All dry-run tests passed! ==="

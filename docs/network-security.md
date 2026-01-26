@@ -1,6 +1,6 @@
 # Network Security
 
-claude-cage can add OS-level network restrictions on top of Claude Code's application-level sandbox. This provides defense in depth - if one layer fails, the other still protects you.
+claude-cage can add kernel-level network restrictions (iptables/pf) on top of Claude Code's process sandbox. This provides defense in depth - if one layer fails, the other still protects you.
 
 ## Network Modes
 
@@ -10,7 +10,7 @@ claude-cage can add OS-level network restrictions on top of Claude Code's applic
 networkMode = "disabled"
 ```
 
-No OS-level network restrictions. Relies entirely on Claude Code's built-in sandbox.
+No additional network restrictions. Relies on Claude Code's built-in network isolation (namespace removed, traffic routed through proxy, prompts for new domains).
 
 ### Allowlist Mode
 
@@ -174,14 +174,15 @@ Network restrictions provide an additional layer of security:
 ```
 Layer 1: OS User Isolation (claude-cage)
     └─> Layer 2: OS Network Restrictions (iptables/pf)
-        └─> Layer 3: Application Sandbox (Claude Code /sandbox)
+        └─> Layer 3: Process Sandbox (Claude Code /sandbox)
             └─> Layer 4: Claude AI Safety Training
 ```
 
 **Benefits:**
-- If Claude Code's proxy is bypassed, iptables still enforces restrictions
+- Defense in depth: iptables rules are independent of sandbox namespace/proxy
 - Kernel-level enforcement that can't be bypassed from userspace
 - Independent of application bugs or vulnerabilities
+- Applies to all processes for the user, not just sandboxed ones
 - You control the security policy at the OS level
 
 ## Implementation Details

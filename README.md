@@ -1,6 +1,6 @@
 # ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
-Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Two modes of operation. Multiple layers of protection. Optional network isolation. Multiple barriers between your precious code and anything that might go wrong. That's how we do this right.
+Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Two modes of operation. Multiple layers of protection. Optional network isolation. Multiple barriers between Claude and your personal files, credentials, and secrets. That's how we do this right.
 
 ## What This Thing Does
 
@@ -25,7 +25,7 @@ No sync. No duplication. Useful when you got yourself a big collection of open-s
 
 - **Allowlist mode**: Lock it down - only approved connections get through
 - **Blocklist mode**: Keep Claude away from your internal infrastructure
-- **Defense in depth**: Application sandbox plus OS-level firewall rules
+- **Defense in depth**: Process sandbox plus user-level firewall rules
 
 You don't have to use network restrictions. But they're there if you need 'em.
 
@@ -300,7 +300,7 @@ Now I'm gonna tell you somethin' important. You use `claude-cage` alongside Clau
 ```
 Layer 1: OS User Isolation (claude-cage)
     └─> Layer 2: OS Network Restrictions (iptables)
-        └─> Layer 3: Application Sandbox (Claude Code /sandbox)
+        └─> Layer 3: Process Sandbox (Claude Code /sandbox)
             └─> Layer 4: Claude AI Safety Training
 ```
 

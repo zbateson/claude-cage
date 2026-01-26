@@ -547,3 +547,33 @@ claude_cage {
 ```
 
 See `examples/example-system-config` and `examples/example-user-config` for templates.
+
+### Claude Code Settings
+
+Location: `~/.config/claude-cage/claude-settings.json`
+
+This file is synced to the caged user's `~/.claude/settings.json` when claude-cage runs. It allows you to configure Claude Code's behavior, including sandbox settings, without needing to manually set them up for each caged user.
+
+The file is only synced if the source is newer than the destination, so manual changes made within the cage are preserved until you update your config.
+
+**Defense in depth:** While Unix permissions should already protect your home directory from the caged user, adding a sandbox deny rule provides a second layer of protection:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": false
+  },
+  "permissions": {
+    "deny": [
+      "Read(/home/YOUR_USERNAME/**)"
+    ],
+    "allow": [
+      "WebSearch",
+      "WebFetch"
+    ]
+  }
+}
+```
+
+See `claude-settings.json.example` for a template to copy to `~/.config/claude-cage/claude-settings.json`.

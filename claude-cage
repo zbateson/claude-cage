@@ -2359,6 +2359,29 @@ if [ -n "$global_instance_file" ]; then
     run bash -c "echo '$instance_id' >> '$global_instance_file'"
 fi
 
+# Sync Claude Code settings from original user's config directory
+# This allows the original user to configure Claude Code sandbox settings, etc.
+claude_settings_source="/home/${original_user}/.config/claude-cage/claude-settings.json"
+claude_settings_dest="$user_home/.claude/settings.json"
+
+if [ -f "$claude_settings_source" ] || [ "$dry_run" = true ]; then
+    # Create .claude directory if it doesn't exist
+    run mkdir -p "$user_home/.claude"
+    run chown "$cfg_user:$cfg_user" "$user_home/.claude"
+
+    # Sync settings file (only if source is newer or dest doesn't exist)
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] rsync -u $claude_settings_source $claude_settings_dest"
+        echo "[dry-run] chown $cfg_user:$cfg_user $claude_settings_dest"
+    else
+        if [ -f "$claude_settings_source" ]; then
+            rsync -u "$claude_settings_source" "$claude_settings_dest"
+            chown "$cfg_user:$cfg_user" "$claude_settings_dest"
+            echo "Synced Claude Code settings from $claude_settings_source"
+        fi
+    fi
+fi
+
 if [ "$dry_run" = true ]; then
     echo ""
     echo "=== DRY-RUN COMPLETE ==="

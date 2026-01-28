@@ -338,6 +338,69 @@ exclude = {
 
 **Performance note:** When `unison-fsmonitor` is not available, unison falls back to polling mode (checking for changes every second). Large directories can contain thousands of files, making each poll slow. Use `exclude.name` to exclude common large directories like `node_modules`, `target`, `.venv` anywhere in the tree.
 
+## Cage-Local Options (Sync Mode Only)
+
+Prevents new files created in cage from appearing in source. Unlike `exclude` (which prevents syncing in both directions), `cageLocal` only blocks creation on the source side:
+
+- New files created in cage → don't appear in source
+- Existing files in both → sync normally (updates go both ways)
+
+Example: Claude may create shell/tool config files (`.bashrc`, `.gitconfig`, etc.) that end up in your project. Use `cageLocal` to keep these from cluttering your source.
+
+### cageLocal
+
+The cageLocal object uses the same pattern types as exclude:
+
+```lua
+cageLocal = {
+    name = { ".bashrc", ".profile", ".zshrc", ".gitconfig", ".mcp.json" }
+}
+```
+
+### cageLocal.name
+
+Prevent new files matching name patterns from being created on source.
+
+- Use for: Shell/tool config files Claude creates
+- Supports wildcards (shell-style patterns)
+- Unison option: `-nocreationpartial "Name <item> -> <source>"`
+
+```lua
+cageLocal = {
+    name = { ".bashrc", ".profile", ".zshrc", ".gitconfig", ".mcp.json" }
+}
+```
+
+### cageLocal.path
+
+Prevent new files at exact paths from being created on source.
+
+- Use for: Specific files/directories at known locations
+- Unison option: `-nocreationpartial "Path <item> -> <source>"`
+
+### cageLocal.regex
+
+Prevent new files matching regex patterns from being created on source.
+
+- Use for: Complex pattern matching
+- Note: Backslashes must be escaped in Lua strings (`\\`)
+- Unison option: `-nocreationpartial "Regex <item> -> <source>"`
+
+### cageLocal.belowPath
+
+Prevent new files below a specific path from being created on source.
+
+- Use for: Entire directory trees created in cage that shouldn't appear in source
+- Unison option: `-nocreationpartial "BelowPath <item> -> <source>"`
+
+### Choosing Between exclude and cageLocal
+
+| Scenario | Use |
+|----------|-----|
+| Never want this file synced at all (secrets, credentials) | `exclude` |
+| Build directories, coverage - want independent copies on each side | `exclude` |
+| Shell/tool configs Claude creates (.bashrc, .gitconfig, etc.) | `cageLocal` |
+
 ### Choosing the Right Exclude Type
 
 - **exclude.path**: Specific files/directories at known paths from root (e.g., `config/production.yml`)
@@ -402,10 +465,16 @@ block = {
 
 ```lua
 claude_cage {
-    -- File exclusions
+    -- File exclusions (never synced in either direction)
     exclude = {
-        name = { ".env", "*.tmp", ".DS_Store", "node_modules", "dist" },
+        name = { ".env", "*.tmp", ".DS_Store", "node_modules" },
         belowPath = { ".git" }
+    },
+
+    -- Cage-local files (new creations in cage don't appear in source)
+    -- Shell/tool configs Claude creates that shouldn't clutter your project
+    cageLocal = {
+        name = { ".bashrc", ".profile", ".zshrc", ".gitconfig", ".mcp.json" }
     },
 
     -- Network restrictions
@@ -557,15 +626,54 @@ claude_cage {
 
 See `examples/example-system-config` and `examples/example-user-config` for templates.
 
-### Claude Code Settings
+### Home Config Sync
 
-Location: `~/.config/claude-cage/claude-settings.json`
+Sync config files or directories from your home directory to the cage user's home directory. This is useful for:
 
-This file is synced to the caged user's `~/.claude/settings.json` when claude-cage runs. It allows you to configure Claude Code's behavior, including sandbox settings, without needing to manually set them up for each caged user.
+- `.gitconfig` - Git author info, aliases
+- `.mcp.json` - Claude Code MCP server config
+- `.claude/` - Claude Code directory (settings, projects, etc.)
 
-The file is only synced if the source is newer than the destination, so manual changes made within the cage are preserved until you update your config.
+```lua
+homeConfigSync = {
+    ".gitconfig",                                                    -- same path
+    ".mcp.json",                                                     -- same path
+    ".claude",                                                       -- entire directory
+    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+}
+```
 
-**Defense in depth:** While Unix permissions should already protect your home directory from the caged user, adding a sandbox deny rule provides a second layer of protection:
+Each entry can be:
+- A string: source path (destination is the same path under cage user's home)
+- An array `{ source, dest }`: source → destination mapping
+
+Both files and directories are supported. Directories are synced recursively.
+
+**Processing order matters.** Entries are processed in the order listed. This lets you copy a directory first, then overwrite specific files:
+
+```lua
+homeConfigSync = {
+    ".claude",                                                       -- copy whole directory first
+    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }  -- then overwrite settings
+}
+```
+
+Files are only synced if the source is newer than the destination, so manual changes made within the cage are preserved until you update your config.
+
+**⚠️ Security Warning:** Be careful not to sync files containing secrets (API keys, tokens, credentials). Review each file before adding it here. Files like `.bashrc` may source other files or set environment variables with secrets.
+
+### Claude Code Settings Example
+
+To sync your Claude Code directory, then apply cage-specific settings:
+
+```lua
+homeConfigSync = {
+    ".claude",                                                       -- sync whole directory
+    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }  -- override settings
+}
+```
+
+Then create `~/.config/claude-cage/claude-settings.json`:
 
 ```json
 {
@@ -585,4 +693,4 @@ The file is only synced if the source is newer than the destination, so manual c
 }
 ```
 
-See `claude-settings.json.example` for a template to copy to `~/.config/claude-cage/claude-settings.json`.
+See `claude-settings.json.example` for a template.

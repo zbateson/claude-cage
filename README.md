@@ -213,6 +213,24 @@ exclude = {
 
 **Important:** Files matching exclude patterns are never synced - they literally don't exist in Claude's environment.
 
+### Cage-Local Files (One-Way Sync)
+
+Now here's somethin' special. Sometimes Claude creates files in the cage you didn't ask for - and you don't want 'em showin' up in your source.
+
+That's where `cageLocal` comes in:
+
+```lua
+cageLocal = {
+    name = { ".bashrc", ".profile", ".gitconfig", ".mcp.json" }
+}
+```
+
+Here's how it works - and pay attention 'cause this is different from `exclude`:
+- New files Claude creates in the cage? They don't show up in your source. They stay where they belong.
+- But files that already exist in both places? Those sync normally, both ways. Updates, deletions, the whole deal.
+
+It ain't about blockin' sync entirely - it's about keepin' Claude's new file creations from cluttering up your project.
+
 ### ⚠️ **Watch Your Build Outputs**
 
 Build processes can leak excluded secrets. You exclude `.env`, but webpack bundles it into `dist/bundle.js` - now Claude can read it there. **Exclude build outputs too** if they might contain secrets.
@@ -264,6 +282,19 @@ allow = { ips = { "127.0.0.1:5432" } }        -- Exception for PostgreSQL
 ```lua
 userMode = "per-project"   -- Default is "single"
 ```
+
+### Home Config Sync
+
+Cage user's got a different home directory. Git don't know who you are. Fix that:
+
+```lua
+homeConfigSync = {
+    ".gitconfig",
+    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+}
+```
+
+Just don't go syncin' files with secrets in 'em.
 
 ## Defense in Depth
 

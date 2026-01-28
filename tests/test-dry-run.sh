@@ -26,6 +26,11 @@ claude_cage {
         name = { ".env", "secrets.json" },
         path = { "config/prod.yml" }
     },
+    homeConfigSync = {
+        ".gitconfig",
+        ".claude",
+        { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+    },
     networkMode = "blocklist",
     block = {
         ips = { "169.254.169.254" },
@@ -123,6 +128,65 @@ if ! echo "$output" | grep -q "Name:.*\.env"; then
     exit 1
 fi
 echo "  PASS: Found exclude configuration in display"
+
+echo ""
+echo "=== Testing cageLocal configuration ==="
+
+# Create a test config with cageLocal
+mkdir -p "$TEST_TMP/cagelocal-test/project"
+cat > "$TEST_TMP/cagelocal-test/claude-cage.config" << 'EOF'
+claude_cage {
+    user = "testuser",
+    exclude = {
+        name = { ".env" }
+    },
+    cageLocal = {
+        name = { ".bashrc", ".profile", ".gitconfig" }
+    }
+}
+EOF
+
+cd "$TEST_TMP/cagelocal-test/project"
+
+echo "Test 10a: Should display cageLocal configuration"
+cagelocal_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+
+if ! echo "$cagelocal_output" | grep -q "Cage-local files (new creations blocked"; then
+    echo "FAIL: Did not find Cage-local files section"
+    echo "Output was:"
+    echo "$cagelocal_output"
+    exit 1
+fi
+echo "  PASS: Found Cage-local files section"
+
+echo "Test 10b: Should show cageLocal name patterns"
+if ! echo "$cagelocal_output" | grep -q "Name:.*\.bashrc"; then
+    echo "FAIL: Did not find .bashrc in cageLocal display"
+    echo "Output was:"
+    echo "$cagelocal_output"
+    exit 1
+fi
+echo "  PASS: Found cageLocal name patterns"
+
+echo "Test 10d: Should use -nocreationpartial in unison command"
+if ! echo "$cagelocal_output" | grep -q "nocreationpartial"; then
+    echo "FAIL: Did not find nocreationpartial in unison command"
+    echo "Output was:"
+    echo "$cagelocal_output"
+    exit 1
+fi
+echo "  PASS: Found nocreationpartial in unison command"
+
+echo "Test 10e: Should include source path in nocreationpartial"
+if ! echo "$cagelocal_output" | grep -q 'nocreationpartial "Name.*->'; then
+    echo "FAIL: nocreationpartial should include -> source path"
+    echo "Output was:"
+    echo "$cagelocal_output"
+    exit 1
+fi
+echo "  PASS: nocreationpartial includes source path direction"
+
+cd "$TEST_TMP/project"
 
 echo ""
 echo "=== Testing cleanup with dry-run ==="
@@ -375,16 +439,25 @@ echo "  PASS: Per-project mode uses named firewall chain"
 cd "$TEST_TMP/project"
 
 echo ""
-echo "=== Testing Claude Code settings sync ==="
+echo "=== Testing homeConfigSync ==="
 
-echo "Test 25: Should show rsync command for claude-settings.json"
-if ! echo "$output" | grep -q "rsync.*claude-settings.json\|\.claude/settings.json"; then
-    echo "FAIL: Did not find Claude settings sync command"
+echo "Test 25: Should show rsync command for homeConfigSync entries"
+if ! echo "$output" | grep -q "rsync.*\.gitconfig\|rsync.*claude-settings.json"; then
+    echo "FAIL: Did not find homeConfigSync rsync commands"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Found Claude settings sync command"
+echo "  PASS: Found homeConfigSync rsync commands"
+
+echo "Test 26: Should show recursive rsync for directories"
+if ! echo "$output" | grep -q "rsync -ru.*\.claude/"; then
+    echo "FAIL: Did not find recursive rsync for .claude directory"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found recursive rsync for directories"
 
 echo ""
 echo "=== All dry-run tests passed! ==="

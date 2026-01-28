@@ -120,6 +120,44 @@ claude_cage {
     -- regex: Complex patterns (escape backslashes in Lua strings)
 
     -- ============================================================================
+    -- CAGE-LOCAL FILES (SYNC MODE ONLY - ignored in direct mount mode)
+    -- ============================================================================
+
+    -- Prevents new files created in cage from appearing in source.
+    --
+    -- Unlike 'exclude' (which never syncs in either direction), cageLocal only
+    -- blocks creation of NEW files on the source side:
+    --   - New files created in cage → don't appear in source
+    --   - Existing files in both → sync normally (updates go both ways)
+    --
+    -- Example: shell/tool config files Claude creates (.bashrc, .gitconfig, etc.)
+    --
+    -- cageLocal = {
+    --     name = { ".bashrc", ".profile", ".zshrc", ".gitconfig", ".mcp.json" }
+    -- },
+
+    -- ============================================================================
+    -- HOME CONFIG SYNC (optional - sync config files to cage user's home)
+    -- ============================================================================
+
+    -- Sync config files or directories from your home directory to the cage
+    -- user's home. Paths are relative to home directory. If only source is
+    -- specified, destination is the same path under the cage user's home.
+    --
+    -- Entries are processed in order - useful for copying a directory first,
+    -- then overwriting specific files within it.
+    --
+    -- WARNING: Be careful not to sync files containing secrets (API keys,
+    -- tokens, credentials). Review each file before adding it here.
+    --
+    -- homeConfigSync = {
+    --     ".gitconfig",                                                    -- same path
+    --     ".mcp.json",                                                     -- same path
+    --     ".claude",                                                       -- entire directory
+    --     { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+    -- },
+
+    -- ============================================================================
     -- NETWORK RESTRICTIONS (optional - defense in depth)
     -- ============================================================================
 

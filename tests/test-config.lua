@@ -45,6 +45,17 @@ local function merge_config(base, override)
                     end
                 end
             end
+        elseif k == "cageLocal" and type(v) == "table" then
+            -- Merge cageLocal sub-fields (path, name, belowPath, regex)
+            result.cageLocal = result.cageLocal or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.cageLocal[subkey] = result.cageLocal[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.cageLocal[subkey], item)
+                    end
+                end
+            end
         else
             -- Override value
             result[k] = v
@@ -69,6 +80,9 @@ claude_cage {
         path = { "target", ".git" },
         name = { "*.tmp" },
         belowPath = { "node_modules" }
+    },
+    cageLocal = {
+        name = { ".bashrc" }
     },
     networkMode = "blocklist",
     block = {
@@ -100,6 +114,9 @@ claude_cage {
     exclude = {
         path = { "secrets.txt" },
         name = { "*.swp" }
+    },
+    cageLocal = {
+        name = { ".profile" }
     },
     mounted = "my-project",
     allow = {
@@ -137,6 +154,12 @@ print_array("exclude.name", exclude.name)
 print_array("exclude.regex", exclude.regex)
 print_array("exclude.belowPath", exclude.belowPath)
 
+local cageLocal = config.cageLocal or {}
+print_array("cageLocal.path", cageLocal.path)
+print_array("cageLocal.name", cageLocal.name)
+print_array("cageLocal.regex", cageLocal.regex)
+print_array("cageLocal.belowPath", cageLocal.belowPath)
+
 local block = config.block or {}
 print_array("block.ips", block.ips)
 print_array("block.networks", block.networks)
@@ -160,6 +183,9 @@ assert(#exclude.path == 3, "exclude.path should have 3 items (merged from system
 assert(#exclude.name == 3, "exclude.name should have 3 items (merged from all configs)")
 assert(#exclude.regex == 1, "exclude.regex should have 1 item (from user)")
 assert(#exclude.belowPath == 1, "exclude.belowPath should have 1 item (from system)")
+
+-- Test cageLocal merging
+assert(#cageLocal.name == 2, "cageLocal.name should have 2 items (merged from system and local)")
 
 -- Test block merging
 assert(#block.ips == 1, "block.ips should have 1 item (from system)")

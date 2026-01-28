@@ -643,6 +643,18 @@ local function merge_config(base, override)
                     end
                 end
             end
+        elseif k == "cageLocal" and type(v) == "table" then
+            -- Merge cageLocal sub-fields (path, name, belowPath, regex)
+            -- cageLocal prevents new files created in cage from appearing in source
+            result.cageLocal = result.cageLocal or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.cageLocal[subkey] = result.cageLocal[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.cageLocal[subkey], item)
+                    end
+                end
+            end
         else
             -- Override value
             result[k] = v
@@ -660,10 +672,10 @@ end
 
 -- Track items by source for display
 local sources = {
-    { name = "system", path = "$system_config", exclude = {}, block = {}, allow = {} },
-    { name = "user", path = "$user_config", exclude = {}, block = {}, allow = {} },
-    { name = "local", path = "$local_config", exclude = {}, block = {}, allow = {} },
-    { name = "project", path = "", exclude = {}, block = {}, allow = {} }  -- path set later
+    { name = "system", path = "$system_config", exclude = {}, cageLocal = {}, block = {}, allow = {} },
+    { name = "user", path = "$user_config", exclude = {}, cageLocal = {}, block = {}, allow = {} },
+    { name = "local", path = "$local_config", exclude = {}, cageLocal = {}, block = {}, allow = {} },
+    { name = "project", path = "", exclude = {}, cageLocal = {}, block = {}, allow = {} }  -- path set later
 }
 
 -- Helper to extract items from a config into a source tracker
@@ -674,6 +686,16 @@ local function track_items(source_entry, cfg)
             if type(items) == "table" then
                 for _, item in ipairs(items) do
                     table.insert(source_entry.exclude[subkey], item)
+                end
+            end
+        end
+    end
+    if cfg.cageLocal then
+        for subkey, items in pairs(cfg.cageLocal) do
+            source_entry.cageLocal[subkey] = source_entry.cageLocal[subkey] or {}
+            if type(items) == "table" then
+                for _, item in ipairs(items) do
+                    table.insert(source_entry.cageLocal[subkey], item)
                 end
             end
         end
@@ -905,8 +927,42 @@ if exclude.belowPath then
     end
 end
 
+-- Build cageLocal arguments for unison (prevent new files in cage from being created on source)
+-- Uses -nocreationpartial - only blocks creation, existing files still sync normally
+-- Syntax: -nocreationpartial "Name pattern -> /path/to/source"
+local cageLocal_args = ""
+local cageLocal = config.cageLocal or {}
+
+-- cageLocal.name: Block creation of new files by name on source (existing files sync normally)
+if cageLocal.name then
+    for _, item in ipairs(cageLocal.name) do
+        cageLocal_args = cageLocal_args .. '-nocreationpartial "Name ' .. item .. ' -> ' .. source .. '" '
+    end
+end
+
+-- cageLocal.path: Block creation of new files at exact paths on source
+if cageLocal.path then
+    for _, item in ipairs(cageLocal.path) do
+        cageLocal_args = cageLocal_args .. '-nocreationpartial "Path ' .. item .. ' -> ' .. source .. '" '
+    end
+end
+
+-- cageLocal.regex: Block creation of new files matching regex on source
+if cageLocal.regex then
+    for _, item in ipairs(cageLocal.regex) do
+        cageLocal_args = cageLocal_args .. '-nocreationpartial "Regex ' .. item .. ' -> ' .. source .. '" '
+    end
+end
+
+-- cageLocal.belowPath: Block creation of new files below a path on source
+if cageLocal.belowPath then
+    for _, item in ipairs(cageLocal.belowPath) do
+        cageLocal_args = cageLocal_args .. '-nocreationpartial "BelowPath ' .. item .. ' -> ' .. source .. '" '
+    end
+end
+
 -- Output basic config (use | delimiter to preserve empty fields)
-print(user .. "|" .. source .. "|" .. sync .. "|" .. mountBase .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner))
+print(user .. "|" .. source .. "|" .. sync .. "|" .. mountBase .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner) .. "|" .. cageLocal_args)
 
 -- Output exclude patterns for validation (pipe-separated)
 local function array_to_string(arr)
@@ -922,6 +978,12 @@ print(array_to_string(exclude.path))
 print(array_to_string(exclude.name))
 print(array_to_string(exclude.regex))
 print(array_to_string(exclude.belowPath))
+
+-- Output cageLocal patterns for validation (pipe-separated)
+print(array_to_string(cageLocal.path))
+print(array_to_string(cageLocal.name))
+print(array_to_string(cageLocal.regex))
+print(array_to_string(cageLocal.belowPath))
 
 -- Output network configuration
 local allow = config.allow or {}
@@ -964,7 +1026,7 @@ local display_lines = {}
 for _, src in ipairs(sources) do
     -- Check if this source has any items
     local has_items = false
-    for _, cat in ipairs({"exclude", "block", "allow"}) do
+    for _, cat in ipairs({"exclude", "cageLocal", "block", "allow"}) do
         for _, arr in pairs(src[cat] or {}) do
             if #arr > 0 then has_items = true break end
         end
@@ -975,12 +1037,29 @@ for _, src in ipairs(sources) do
         for _, line in ipairs(format_source_items(src, "exclude")) do
             table.insert(display_lines, "EXCLUDE|" .. line)
         end
+        for _, line in ipairs(format_source_items(src, "cageLocal")) do
+            table.insert(display_lines, "CAGELOCAL|" .. line)
+        end
         for _, line in ipairs(format_source_items(src, "block")) do
             table.insert(display_lines, "BLOCK|" .. line)
         end
         for _, line in ipairs(format_source_items(src, "allow")) do
             table.insert(display_lines, "ALLOW|" .. line)
         end
+    end
+end
+
+-- Output homeConfigSync entries
+-- Format: source|dest (dest may be same as source)
+local homeConfigSync = config.homeConfigSync or {}
+print(#homeConfigSync)
+for _, entry in ipairs(homeConfigSync) do
+    if type(entry) == "string" then
+        -- Simple string: source = dest
+        print(entry .. "|" .. entry)
+    elseif type(entry) == "table" and #entry == 2 then
+        -- Array with source, dest
+        print(entry[1] .. "|" .. entry[2])
     end
 end
 
@@ -1008,11 +1087,15 @@ fi
 
 # Parse the lua output (only if lua succeeded)
 {
-    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_mountBase cfg_mounted cfg_exclude cfg_showBanner
+    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_mountBase cfg_mounted cfg_exclude cfg_showBanner cfg_cageLocal
     read -r cfg_exclude_path
     read -r cfg_exclude_name
     read -r cfg_exclude_regex
     read -r cfg_exclude_belowPath
+    read -r cfg_cageLocal_path
+    read -r cfg_cageLocal_name
+    read -r cfg_cageLocal_regex
+    read -r cfg_cageLocal_belowPath
     read -r cfg_networkMode
     read -r cfg_allow_domains
     read -r cfg_allow_ips
@@ -1024,6 +1107,13 @@ fi
     read -r cfg_directMount
     read -r cfg_relative_path
     read -r cfg_config_root
+    read -r cfg_homeConfigSync_count
+    # Read homeConfigSync entries into array
+    cfg_homeConfigSync=()
+    for ((i=0; i<cfg_homeConfigSync_count; i++)); do
+        read -r line
+        cfg_homeConfigSync+=("$line")
+    done
     read -r cfg_display_line_count
     # Read display lines into array
     cfg_display_lines=()
@@ -1038,6 +1128,10 @@ fi
 [ "$cfg_exclude_name" = "EMPTY" ] && cfg_exclude_name=""
 [ "$cfg_exclude_regex" = "EMPTY" ] && cfg_exclude_regex=""
 [ "$cfg_exclude_belowPath" = "EMPTY" ] && cfg_exclude_belowPath=""
+[ "$cfg_cageLocal_path" = "EMPTY" ] && cfg_cageLocal_path=""
+[ "$cfg_cageLocal_name" = "EMPTY" ] && cfg_cageLocal_name=""
+[ "$cfg_cageLocal_regex" = "EMPTY" ] && cfg_cageLocal_regex=""
+[ "$cfg_cageLocal_belowPath" = "EMPTY" ] && cfg_cageLocal_belowPath=""
 [ "$cfg_allow_domains" = "EMPTY" ] && cfg_allow_domains=""
 [ "$cfg_allow_ips" = "EMPTY" ] && cfg_allow_ips=""
 [ "$cfg_allow_networks" = "EMPTY" ] && cfg_allow_networks=""
@@ -1398,6 +1492,28 @@ done
 if [ "$has_excludes" = false ]; then
     echo "  (none)"
 fi
+
+# Display cageLocal patterns if any
+has_cageLocal=false
+for line in "${cfg_display_lines[@]}"; do
+    IFS='|' read -r category source type items <<< "$line"
+    if [ "$category" = "CAGELOCAL" ]; then
+        if [ "$has_cageLocal" = false ]; then
+            echo ""
+            echo "Cage-local files (new creations blocked on source):"
+            has_cageLocal=true
+            current_source=""
+        fi
+        if [ "$source" != "$current_source" ]; then
+            current_source="$source"
+            echo "  $(get_source_display "$source"):"
+        fi
+        # Capitalize first letter of type
+        type_display=$(echo "$type" | sed 's/\b\(.\)/\u\1/')
+        [ "$type" = "belowPath" ] && type_display="BelowPath"
+        printf "    %-10s %s\n" "$type_display:" "$items"
+    fi
+done
 
 # Display network rules by source if network mode is enabled
 if [ "$cfg_networkMode" != "disabled" ]; then
@@ -2290,6 +2406,10 @@ if [ "$skip_setup" = false ]; then
         if [ -n "$cfg_exclude" ]; then
             unison_cmd_base="$unison_cmd_base $cfg_exclude"
         fi
+        # Add cageLocal patterns (block creation of new files on source)
+        if [ -n "$cfg_cageLocal" ]; then
+            unison_cmd_base="$unison_cmd_base $cfg_cageLocal"
+        fi
 
         # Initial sync: force from source to sync to establish clean starting state
         unison_cmd_initial="$unison_cmd_base -force \"$cfg_source\" -prefer \"$cfg_source\""
@@ -2359,28 +2479,46 @@ if [ -n "$global_instance_file" ]; then
     run bash -c "echo '$instance_id' >> '$global_instance_file'"
 fi
 
-# Sync Claude Code settings from original user's config directory
-# This allows the original user to configure Claude Code sandbox settings, etc.
-claude_settings_source="/home/${original_user}/.config/claude-cage/claude-settings.json"
-claude_settings_dest="$user_home/.claude/settings.json"
+# Sync home config files from original user's home to cage user's home
+# Configured via homeConfigSync in config file
+# Entries are processed in order - useful for copying a directory then overwriting specific files
+original_home="/home/${original_user}"
+for entry in "${cfg_homeConfigSync[@]}"; do
+    IFS='|' read -r sync_source sync_dest <<< "$entry"
+    source_path="${original_home}/${sync_source}"
+    dest_path="${user_home}/${sync_dest}"
+    dest_dir=$(dirname "$dest_path")
 
-if [ -f "$claude_settings_source" ] || [ "$dry_run" = true ]; then
-    # Create .claude directory if it doesn't exist
-    run mkdir -p "$user_home/.claude"
-    run chown "$cfg_user:$cfg_user" "$user_home/.claude"
+    if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+        # Create destination parent directory if needed
+        if [ ! -d "$dest_dir" ]; then
+            run mkdir -p "$dest_dir"
+            run chown "$cfg_user:$cfg_user" "$dest_dir"
+        fi
 
-    # Sync settings file (only if source is newer or dest doesn't exist)
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] rsync -u $claude_settings_source $claude_settings_dest"
-        echo "[dry-run] chown $cfg_user:$cfg_user $claude_settings_dest"
-    else
-        if [ -f "$claude_settings_source" ]; then
-            rsync -u "$claude_settings_source" "$claude_settings_dest"
-            chown "$cfg_user:$cfg_user" "$claude_settings_dest"
-            echo "Synced Claude Code settings from $claude_settings_source"
+        # Sync file or directory (only if source is newer or dest doesn't exist)
+        if [ "$dry_run" = true ]; then
+            if [ -d "$source_path" ]; then
+                echo "[dry-run] rsync -ru $source_path/ $dest_path/"
+                echo "[dry-run] chown -R $cfg_user:$cfg_user $dest_path"
+            else
+                echo "[dry-run] rsync -u $source_path $dest_path"
+                echo "[dry-run] chown $cfg_user:$cfg_user $dest_path"
+            fi
+        else
+            if [ -d "$source_path" ]; then
+                # Directory: recursive sync with trailing slashes
+                rsync -ru "$source_path/" "$dest_path/"
+                chown -R "$cfg_user:$cfg_user" "$dest_path"
+                echo "Synced $sync_source/ -> $sync_dest/"
+            elif [ -f "$source_path" ]; then
+                rsync -u "$source_path" "$dest_path"
+                chown "$cfg_user:$cfg_user" "$dest_path"
+                echo "Synced $sync_source -> $sync_dest"
+            fi
         fi
     fi
-fi
+done
 
 if [ "$dry_run" = true ]; then
     echo ""

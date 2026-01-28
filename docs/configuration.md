@@ -658,7 +658,7 @@ homeConfigSync = {
 }
 ```
 
-Files are only synced if the source is newer than the destination, so manual changes made within the cage are preserved until you update your config.
+Files are always copied on each cage startup, overwriting any manual changes made within the cage.
 
 **⚠️ Security Warning:** Be careful not to sync files containing secrets (API keys, tokens, credentials). Review each file before adding it here. Files like `.bashrc` may source other files or set environment variables with secrets.
 

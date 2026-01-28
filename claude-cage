@@ -2496,23 +2496,23 @@ for entry in "${cfg_homeConfigSync[@]}"; do
             run chown "$cfg_user:$cfg_user" "$dest_dir"
         fi
 
-        # Sync file or directory (only if source is newer or dest doesn't exist)
+        # Sync file or directory
         if [ "$dry_run" = true ]; then
             if [ -d "$source_path" ]; then
-                echo "[dry-run] rsync -ru $source_path/ $dest_path/"
+                echo "[dry-run] rsync -r $source_path/ $dest_path/"
                 echo "[dry-run] chown -R $cfg_user:$cfg_user $dest_path"
             else
-                echo "[dry-run] rsync -u $source_path $dest_path"
+                echo "[dry-run] rsync $source_path $dest_path"
                 echo "[dry-run] chown $cfg_user:$cfg_user $dest_path"
             fi
         else
             if [ -d "$source_path" ]; then
                 # Directory: recursive sync with trailing slashes
-                rsync -ru "$source_path/" "$dest_path/"
+                rsync -r "$source_path/" "$dest_path/"
                 chown -R "$cfg_user:$cfg_user" "$dest_path"
                 echo "Synced $sync_source/ -> $sync_dest/"
             elif [ -f "$source_path" ]; then
-                rsync -u "$source_path" "$dest_path"
+                rsync "$source_path" "$dest_path"
                 chown "$cfg_user:$cfg_user" "$dest_path"
                 echo "Synced $sync_source -> $sync_dest"
             fi

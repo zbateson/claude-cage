@@ -451,13 +451,22 @@ fi
 echo "  PASS: Found homeConfigSync rsync commands"
 
 echo "Test 26: Should show recursive rsync for directories"
-if ! echo "$output" | grep -q "rsync -ru.*\.claude/"; then
+if ! echo "$output" | grep -q "rsync -r.*\.claude/"; then
     echo "FAIL: Did not find recursive rsync for .claude directory"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
 echo "  PASS: Found recursive rsync for directories"
+
+echo "Test 27: Should show rsync for override entries"
+if ! echo "$output" | grep -q "rsync.*/claude-settings.json"; then
+    echo "FAIL: Override entry should appear in output"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Override entries synced"
 
 echo ""
 echo "=== All dry-run tests passed! ==="

@@ -16,28 +16,50 @@ claude_cage {
     -- These are loaded when you run from that project's subdirectory
 
     -- Base user name (default: "claude")
+    -- Used in user isolation mode
     -- user = "claude",
 
-    -- User isolation mode (default: "single")
-    -- Options: "single" or "per-project"
-    --
-    -- Single-user mode (default): All projects share one user
-    --   - Username: "claude" (just the base username)
-    --   - User home: /home/claude/ (standard location)
-    --   - Network rules: Shared across projects, persist until last instance exits
-    --   - Claude Code authentication: Login once, works for all projects
-    --
-    -- Per-project mode: Each project gets its own user
-    --   - Username: "claude-myproject" (user + "-" + userAppend or project)
-    --   - User home: /home/.claude-cage/claude-myproject/
-    --   - Network rules: Project-specific, cleaned up when project exits
-    --   - Claude Code authentication: Requires login for each new project user
-    --
-    -- userMode = "single",
+    -- ============================================================================
+    -- ISOLATION MODE: Choose between user isolation or Docker isolation
+    -- ============================================================================
 
-    -- Optional: Custom suffix for per-project mode (overrides using project name)
-    -- Only applies when userMode = "per-project"
-    -- userAppend = "myproject",
+    -- Isolation mode (default: "user")
+    -- Options: "user" or "docker"
+    --
+    -- User mode (default): Uses a separate Unix user for isolation
+    --   - Requires sudo to run (creates/uses system user)
+    --   - Uses bindfs for permission mapping
+    --   - Uses iptables/pf for network restrictions
+    --   - Claude Code login persists in user's home directory
+    --
+    -- Docker mode: Uses a Docker container for isolation
+    --   - No sudo required (just Docker group membership)
+    --   - Uses Docker volumes for file access
+    --   - Uses Docker networking (--network=none or bridge)
+    --   - Claude Code login persists in container between runs
+    --
+    -- isolationMode = "user",
+
+    -- ============================================================================
+    -- DOCKER MODE SETTINGS (only used when isolationMode = "docker")
+    -- ============================================================================
+
+    -- docker = {
+    --     -- Base Docker image (must have Node.js for Claude Code)
+    --     image = "node:lts-slim",
+    --
+    --     -- Additional packages to install (uses apt-get)
+    --     packages = { "git", "curl" },
+    --
+    --     -- Container name prefix (full name: prefix-project-hash)
+    --     namePrefix = "claude-cage",
+    --
+    --     -- Extra arguments for docker run command
+    --     extraArgs = "",
+    -- },
+    --
+    -- Containers are stopped on exit but kept for --continue/--resume.
+    -- To delete a container: claude-cage --delete-docker-container
 
     -- ============================================================================
     -- MODE SELECTION: Choose sync mode (default) or direct mount mode
@@ -165,9 +187,13 @@ claude_cage {
     -- Options: "disabled", "allowlist", "blocklist"
     -- networkMode = "disabled",
 
-    -- NOTE: In single-user mode (default), network rules are shared across all
-    -- projects and persist until the last instance exits. In per-project mode,
-    -- each project gets its own network rules.
+    -- NOTE: In user mode, network rules are shared across all projects and
+    -- persist until the last instance exits.
+    --
+    -- In Docker mode, network restrictions are simpler:
+    --   - disabled/allowlist: --network=none (no network access)
+    --   - blocklist: --network=bridge (full network access)
+    -- Docker doesn't support granular destination filtering without host iptables.
 
     -- Allowlist mode: Only allow specific connections (everything else blocked)
     -- allow = {

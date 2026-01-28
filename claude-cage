@@ -373,6 +373,210 @@ add_catchall_firewall_rule() {
     fi
 }
 
+# ============================================================================
+# Docker Mode Functions
+# ============================================================================
+
+# Check if docker command is available
+docker_available() {
+    command -v docker >/dev/null 2>&1
+}
+
+# Check if user has docker access (in docker group or root)
+docker_accessible() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker ps (checking access)"
+        return 0
+    fi
+    docker ps >/dev/null 2>&1
+}
+
+# Generate container name from prefix, project, and hash
+# Format: prefix-project-hash (hash from source path for uniqueness)
+docker_container_name() {
+    local prefix="$1"
+    local project="$2"
+    local source_path="$3"
+    local hash=$(echo "$source_path" | md5sum | cut -c1-8)
+    echo "${prefix}-${project}-${hash}"
+}
+
+# Check if container exists (running or stopped)
+docker_container_exists() {
+    local container_name="$1"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker container inspect $container_name"
+        return 1  # Assume doesn't exist in dry-run
+    fi
+    docker container inspect "$container_name" >/dev/null 2>&1
+}
+
+# Check if container is running
+docker_container_running() {
+    local container_name="$1"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker container inspect -f '{{.State.Running}}' $container_name"
+        return 1  # Assume not running in dry-run
+    fi
+    [ "$(docker container inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null)" = "true" ]
+}
+
+# Build or pull docker image with required packages
+# Creates a cached image: claude-cage:hash (where hash is from base image + packages)
+docker_ensure_image() {
+    local base_image="$1"
+    local packages="$2"  # pipe-separated list
+
+    # Generate image tag from base + packages
+    local image_hash=$(echo "${base_image}|${packages}" | md5sum | cut -c1-12)
+    local image_tag="claude-cage:${image_hash}"
+
+    # Check if our custom image already exists
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker image inspect $image_tag"
+    elif docker image inspect "$image_tag" >/dev/null 2>&1; then
+        echo "$image_tag"
+        return 0
+    fi
+
+    # If no packages, just use the base image directly
+    if [ -z "$packages" ]; then
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] docker pull $base_image (if needed)"
+        else
+            docker pull "$base_image" >/dev/null 2>&1 || true
+        fi
+        echo "$base_image"
+        return 0
+    fi
+
+    # Build custom image with packages
+    # Convert pipe-separated packages to space-separated for apt
+    local pkg_list=$(echo "$packages" | tr '|' ' ')
+
+    # Create Dockerfile
+    local dockerfile_content="FROM ${base_image}
+RUN apt-get update && apt-get install -y ${pkg_list} && rm -rf /var/lib/apt/lists/*
+"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] Building Docker image $image_tag with packages: $pkg_list"
+        echo "[dry-run] docker build -t $image_tag -"
+        echo "$image_tag"
+        return 0
+    fi
+
+    echo "Building Docker image with packages: $pkg_list"
+    echo "$dockerfile_content" | docker build -t "$image_tag" - >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Failed to build Docker image" >&2
+        return 1
+    fi
+
+    echo "$image_tag"
+}
+
+# Start a new container
+docker_start_container() {
+    local container_name="$1"
+    local image="$2"
+    local mount_source="$3"
+    local mount_dest="$4"
+    local network_mode="$5"  # "none" or "bridge"
+    local extra_args="$6"
+    local host_uid="$7"
+    local host_gid="$8"
+
+    # Build docker run command
+    local docker_cmd="docker run -d --name $container_name"
+    docker_cmd="$docker_cmd --network=$network_mode"
+    docker_cmd="$docker_cmd -u ${host_uid}:${host_gid}"
+    docker_cmd="$docker_cmd -v \"$mount_source:$mount_dest\""
+    docker_cmd="$docker_cmd -w \"$mount_dest\""
+    # Keep container running
+    docker_cmd="$docker_cmd --init"
+
+    # Add extra args if provided
+    if [ -n "$extra_args" ]; then
+        docker_cmd="$docker_cmd $extra_args"
+    fi
+
+    docker_cmd="$docker_cmd $image tail -f /dev/null"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] $docker_cmd"
+        return 0
+    fi
+
+    eval "$docker_cmd" >/dev/null 2>&1
+}
+
+# Execute command in running container
+docker_exec() {
+    local container_name="$1"
+    shift
+    local cmd="$*"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker exec -it $container_name $cmd"
+        return 0
+    fi
+
+    docker exec -it "$container_name" $cmd
+}
+
+# Execute command in running container (non-interactive)
+docker_exec_quiet() {
+    local container_name="$1"
+    shift
+    local cmd="$*"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker exec $container_name $cmd"
+        return 0
+    fi
+
+    docker exec "$container_name" $cmd
+}
+
+# Stop a running container
+docker_stop_container() {
+    local container_name="$1"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker stop $container_name"
+        return 0
+    fi
+
+    docker stop "$container_name" >/dev/null 2>&1
+}
+
+# Remove a container
+docker_remove_container() {
+    local container_name="$1"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker rm $container_name"
+        return 0
+    fi
+
+    docker rm "$container_name" >/dev/null 2>&1
+}
+
+# Copy file/directory to container
+docker_copy_to_container() {
+    local container_name="$1"
+    local source_path="$2"
+    local dest_path="$3"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker cp $source_path $container_name:$dest_path"
+        return 0
+    fi
+
+    docker cp "$source_path" "$container_name:$dest_path"
+}
+
 # Important things first
 print_banner() {
     local banner=$(cat << 'EOF'
@@ -755,12 +959,12 @@ for _, cfg in ipairs(configs) do
     config = merge_config(config, cfg)
 end
 
--- Determine project name from CLI arg or config
-local project = cli_arg ~= "" and cli_arg or config.project or ""
+-- Determine project name from CLI arg, config, or derived from directory structure
+local project = cli_arg ~= "" and cli_arg or config.project or derived_project or ""
 
--- If project name is set (from CLI or config), try to load project-specific config
+-- If project name is set, try to load project-specific config
 if project ~= "" then
-    local project_config = project .. ".claude-cage.config"
+    local project_config = config_root .. "/" .. project .. ".claude-cage.config"
     sources[4].path = project_config
     local f = io.open(project_config, "r")
     if f then
@@ -805,8 +1009,7 @@ if project == "" then
     project = config.project or derived_project
 end
 local user = config.user or "claude"
-local userMode = config.userMode or "single"  -- Options: "single" or "per-project"
-local userAppend = config.userAppend or ""
+local isolationMode = config.isolationMode or "user"  -- Options: "user" or "docker"
 local source = config.source or ""
 local sync = config.sync or ""
 local mountBase = config.mountBase  -- nil if not set, "" if explicitly empty
@@ -815,6 +1018,18 @@ local mounted = config.mounted or ""
 local directMount = config.directMount or false
 local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
+
+-- Docker configuration defaults
+local docker = config.docker or {}
+local dockerImage = docker.image or "node:lts-slim"
+local dockerPackages = docker.packages or {}
+local dockerNamePrefix = docker.namePrefix or "claude-cage"
+local dockerExtraArgs = docker.extraArgs or ""
+
+-- Validate isolationMode
+if isolationMode ~= "user" and isolationMode ~= "docker" then
+    error("Invalid isolationMode: must be 'user' or 'docker'")
+end
 
 -- Source defaults to the project directory (config_root/project)
 -- This ensures we sync the specific project, not the entire parent workspace
@@ -839,25 +1054,6 @@ if source == "" then
             source = config_root
         end
     end
-end
-
--- Determine username based on userMode
-if userMode == "single" then
-    -- Single-user mode: use base username only
-    -- userAppend is ignored
-elseif userMode == "per-project" then
-    -- Per-project mode: append identifier to username
-    if userAppend ~= "" then
-        -- Use explicitly set userAppend
-        user = user .. "-" .. userAppend
-    elseif project ~= "" then
-        -- Use project name as default
-        user = user .. "-" .. project
-    else
-        -- No userAppend and no project: use base username (fallback to single-user)
-    end
-else
-    error("Invalid userMode: must be 'single' or 'per-project'")
 end
 
 -- If sync is empty, determine from project
@@ -1068,6 +1264,13 @@ print(#display_lines)
 for _, line in ipairs(display_lines) do
     print(line)
 end
+
+-- Output isolation mode and docker configuration
+print(isolationMode)
+print(dockerImage)
+print(array_to_string(dockerPackages))
+print(dockerNamePrefix)
+print(dockerExtraArgs)
 EOF
 )
 lua_exit_code=$?
@@ -1121,6 +1324,12 @@ fi
         read -r line
         cfg_display_lines+=("$line")
     done
+    # Read isolation mode and docker configuration
+    read -r cfg_isolationMode
+    read -r cfg_docker_image
+    read -r cfg_docker_packages
+    read -r cfg_docker_namePrefix
+    read -r cfg_docker_extraArgs
 } <<< "$lua_output"
 
 # Replace EMPTY placeholder with empty string for array values
@@ -1138,10 +1347,12 @@ fi
 [ "$cfg_block_domains" = "EMPTY" ] && cfg_block_domains=""
 [ "$cfg_block_ips" = "EMPTY" ] && cfg_block_ips=""
 [ "$cfg_block_networks" = "EMPTY" ] && cfg_block_networks=""
+[ "$cfg_docker_packages" = "EMPTY" ] && cfg_docker_packages=""
 
 # Parse command line arguments
 test_mode=false
 cleanup_mode=false
+delete_docker_container=false
 claude_continue=false
 claude_resume=false
 source_arg=""
@@ -1160,6 +1371,8 @@ for arg in "$@"; do
         cfg_showBanner="false"
     elif [ "$arg" = "--cleanup" ]; then
         cleanup_mode=true
+    elif [ "$arg" = "--delete-docker-container" ]; then
+        delete_docker_container=true
     elif [ "$arg" = "--continue" ]; then
         claude_continue=true
     elif [ "$arg" = "--resume" ]; then
@@ -1213,6 +1426,25 @@ if [ -z "$cfg_project" ]; then
     echo "This shouldn't happen since it's derived from the directory structure."
     echo "Check your config file location and try again."
     exit 1
+fi
+
+# Docker mode dependency checks (must happen after config is parsed)
+if [ "$cfg_isolationMode" = "docker" ]; then
+    if ! docker_available; then
+        echo "Hold on now. You're tryin' to use Docker mode but docker ain't installed."
+        echo "Either install Docker or switch to user mode (isolationMode = \"user\")."
+        exit 1
+    fi
+    if ! docker_accessible; then
+        echo "Hold on now. Can't talk to Docker."
+        echo "Either the daemon ain't runnin', or you don't have permission."
+        echo ""
+        echo "Try one of these:"
+        echo "  - Start Docker: sudo systemctl start docker"
+        echo "  - Add yourself to docker group: sudo usermod -aG docker $USER"
+        echo "    (then log out and back in)"
+        exit 1
+    fi
 fi
 
 # In sync mode, validate we're not at the config root
@@ -1272,10 +1504,44 @@ if [ "$cfg_directMount" = "workspace" ] || [ "$cfg_directMount" = "project" ]; t
     fi
 fi
 
+# Handle --delete-docker-container
+if [ "$delete_docker_container" = true ]; then
+    if [ "$cfg_isolationMode" != "docker" ]; then
+        echo "Hold on. --delete-docker-container only works in Docker mode."
+        echo "Your config has isolationMode = \"$cfg_isolationMode\""
+        exit 1
+    fi
+
+    # Compute container name
+    if [ "$cfg_directMount" = "workspace" ]; then
+        workspace_name=$(basename "$cfg_source")
+        container_name=$(docker_container_name "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
+    else
+        container_name=$(docker_container_name "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
+    fi
+
+    echo "Container: $container_name"
+
+    if ! docker_container_exists "$container_name"; then
+        echo "Container don't exist. Nothin' to delete."
+        exit 0
+    fi
+
+    if docker_container_running "$container_name"; then
+        echo "Stoppin' container..."
+        docker_stop_container "$container_name"
+    fi
+
+    echo "Removin' container..."
+    docker_remove_container "$container_name"
+    echo "Done. Container's gone."
+    exit 0
+fi
+
 # Handle cleanup mode
 if [ "$cleanup_mode" = true ]; then
-    # Now check for root (unless dry-run)
-    if [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
+    # Check for root (unless dry-run or docker mode)
+    if [ "$cfg_isolationMode" != "docker" ] && [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
         echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
         exit 1
     fi
@@ -1290,11 +1556,7 @@ if [ "$cleanup_mode" = true ]; then
         user_home=$(get_user_home "$cfg_user")
     else
         # User doesn't exist, construct expected home path
-        if [[ "$cfg_user" == *"-"* ]]; then
-            user_home="$cage_home_base/$cfg_user"
-        else
-            user_home="/home/$cfg_user"
-        fi
+        user_home="/home/$cfg_user"
     fi
 
     # Construct mount point using same logic as main script
@@ -1358,6 +1620,13 @@ if [ "$cleanup_mode" = true ]; then
         fi
     fi
 
+    # Docker mode doesn't need --cleanup (no system-level changes)
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        echo ""
+        echo "Docker mode doesn't leave system-level mess to clean up."
+        echo "To delete a container, use: claude-cage --delete-docker-container"
+    fi
+
     # Kill processes from PID file
     if [ -f "$pid_file" ] || [ "$dry_run" = true ]; then
         echo "Found PID file, stoppin' tracked processes..."
@@ -1378,34 +1647,17 @@ if [ "$cleanup_mode" = true ]; then
         echo "No PID file found at $pid_file"
     fi
 
-    # Ask about user deletion (only in per-project mode)
-    # In single-user mode, the user is shared across projects and shouldn't be deleted
-    if user_exists "$cfg_user"; then
-        if [[ "$cfg_user" == *"-"* ]]; then
-            # Per-project mode: offer to delete the project-specific user
+    # Ask about user deletion (only in user mode, not docker mode)
+    # Docker mode doesn't create system users
+    if [ "$cfg_isolationMode" != "docker" ]; then
+        if user_exists "$cfg_user"; then
             echo ""
             echo "User '$cfg_user' exists on this system."
-            read -p "Delete user '$cfg_user'? [y/N] " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                echo "Alright, removin' user '$cfg_user'..."
-                delete_user "$cfg_user"
-                if [ $? -eq 0 ]; then
-                    echo "  Done. User's gone."
-                else
-                    echo "  Had some trouble removin' the user. May need to clean that up yourself."
-                fi
-            else
-                echo "Leavin' user '$cfg_user' as is."
-            fi
-        else
-            # Single-user mode: don't delete the shared user
-            echo ""
-            echo "User '$cfg_user' is in single-user mode (shared across projects)."
+            echo "This is a shared user for all projects."
             echo "Not deletin' the user. If you want to remove it, do that manually."
+        else
+            echo "User '$cfg_user' doesn't exist. Nothin' to delete."
         fi
-    else
-        echo "User '$cfg_user' doesn't exist. Nothin' to delete."
     fi
 
     echo ""
@@ -1413,8 +1665,9 @@ if [ "$cleanup_mode" = true ]; then
     exit 0
 fi
 
-# Now check for root after validating config (unless dry-run)
-if [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
+# Now check for root after validating config (unless dry-run or docker mode)
+# Docker mode doesn't need root - just Docker group membership
+if [ "$cfg_isolationMode" != "docker" ] && [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
     echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
     exit 1
 fi
@@ -1427,31 +1680,41 @@ echo "Alright. Here's what we're workin' with:"
 echo ""
 echo "Configuration:"
 echo "  Project:       $cfg_project"
-echo "  User:          $cfg_user"
+echo "  Isolation:     $cfg_isolationMode"
+if [ "$cfg_isolationMode" = "docker" ]; then
+    echo "  Image:         $cfg_docker_image"
+    if [ -n "$cfg_docker_packages" ]; then
+        echo "  Packages:      $(echo "$cfg_docker_packages" | tr '|' ' ')"
+    fi
+else
+    echo "  User:          $cfg_user"
+fi
 if [ "$cfg_directMount" = "workspace" ]; then
-    echo "  Mode:          Direct mount (workspace - access to sibling projects)"
+    echo "  File mode:     Direct mount (workspace - access to sibling projects)"
     echo "  Source:        $cfg_source"
     if [ -n "$start_subdir" ]; then
         echo "  Start dir:     $start_subdir"
     fi
 elif [ "$cfg_directMount" = "project" ]; then
-    echo "  Mode:          Direct mount (project only)"
+    echo "  File mode:     Direct mount (project only)"
     echo "  Source:        $cfg_source"
     if [ -n "$start_subdir" ]; then
         echo "  Start dir:     $start_subdir"
     fi
 else
-    echo "  Mode:          Sync mode"
+    echo "  File mode:     Sync mode"
     echo "  Source:        $cfg_source"
     echo "  Sync:          $cfg_sync"
     if [ -n "$start_subdir" ]; then
         echo "  Start dir:     $start_subdir"
     fi
 fi
-if [ -n "$cfg_mountBase" ]; then
-    echo "  Mount point:   /home/$cfg_user/$cfg_mountBase/$cfg_mounted"
-else
-    echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
+if [ "$cfg_isolationMode" != "docker" ]; then
+    if [ -n "$cfg_mountBase" ]; then
+        echo "  Mount point:   /home/$cfg_user/$cfg_mountBase/$cfg_mounted"
+    else
+        echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
+    fi
 fi
 echo "  Network mode:  $cfg_networkMode"
 
@@ -1646,17 +1909,8 @@ user_was_prompted=false
 if ! user_exists "$cfg_user" || [ "$dry_run" = true ]; then
     if [ "$dry_run" = true ]; then
         echo "Would create user '$cfg_user' (doesn't exist or dry-run mode)."
-        # In single-user mode, use default home directory location
-        # In multi-project mode, use /home/claude-cage/<user>
-        if [[ "$cfg_user" == *"-"* ]]; then
-            # Multi-project mode: home under /home/claude-cage
-            user_home="$cage_home_base/$cfg_user"
-            create_user "$cfg_user" "$user_home" "true"
-        else
-            # Single-user mode: default home directory
-            create_user "$cfg_user" "" "false"
-            user_home="/home/$cfg_user"
-        fi
+        create_user "$cfg_user" "" "false"
+        user_home="/home/$cfg_user"
         user_was_prompted=true
     else
         echo "That user '$cfg_user' ain't on this system yet."
@@ -1664,21 +1918,9 @@ if ! user_exists "$cfg_user" || [ "$dry_run" = true ]; then
         echo
         user_was_prompted=true
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            # In single-user mode, use default home directory location
-            # In multi-project mode, use /home/claude-cage/<user>
-            if [[ "$cfg_user" == *"-"* ]]; then
-                # Multi-project mode: home under /home/claude-cage
-                user_home="$cage_home_base/$cfg_user"
-                create_user "$cfg_user" "$user_home" "true"
-                echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
-            else
-                # Single-user mode: default home directory
-                create_user "$cfg_user" "" "false"
-                # Get home directory using OS abstraction function
-                user_home=$(get_user_home "$cfg_user")
-                echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
-            fi
-            echo "This user's temporary. Gone when we're done here."
+            create_user "$cfg_user" "" "false"
+            user_home=$(get_user_home "$cfg_user")
+            echo "Done. User '$cfg_user' is ready to go (home: $user_home)."
         else
             echo "Can't fly this bird without that user. We're done here."
             exit 1
@@ -1698,14 +1940,9 @@ if [ "$user_was_prompted" = "false" ] && [ "$dry_run" != true ]; then
 fi
 
 # Set user_home for later use
-# Get home directory using OS abstraction function
 if [ "$dry_run" = true ]; then
-    # In dry-run, user might not exist, so use default paths
-    if [[ "$cfg_user" == *"-"* ]]; then
-        user_home="${user_home:-$cage_home_base/$cfg_user}"
-    else
-        user_home="${user_home:-/home/$cfg_user}"
-    fi
+    # In dry-run, user might not exist, so use default path
+    user_home="${user_home:-/home/$cfg_user}"
     user_uid="${user_uid:-<UID>}"
 else
     user_home=$(get_user_home "$cfg_user")
@@ -1822,23 +2059,30 @@ else
     mount_instance_file=""
 fi
 
-# Track iptables chain name for cleanup
-# In single-user mode, use a shared chain name; otherwise use per-process chain
-if [[ "$cfg_user" == *"-"* ]]; then
-    # Multi-project mode: per-process chain
-    iptables_chain="CLAUDE_CAGE_$$"
-else
-    # Single-user mode: shared chain for the user
-    iptables_chain="CLAUDE_CAGE_${cfg_user}"
-fi
+# Track iptables chain name for cleanup (shared chain for the user)
+iptables_chain="CLAUDE_CAGE_${cfg_user}"
 
-# Global instance file (tracks all projects for this user in single-user mode)
-if [[ "$cfg_user" == *"-"* ]]; then
-    # Per-project mode: only use local instance file
-    global_instance_file=""
+# Global instance file (tracks all projects for this user)
+global_instance_file="$user_home/.claude-cage-instances"
+
+# Pre-compute Docker container name and mount destination
+# (needs to be available for cleanup and launch)
+if [ "$cfg_isolationMode" = "docker" ]; then
+    if [ "$cfg_directMount" = "workspace" ]; then
+        workspace_name=$(basename "$cfg_source")
+        docker_container_name_value=$(docker_container_name "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
+        docker_mount_dest="/home/claude/caged/$workspace_name"
+    elif [ "$cfg_directMount" = "project" ]; then
+        docker_container_name_value=$(docker_container_name "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
+        docker_mount_dest="/home/claude/caged/$cfg_project"
+    else
+        # Sync mode
+        docker_container_name_value=$(docker_container_name "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
+        docker_mount_dest="/home/claude/caged/$cfg_project"
+    fi
 else
-    # Single-user mode: track instances globally in user's home
-    global_instance_file="$user_home/.claude-cage-instances"
+    docker_container_name_value=""
+    docker_mount_dest=""
 fi
 
 # This instance's ID
@@ -1852,6 +2096,29 @@ cleanup() {
 
     echo ""
     echo "Alright, shuttin' down operations..."
+
+    # Docker mode cleanup
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        # Kill unison if running (sync mode)
+        if [ -f "$pid_file" ]; then
+            echo "Stoppin' unison sync..."
+            while IFS= read -r pid; do
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    kill "$pid" 2>/dev/null
+                fi
+            done < "$pid_file"
+            rm -f "$pid_file"
+        fi
+
+        # Stop container (it stays around for --continue/--resume)
+        if [ -n "$docker_container_name_value" ] && docker_container_running "$docker_container_name_value"; then
+            echo "Stoppin' Docker container..."
+            docker_stop_container "$docker_container_name_value"
+        fi
+
+        echo "All done. Stay safe out there."
+        return
+    fi
 
     # For workspace direct mount mode, track by mount point instead of project
     # This ensures we only unmount when the last instance using that mount exits
@@ -1972,41 +2239,23 @@ cleanup() {
         umount -l "$mount_point" 2>/dev/null
     fi
 
-    # Clean up firewall rules
-    if [[ "$cfg_user" == *"-"* ]]; then
-        # Multi-project mode: always clean up per-process chain
-        if firewall_chain_exists "$iptables_chain"; then
-            echo "Cleanin' up network restrictions..."
-            delete_firewall_chain "$iptables_chain" "$user_uid"
-        fi
-    else
-        # Single-user mode: only clean up if no other instances exist
-        # Check the global instance file
-        has_other_instances=false
-        if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
-            # Check if there are any live instances in the global file
-            while IFS= read -r inst_id; do
-                if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
-                    has_other_instances=true
-                    break
-                fi
-            done < "$global_instance_file"
-        fi
-
-        if [ "$has_other_instances" = "false" ] && firewall_chain_exists "$iptables_chain"; then
-            echo "Last instance for user $cfg_user, cleanin' up network restrictions..."
-            delete_firewall_chain "$iptables_chain" "$user_uid"
-        fi
+    # Clean up firewall rules (only if no other instances exist)
+    has_other_instances=false
+    if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
+        while IFS= read -r inst_id; do
+            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
+                has_other_instances=true
+                break
+            fi
+        done < "$global_instance_file"
     fi
 
-    # Delete user if it didn't exist before AND we're in per-project mode
-    # In single-user mode, keep the user around (it's shared across projects)
-    if [ "$user_existed_before" = "false" ] && [[ "$cfg_user" == *"-"* ]]; then
-        if user_exists "$cfg_user"; then
-            echo "User '$cfg_user' is temporary, removin' it now..."
-            delete_user "$cfg_user"
-        fi
+    if [ "$has_other_instances" = "false" ] && firewall_chain_exists "$iptables_chain"; then
+        echo "Last instance for user $cfg_user, cleanin' up network restrictions..."
+        delete_firewall_chain "$iptables_chain" "$user_uid"
     fi
+
+    # User mode always uses a shared user, so we don't delete it
 
     echo "All done. Stay safe out there."
 }
@@ -2297,25 +2546,151 @@ if [ -f "$pid_file" ]; then
 fi
 
 if [ "$skip_setup" = false ]; then
-    # Setup network restrictions if configured
-    setup_network_restrictions "$cfg_networkMode"
-
-    # Create mount point if it doesn't exist
-    run mkdir -p "$mount_point"
-
     # Create .caged/project-name/ directory for instance/PID files at config root
     run mkdir -p "$cfg_config_root/.caged/$cfg_project"
-
-    # In sync mode, create sync directory and set ownership
-    if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
-        run mkdir -p "$cfg_sync"
-    fi
 
     # Set ownership of .caged directory and everything under it to original user
     run chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
 
-    # Check if mount point is already mounted
-    if [ "$dry_run" != true ] && mountpoint -q "$mount_point" 2>/dev/null; then
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        # Docker mode setup
+        echo "Docker mode: settin' up container..."
+
+        # Determine network mode for Docker
+        case "$cfg_networkMode" in
+            disabled|allowlist)
+                docker_network="none"
+                ;;
+            blocklist)
+                docker_network="bridge"
+                ;;
+            *)
+                docker_network="none"
+                ;;
+        esac
+
+        # Build/ensure image with packages
+        docker_image_to_use=$(docker_ensure_image "$cfg_docker_image" "$cfg_docker_packages")
+        if [ -z "$docker_image_to_use" ]; then
+            echo "Failed to prepare Docker image."
+            exit 1
+        fi
+        echo "Using image: $docker_image_to_use"
+
+        # Container name and mount destination were pre-computed for cleanup/launch
+        echo "Container name: $docker_container_name_value"
+
+        # Determine mount source (destination was pre-computed)
+        if [ "$cfg_directMount" = "workspace" ] || [ "$cfg_directMount" = "project" ]; then
+            # Direct mount mode: mount source directly
+            docker_mount_source="$cfg_source"
+        else
+            # Sync mode: run unison first, then mount sync directory
+            run mkdir -p "$cfg_sync"
+
+            # Build unison command with exclude options
+            unison_cmd_base="unison \"$cfg_source\" \"$cfg_sync\" -batch -confirmbigdel=false"
+            if [ -n "$cfg_exclude" ]; then
+                unison_cmd_base="$unison_cmd_base $cfg_exclude"
+            fi
+            if [ -n "$cfg_cageLocal" ]; then
+                unison_cmd_base="$unison_cmd_base $cfg_cageLocal"
+            fi
+
+            unison_cmd_initial="$unison_cmd_base -force \"$cfg_source\" -prefer \"$cfg_source\""
+            unison_cmd_ongoing="$unison_cmd_base -auto"
+
+            # Check for watch mode
+            if command -v unison-fsmonitor >/dev/null 2>&1; then
+                repeat_mode="watch"
+            else
+                repeat_mode="1"
+                echo "No unison-fsmonitor. Using polling mode (check every second)."
+            fi
+
+            # Run initial and ongoing sync
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] bash -c '$unison_cmd_initial'"
+                echo "[dry-run] bash -c '$unison_cmd_ongoing -repeat $repeat_mode' &"
+                unison_pid="<PID>"
+            else
+                bash -c "$unison_cmd_initial" >/dev/null 2>&1
+                bash -c "$unison_cmd_ongoing -repeat $repeat_mode" >/dev/null 2>&1 &
+                unison_pid=$!
+            fi
+
+            # Write unison PID to file
+            run bash -c "echo '$unison_pid' > '$pid_file'"
+
+            docker_mount_source="$cfg_sync"
+        fi
+
+        # Get host UID/GID for file ownership mapping
+        host_uid=$(id -u)
+        host_gid=$(id -g)
+
+        # Check if container already exists
+        if docker_container_exists "$docker_container_name_value"; then
+            if docker_container_running "$docker_container_name_value"; then
+                echo "Container already runnin'. Reusin' it."
+            else
+                echo "Container exists but stopped. Startin' it..."
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] docker start $docker_container_name_value"
+                else
+                    docker start "$docker_container_name_value" >/dev/null 2>&1
+                fi
+            fi
+        else
+            # Start new container
+            docker_start_container "$docker_container_name_value" "$docker_image_to_use" \
+                "$docker_mount_source" "$docker_mount_dest" \
+                "$docker_network" "$cfg_docker_extraArgs" \
+                "$host_uid" "$host_gid"
+
+            if [ "$dry_run" != true ] && ! docker_container_running "$docker_container_name_value"; then
+                echo "Failed to start Docker container."
+                exit 1
+            fi
+            echo "Container started."
+        fi
+
+        # Copy homeConfigSync files into container
+        original_home="/home/${original_user}"
+        for entry in "${cfg_homeConfigSync[@]}"; do
+            IFS='|' read -r sync_source sync_dest <<< "$entry"
+            source_path="${original_home}/${sync_source}"
+            # In container, home is /home/claude (matching the user ID mapping)
+            container_dest="/home/claude/${sync_dest}"
+
+            if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+                # Create parent directory in container first
+                container_dir=$(dirname "$container_dest")
+                docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
+
+                # Copy file/directory
+                docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
+                if [ "$dry_run" != true ]; then
+                    echo "Synced $sync_source -> $sync_dest (in container)"
+                fi
+            fi
+        done
+
+    else
+        # User mode setup (existing code)
+        # Setup network restrictions if configured
+        setup_network_restrictions "$cfg_networkMode"
+
+        # Create mount point if it doesn't exist
+        run mkdir -p "$mount_point"
+
+        # In sync mode, create sync directory and set ownership
+        if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
+            run mkdir -p "$cfg_sync"
+        fi
+
+        # Check if mount point is already mounted
+        if [ "$dry_run" != true ] && mountpoint -q "$mount_point" 2>/dev/null; then
         if [ "$cfg_directMount" = "workspace" ]; then
             # In workspace mode, reusing an existing mount is fine
             # Just register this instance and continue
@@ -2461,9 +2836,10 @@ if [ "$skip_setup" = false ]; then
         # Write unison PID to file for cleanup (bindfs doesn't run as a daemon)
         run bash -c "echo '$unison_pid' > '$pid_file'"
     fi
+    fi  # End of user mode setup
 else
-    # Verify mount point still exists
-    if ! mountpoint -q "$mount_point" 2>/dev/null; then
+    # Verify mount point still exists (user mode only)
+    if [ "$cfg_isolationMode" != "docker" ] && ! mountpoint -q "$mount_point" 2>/dev/null; then
         echo "Wait a minute. The mount point ain't there anymore."
         echo "Somethin' went wrong. Run: sudo claude-cage --cleanup"
         exit 1
@@ -2482,14 +2858,16 @@ fi
 # Sync home config files from original user's home to cage user's home
 # Configured via homeConfigSync in config file
 # Entries are processed in order - useful for copying a directory then overwriting specific files
-original_home="/home/${original_user}"
-for entry in "${cfg_homeConfigSync[@]}"; do
-    IFS='|' read -r sync_source sync_dest <<< "$entry"
-    source_path="${original_home}/${sync_source}"
-    dest_path="${user_home}/${sync_dest}"
-    dest_dir=$(dirname "$dest_path")
+# Skip for Docker mode - handled in Docker setup branch
+if [ "$cfg_isolationMode" != "docker" ]; then
+    original_home="/home/${original_user}"
+    for entry in "${cfg_homeConfigSync[@]}"; do
+        IFS='|' read -r sync_source sync_dest <<< "$entry"
+        source_path="${original_home}/${sync_source}"
+        dest_path="${user_home}/${sync_dest}"
+        dest_dir=$(dirname "$dest_path")
 
-    if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+        if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
         # Create destination parent directory if needed
         if [ ! -d "$dest_dir" ]; then
             run mkdir -p "$dest_dir"
@@ -2518,7 +2896,8 @@ for entry in "${cfg_homeConfigSync[@]}"; do
             fi
         fi
     fi
-done
+    done
+fi  # End of homeConfigSync for user mode
 
 if [ "$dry_run" = true ]; then
     echo ""
@@ -2529,29 +2908,44 @@ if [ "$dry_run" = true ]; then
 elif [ "$test_mode" = true ]; then
     echo ""
     echo "=== TEST MODE ==="
-    echo "Alright, everything's ready. Switchin' you over to user '$cfg_user' so you can test things out."
-    if [ "$cfg_directMount" = "workspace" ]; then
-        echo "Your files are mounted at: $mount_point"
-        echo "Navigate to your project with: cd $mount_point/$start_subdir"
-        echo "You can access sibling projects from the mount root."
-    elif [ "$cfg_directMount" = "project" ]; then
-        echo "Your files are mounted at: $mount_point"
-        echo "Navigate there with: cd $mount_point"
-        echo "Only this project is accessible (no sibling projects)."
-    else
-        echo "Your files are mounted at: $mount_point"
+
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        echo "Alright, everything's ready. Droppin' you into the Docker container."
+        echo "Your files are at: $docker_mount_dest"
         if [ -n "$start_subdir" ]; then
-            echo "Navigate to your project with: cd $mount_point/$start_subdir"
-        else
-            echo "Navigate there with: cd $mount_point"
+            echo "Navigate to your project with: cd $docker_mount_dest/$start_subdir"
         fi
+        echo ""
+        echo "When you're done pokin' around, type 'exit' and we'll clean up."
+        echo "================="
+        echo ""
+        docker_exec "$docker_container_name_value" bash
+        exit_code=$?
+    else
+        echo "Alright, everything's ready. Switchin' you over to user '$cfg_user' so you can test things out."
+        if [ "$cfg_directMount" = "workspace" ]; then
+            echo "Your files are mounted at: $mount_point"
+            echo "Navigate to your project with: cd $mount_point/$start_subdir"
+            echo "You can access sibling projects from the mount root."
+        elif [ "$cfg_directMount" = "project" ]; then
+            echo "Your files are mounted at: $mount_point"
+            echo "Navigate there with: cd $mount_point"
+            echo "Only this project is accessible (no sibling projects)."
+        else
+            echo "Your files are mounted at: $mount_point"
+            if [ -n "$start_subdir" ]; then
+                echo "Navigate to your project with: cd $mount_point/$start_subdir"
+            else
+                echo "Navigate there with: cd $mount_point"
+            fi
+        fi
+        echo ""
+        echo "When you're done pokin' around, type 'exit' and we'll clean up."
+        echo "================="
+        echo ""
+        su - "$cfg_user"
+        exit_code=$?
     fi
-    echo ""
-    echo "When you're done pokin' around, type 'exit' and we'll clean up."
-    echo "================="
-    echo ""
-    su - "$cfg_user"
-    exit_code=$?
 else
     # Build claude command with optional flags
     claude_cmd="claude"
@@ -2561,22 +2955,35 @@ else
         claude_cmd="claude --resume"
     fi
 
-    # Run Claude as the caged user in the mounted directory
-    if [ "$cfg_directMount" = "workspace" ]; then
-        # Workspace mode: start in the specified subdirectory within the mount
-        su - "$cfg_user" -c "cd \"$mount_point/$start_subdir\" && $claude_cmd"
-    elif [ "$cfg_directMount" = "project" ]; then
-        # Project mode: start at the mount point root (which is the project dir)
-        su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
-    else
-        # Sync mode: start in the subdirectory corresponding to CWD relative to config root
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        # Docker mode: run claude inside container
+        # Determine working directory inside container
         if [ -n "$start_subdir" ]; then
-            su - "$cfg_user" -c "cd \"$mount_point/$start_subdir\" && $claude_cmd"
+            docker_workdir="$docker_mount_dest/$start_subdir"
         else
-            su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
+            docker_workdir="$docker_mount_dest"
         fi
+
+        docker_exec "$docker_container_name_value" bash -c "cd \"$docker_workdir\" && $claude_cmd"
+        exit_code=$?
+    else
+        # User mode: run Claude as the caged user in the mounted directory
+        if [ "$cfg_directMount" = "workspace" ]; then
+            # Workspace mode: start in the specified subdirectory within the mount
+            su - "$cfg_user" -c "cd \"$mount_point/$start_subdir\" && $claude_cmd"
+        elif [ "$cfg_directMount" = "project" ]; then
+            # Project mode: start at the mount point root (which is the project dir)
+            su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
+        else
+            # Sync mode: start in the subdirectory corresponding to CWD relative to config root
+            if [ -n "$start_subdir" ]; then
+                su - "$cfg_user" -c "cd \"$mount_point/$start_subdir\" && $claude_cmd"
+            else
+                su - "$cfg_user" -c "cd \"$mount_point\" && $claude_cmd"
+            fi
+        fi
+        exit_code=$?
     fi
-    exit_code=$?
 fi
 
 # Explicit exit to ensure cleanup trap fires

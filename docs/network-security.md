@@ -121,9 +121,9 @@ Port restrictions apply to both TCP and UDP protocols.
 - `6379` - Redis
 - `3000-9000` - Common development server ports
 
-## Network Rules in Single-User Mode
+## Network Rules in User Mode
 
-When running multiple projects in single-user mode, network rules are cumulative:
+When running multiple projects in user mode, network rules are cumulative:
 
 **How it works:**
 - All network rules from all running projects are combined into one shared chain
@@ -140,13 +140,13 @@ When running multiple projects in single-user mode, network rules are cumulative
 - Rules persist until the last instance exits
 - When all instances shut down, rules are cleaned up
 
-## Network Rules in Per-Project Mode
+## Network Rules in Docker Mode
 
-In per-project mode, each project gets completely isolated network rules:
-- Each user (`claude-projectname`) has its own iptables chain
-- Rules are created when the project starts
-- Rules are removed when the project exits
-- No interaction between projects
+In Docker mode, network isolation is simpler:
+- `networkMode = "disabled"` or `"allowlist"`: Container runs with `--network=none` (no network access)
+- `networkMode = "blocklist"`: Container runs with `--network=bridge` (full network access)
+
+Docker doesn't support granular destination filtering without host iptables. If you need fine-grained network control, use user mode instead.
 
 ## When to Use Each Mode
 

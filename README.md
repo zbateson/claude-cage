@@ -273,23 +273,33 @@ allow = { ips = { "127.0.0.1:5432" } }        -- Exception for PostgreSQL
 
 📖 **[Network Security Guide →](docs/network-security.md)**
 
-### User Isolation Modes
+### Isolation Modes
 
-**Single-user mode** (default) - All projects share user `claude`. Login once, you're done.
+**User mode** (default) - Uses a separate Unix user for isolation. Requires sudo.
 
-**Per-project mode** - Each project gets its own user (`claude-projectname`). Complete isolation, but gotta login for each.
+**Docker mode** - Uses a Docker container for isolation. No sudo required, just Docker group membership.
 
 ```lua
-userMode = "per-project"   -- Default is "single"
+isolationMode = "docker"   -- Default is "user"
+
+docker = {
+    image = "node:lts-slim",       -- Base image (must have Node.js)
+    packages = { "git", "curl" },  -- Packages to install
+    isolated = true,               -- Per-project containers (default: false = shared)
+}
 ```
+
+You can also use your own existing container - see [Using an Existing Docker Container](docs/docker-existing-container.md).
 
 ### Home Config Sync
 
-Cage user's got a different home directory. Git don't know who you are. Fix that:
+Cage user's got a different home directory. Git don't know who you are, Claude don't know you're logged in. Fix that:
 
 ```lua
 homeConfigSync = {
     ".gitconfig",
+    ".claude",       -- Claude credentials and settings directory
+    ".claude.json",  -- Claude onboarding state (separate file!)
     { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
 }
 ```

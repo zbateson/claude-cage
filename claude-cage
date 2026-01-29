@@ -391,14 +391,22 @@ docker_accessible() {
     docker ps >/dev/null 2>&1
 }
 
-# Generate container name from prefix, project, and hash
+# Generate container name for isolated mode (per-project)
 # Format: prefix-project-hash (hash from source path for uniqueness)
-docker_container_name() {
+docker_container_name_isolated() {
     local prefix="$1"
     local project="$2"
     local source_path="$3"
     local hash=$(echo "$source_path" | md5sum | cut -c1-8)
     echo "${prefix}-${project}-${hash}"
+}
+
+# Generate container name for shared mode (all projects share one container)
+# Format: prefix-uid (unique per user on the system)
+docker_container_name_shared() {
+    local prefix="$1"
+    local uid="$2"
+    echo "${prefix}-${uid}"
 }
 
 # Check if container exists (running or stopped)
@@ -442,9 +450,10 @@ docker_ensure_image() {
     # If no packages, just use the base image directly
     if [ -z "$packages" ]; then
         if [ "$dry_run" = true ]; then
-            echo "[dry-run] docker pull $base_image (if needed)"
+            echo "[dry-run] docker pull $base_image (if needed)" >&2
         else
-            docker pull "$base_image" >/dev/null 2>&1 || true
+            echo "Pullin' base image $base_image (this might take a minute)..." >&2
+            docker pull "$base_image" 2>&1 | grep -E '^[a-f0-9]+:|Status:|Digest:' >&2 || true
         fi
         echo "$base_image"
         return 0
@@ -460,14 +469,14 @@ RUN apt-get update && apt-get install -y ${pkg_list} && rm -rf /var/lib/apt/list
 "
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] Building Docker image $image_tag with packages: $pkg_list"
-        echo "[dry-run] docker build -t $image_tag -"
+        echo "[dry-run] Building Docker image $image_tag with packages: $pkg_list" >&2
+        echo "[dry-run] docker build -t $image_tag -" >&2
         echo "$image_tag"
         return 0
     fi
 
-    echo "Building Docker image with packages: $pkg_list"
-    echo "$dockerfile_content" | docker build -t "$image_tag" - >/dev/null 2>&1
+    echo "Buildin' Docker image with packages: $pkg_list (this might take a minute)..." >&2
+    echo "$dockerfile_content" | docker build -t "$image_tag" - 2>&1 | grep -E '^Step |^Successfully |^ ---> ' >&2 || true
     if [ $? -ne 0 ]; then
         echo "Failed to build Docker image" >&2
         return 1
@@ -487,56 +496,80 @@ docker_start_container() {
     local host_uid="$7"
     local host_gid="$8"
 
-    # Build docker run command
-    local docker_cmd="docker run -d --name $container_name"
-    docker_cmd="$docker_cmd --network=$network_mode"
-    docker_cmd="$docker_cmd -u ${host_uid}:${host_gid}"
-    docker_cmd="$docker_cmd -v \"$mount_source:$mount_dest\""
-    docker_cmd="$docker_cmd -w \"$mount_dest\""
-    # Keep container running
-    docker_cmd="$docker_cmd --init"
-
-    # Add extra args if provided
-    if [ -n "$extra_args" ]; then
-        docker_cmd="$docker_cmd $extra_args"
-    fi
-
-    docker_cmd="$docker_cmd $image tail -f /dev/null"
-
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] $docker_cmd"
+        echo "[dry-run] docker run -d --name $container_name --hostname $container_name --network=$network_mode -u ${host_uid}:${host_gid} -e HOME=/home/claude -v \"$mount_source:$mount_dest\" -w \"$mount_dest\" --init $extra_args $image tail -f /dev/null"
         return 0
     fi
 
-    eval "$docker_cmd" >/dev/null 2>&1
+    # Build args array to handle paths with spaces properly
+    # Set HOME explicitly since the UID may not exist in container's /etc/passwd
+    # Use container name as hostname for consistency
+    local -a docker_args=(
+        "run" "-d"
+        "--name" "$container_name"
+        "--hostname" "$container_name"
+        "--network=$network_mode"
+        "-u" "${host_uid}:${host_gid}"
+        "-e" "HOME=/home/claude"
+        "-v" "$mount_source:$mount_dest"
+        "-w" "$mount_dest"
+        "--init"
+    )
+
+    # Add extra args if provided (these get word-split intentionally)
+    if [ -n "$extra_args" ]; then
+        docker_args+=($extra_args)
+    fi
+
+    docker_args+=("$image" "tail" "-f" "/dev/null")
+
+    local output
+    output=$(docker "${docker_args[@]}" 2>&1)
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "Docker error: $output" >&2
+        return $exit_code
+    fi
 }
 
 # Execute command in running container
+# Usage: docker_exec container_name [--user username] command...
 docker_exec() {
     local container_name="$1"
     shift
-    local cmd="$*"
+    local -a user_opt=()
+    if [ "$1" = "--user" ]; then
+        user_opt=("-u" "$2")
+        shift 2
+    fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker exec -it $container_name $cmd"
+        echo "[dry-run] docker exec -it -e HOME=/home/claude ${user_opt[*]} $container_name $*"
         return 0
     fi
 
-    docker exec -it "$container_name" $cmd
+    # Set HOME explicitly since the UID may not exist in container's /etc/passwd
+    docker exec -it -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
 }
 
 # Execute command in running container (non-interactive)
+# Usage: docker_exec_quiet container_name [--user username] command...
 docker_exec_quiet() {
     local container_name="$1"
     shift
-    local cmd="$*"
+    local -a user_opt=()
+    if [ "$1" = "--user" ]; then
+        user_opt=("-u" "$2")
+        shift 2
+    fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker exec $container_name $cmd"
+        echo "[dry-run] docker exec -e HOME=/home/claude ${user_opt[*]} $container_name $*"
         return 0
     fi
 
-    docker exec "$container_name" $cmd
+    # Set HOME explicitly since the UID may not exist in container's /etc/passwd
+    docker exec -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
 }
 
 # Stop a running container
@@ -564,6 +597,7 @@ docker_remove_container() {
 }
 
 # Copy file/directory to container
+# For directories, removes destination first to avoid nesting (docker cp quirk)
 docker_copy_to_container() {
     local container_name="$1"
     local source_path="$2"
@@ -572,6 +606,12 @@ docker_copy_to_container() {
     if [ "$dry_run" = true ]; then
         echo "[dry-run] docker cp $source_path $container_name:$dest_path"
         return 0
+    fi
+
+    # For directories, remove destination first to avoid docker cp nesting issue
+    # (docker cp copies INTO existing directories instead of replacing them)
+    if [ -d "$source_path" ]; then
+        docker exec "$container_name" rm -rf "$dest_path" 2>/dev/null || true
     fi
 
     docker cp "$source_path" "$container_name:$dest_path"
@@ -781,7 +821,7 @@ for arg in "$@"; do
         skip_next=true
         continue
     fi
-    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ] && [ "$arg" != "--dry-run" ]; then
+    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ] && [ "$arg" != "--dry-run" ] && [ "$arg" != "--delete-docker-container" ]; then
         cli_project_arg="$arg"
         break
     fi
@@ -1025,6 +1065,10 @@ local dockerImage = docker.image or "node:lts-slim"
 local dockerPackages = docker.packages or {}
 local dockerNamePrefix = docker.namePrefix or "claude-cage"
 local dockerExtraArgs = docker.extraArgs or ""
+local dockerIsolated = docker.isolated or false  -- false: shared container, true: per-project
+local dockerContainer = docker.container or ""   -- Use existing container (user-managed)
+local dockerUser = docker.user or ""             -- User to run as in existing container
+local dockerWorkdir = docker.workdir or ""       -- Working directory in existing container
 
 -- Validate isolationMode
 if isolationMode ~= "user" and isolationMode ~= "docker" then
@@ -1271,6 +1315,10 @@ print(dockerImage)
 print(array_to_string(dockerPackages))
 print(dockerNamePrefix)
 print(dockerExtraArgs)
+print(tostring(dockerIsolated))
+print(dockerContainer)
+print(dockerUser)
+print(dockerWorkdir)
 EOF
 )
 lua_exit_code=$?
@@ -1330,6 +1378,10 @@ fi
     read -r cfg_docker_packages
     read -r cfg_docker_namePrefix
     read -r cfg_docker_extraArgs
+    read -r cfg_docker_isolated
+    read -r cfg_docker_container
+    read -r cfg_docker_user
+    read -r cfg_docker_workdir
 } <<< "$lua_output"
 
 # Replace EMPTY placeholder with empty string for array values
@@ -1513,11 +1565,20 @@ if [ "$delete_docker_container" = true ]; then
     fi
 
     # Compute container name
-    if [ "$cfg_directMount" = "workspace" ]; then
-        workspace_name=$(basename "$cfg_source")
-        container_name=$(docker_container_name "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
+    if [ -n "$cfg_docker_container" ]; then
+        # User-specified existing container
+        container_name="$cfg_docker_container"
+    elif [ "$cfg_docker_isolated" = "true" ]; then
+        # Isolated mode: per-project container
+        if [ "$cfg_directMount" = "workspace" ]; then
+            workspace_name=$(basename "$cfg_source")
+            container_name=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
+        else
+            container_name=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
+        fi
     else
-        container_name=$(docker_container_name "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
+        # Shared mode (default): single container for all projects
+        container_name=$(docker_container_name_shared "$cfg_docker_namePrefix" "$(id -u)")
     fi
 
     echo "Container: $container_name"
@@ -1944,6 +2005,10 @@ if [ "$dry_run" = true ]; then
     # In dry-run, user might not exist, so use default path
     user_home="${user_home:-/home/$cfg_user}"
     user_uid="${user_uid:-<UID>}"
+elif [ "$cfg_isolationMode" = "docker" ]; then
+    # Docker mode: no host user, use defaults for any host-side paths
+    user_home="/home/$cfg_user"
+    user_uid="$(id -u)"  # Current user's UID for file ownership
 else
     user_home=$(get_user_home "$cfg_user")
     # Get user UID for cleanup function (needed for firewall rule deletion)
@@ -2008,9 +2073,13 @@ install_claude_code() {
     fi
 }
 
-# Check if Claude Code is available for the user (skip in dry-run)
+# Check if Claude Code is available for the user (skip in dry-run and Docker mode)
+# In Docker mode, Claude Code is checked/installed inside the container, not on the host
 if [ "$dry_run" = true ]; then
     echo "[dry-run] Would check if Claude Code is installed for user '$cfg_user'"
+elif [ "$cfg_isolationMode" = "docker" ]; then
+    # Docker mode: will check inside container later
+    :
 elif ! check_claude_installed "$cfg_user" "$user_home"; then
     if ! install_claude_code "$cfg_user" "$user_home"; then
         echo "Can't proceed without Claude Code installed. We're done here."
@@ -2063,26 +2132,53 @@ fi
 iptables_chain="CLAUDE_CAGE_${cfg_user}"
 
 # Global instance file (tracks all projects for this user)
-global_instance_file="$user_home/.claude-cage-instances"
+# Only used in user mode - Docker mode doesn't have a host user home
+if [ "$cfg_isolationMode" = "docker" ]; then
+    global_instance_file=""
+else
+    global_instance_file="$user_home/.claude-cage-instances"
+fi
 
 # Pre-compute Docker container name and mount destination
 # (needs to be available for cleanup and launch)
 if [ "$cfg_isolationMode" = "docker" ]; then
-    if [ "$cfg_directMount" = "workspace" ]; then
+    # Determine container name
+    if [ -n "$cfg_docker_container" ]; then
+        # User-specified existing container
+        docker_container_name_value="$cfg_docker_container"
+        docker_using_existing_container=true
+    elif [ "$cfg_docker_isolated" = "true" ]; then
+        # Isolated mode: per-project container
+        if [ "$cfg_directMount" = "workspace" ]; then
+            workspace_name=$(basename "$cfg_source")
+            docker_container_name_value=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
+        else
+            docker_container_name_value=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
+        fi
+        docker_using_existing_container=false
+    else
+        # Shared mode (default): single container for all projects
+        docker_container_name_value=$(docker_container_name_shared "$cfg_docker_namePrefix" "$(id -u)")
+        docker_using_existing_container=false
+    fi
+
+    # Determine mount destination / working directory
+    if [ -n "$cfg_docker_workdir" ]; then
+        # User-specified working directory (for existing containers)
+        docker_mount_dest="$cfg_docker_workdir"
+    elif [ "$cfg_directMount" = "workspace" ]; then
         workspace_name=$(basename "$cfg_source")
-        docker_container_name_value=$(docker_container_name "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
         docker_mount_dest="/home/claude/caged/$workspace_name"
     elif [ "$cfg_directMount" = "project" ]; then
-        docker_container_name_value=$(docker_container_name "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
         docker_mount_dest="/home/claude/caged/$cfg_project"
     else
         # Sync mode
-        docker_container_name_value=$(docker_container_name "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
         docker_mount_dest="/home/claude/caged/$cfg_project"
     fi
 else
     docker_container_name_value=""
     docker_mount_dest=""
+    docker_using_existing_container=false
 fi
 
 # This instance's ID
@@ -2164,7 +2260,7 @@ cleanup() {
             # Update local instance file to remove dead instances
             printf "%s\n" "${remaining_local[@]}" > "$local_instance_file"
 
-            # Still need to remove from global in single-user mode
+            # Still need to remove from global in user mode
             if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
                 sed -i "/^$instance_id$/d" "$global_instance_file"
             fi
@@ -2177,7 +2273,7 @@ cleanup() {
         fi
     fi
 
-    # Remove from global instance file (single-user mode)
+    # Remove from global instance file (user mode)
     if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
         sed -i "/^$instance_id$/d" "$global_instance_file"
 
@@ -2307,7 +2403,7 @@ setup_network_restrictions() {
     local chain_exists=false
     if firewall_chain_exists "$iptables_chain"; then
         chain_exists=true
-        echo "Addin' network restrictions to existing chain (shared in single-user mode)..."
+        echo "Addin' network restrictions to existing chain (shared in user mode)..."
 
         # Remove the final catch-all rule (could be ACCEPT or REJECT depending on previous mode)
         # We need to remove it so we can add new rules, then re-add it at the end
@@ -2550,131 +2646,224 @@ if [ "$skip_setup" = false ]; then
     run mkdir -p "$cfg_config_root/.caged/$cfg_project"
 
     # Set ownership of .caged directory and everything under it to original user
-    run chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
+    # (only needed in user mode where we run as root - Docker mode runs as user already)
+    if [ "$cfg_isolationMode" != "docker" ]; then
+        run chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
+    fi
 
     if [ "$cfg_isolationMode" = "docker" ]; then
         # Docker mode setup
         echo "Docker mode: settin' up container..."
-
-        # Determine network mode for Docker
-        case "$cfg_networkMode" in
-            disabled|allowlist)
-                docker_network="none"
-                ;;
-            blocklist)
-                docker_network="bridge"
-                ;;
-            *)
-                docker_network="none"
-                ;;
-        esac
-
-        # Build/ensure image with packages
-        docker_image_to_use=$(docker_ensure_image "$cfg_docker_image" "$cfg_docker_packages")
-        if [ -z "$docker_image_to_use" ]; then
-            echo "Failed to prepare Docker image."
-            exit 1
-        fi
-        echo "Using image: $docker_image_to_use"
-
-        # Container name and mount destination were pre-computed for cleanup/launch
         echo "Container name: $docker_container_name_value"
 
-        # Determine mount source (destination was pre-computed)
-        if [ "$cfg_directMount" = "workspace" ] || [ "$cfg_directMount" = "project" ]; then
-            # Direct mount mode: mount source directly
-            docker_mount_source="$cfg_source"
-        else
-            # Sync mode: run unison first, then mount sync directory
-            run mkdir -p "$cfg_sync"
+        if [ "$docker_using_existing_container" = true ]; then
+            # Using user-specified existing container
+            echo "Using existing container (user-managed)..."
 
-            # Build unison command with exclude options
-            unison_cmd_base="unison \"$cfg_source\" \"$cfg_sync\" -batch -confirmbigdel=false"
-            if [ -n "$cfg_exclude" ]; then
-                unison_cmd_base="$unison_cmd_base $cfg_exclude"
-            fi
-            if [ -n "$cfg_cageLocal" ]; then
-                unison_cmd_base="$unison_cmd_base $cfg_cageLocal"
+            # Verify container exists
+            if ! docker_container_exists "$docker_container_name_value"; then
+                echo "Hold on now. That container '$docker_container_name_value' don't exist."
+                echo "Make sure you've created it first. See docs/docker-existing-container.md"
+                exit 1
             fi
 
-            unison_cmd_initial="$unison_cmd_base -force \"$cfg_source\" -prefer \"$cfg_source\""
-            unison_cmd_ongoing="$unison_cmd_base -auto"
-
-            # Check for watch mode
-            if command -v unison-fsmonitor >/dev/null 2>&1; then
-                repeat_mode="watch"
-            else
-                repeat_mode="1"
-                echo "No unison-fsmonitor. Using polling mode (check every second)."
-            fi
-
-            # Run initial and ongoing sync
-            if [ "$dry_run" = true ]; then
-                echo "[dry-run] bash -c '$unison_cmd_initial'"
-                echo "[dry-run] bash -c '$unison_cmd_ongoing -repeat $repeat_mode' &"
-                unison_pid="<PID>"
-            else
-                bash -c "$unison_cmd_initial" >/dev/null 2>&1
-                bash -c "$unison_cmd_ongoing -repeat $repeat_mode" >/dev/null 2>&1 &
-                unison_pid=$!
-            fi
-
-            # Write unison PID to file
-            run bash -c "echo '$unison_pid' > '$pid_file'"
-
-            docker_mount_source="$cfg_sync"
-        fi
-
-        # Get host UID/GID for file ownership mapping
-        host_uid=$(id -u)
-        host_gid=$(id -g)
-
-        # Check if container already exists
-        if docker_container_exists "$docker_container_name_value"; then
-            if docker_container_running "$docker_container_name_value"; then
-                echo "Container already runnin'. Reusin' it."
-            else
-                echo "Container exists but stopped. Startin' it..."
+            # Verify container is running
+            if ! docker_container_running "$docker_container_name_value"; then
+                echo "Container exists but ain't runnin'. Startin' it..."
                 if [ "$dry_run" = true ]; then
                     echo "[dry-run] docker start $docker_container_name_value"
                 else
                     docker start "$docker_container_name_value" >/dev/null 2>&1
+                    if ! docker_container_running "$docker_container_name_value"; then
+                        echo "Failed to start container."
+                        exit 1
+                    fi
                 fi
             fi
-        else
-            # Start new container
-            docker_start_container "$docker_container_name_value" "$docker_image_to_use" \
-                "$docker_mount_source" "$docker_mount_dest" \
-                "$docker_network" "$cfg_docker_extraArgs" \
-                "$host_uid" "$host_gid"
+            echo "Container ready."
 
-            if [ "$dry_run" != true ] && ! docker_container_running "$docker_container_name_value"; then
-                echo "Failed to start Docker container."
+            # Note: Skip homeConfigSync for existing containers - user manages their own config
+
+        else
+            # claude-cage manages the container
+            # Determine network mode for Docker
+            case "$cfg_networkMode" in
+                disabled|allowlist)
+                    docker_network="none"
+                    ;;
+                blocklist)
+                    docker_network="bridge"
+                    ;;
+                *)
+                    docker_network="none"
+                    ;;
+            esac
+
+            # Build/ensure image with packages
+            docker_image_to_use=$(docker_ensure_image "$cfg_docker_image" "$cfg_docker_packages")
+            if [ -z "$docker_image_to_use" ]; then
+                echo "Failed to prepare Docker image."
                 exit 1
             fi
-            echo "Container started."
-        fi
+            echo "Using image: $docker_image_to_use"
 
-        # Copy homeConfigSync files into container
-        original_home="/home/${original_user}"
-        for entry in "${cfg_homeConfigSync[@]}"; do
-            IFS='|' read -r sync_source sync_dest <<< "$entry"
-            source_path="${original_home}/${sync_source}"
-            # In container, home is /home/claude (matching the user ID mapping)
-            container_dest="/home/claude/${sync_dest}"
+            # Determine mount source (destination was pre-computed)
+            if [ "$cfg_directMount" = "workspace" ] || [ "$cfg_directMount" = "project" ]; then
+                # Direct mount mode: mount source directly
+                docker_mount_source="$cfg_source"
+            else
+                # Sync mode: run unison first, then mount sync directory
+                run mkdir -p "$cfg_sync"
 
-            if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
-                # Create parent directory in container first
-                container_dir=$(dirname "$container_dest")
-                docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
-
-                # Copy file/directory
-                docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
-                if [ "$dry_run" != true ]; then
-                    echo "Synced $sync_source -> $sync_dest (in container)"
+                # Build unison command with exclude options
+                unison_cmd_base="unison \"$cfg_source\" \"$cfg_sync\" -batch -confirmbigdel=false"
+                if [ -n "$cfg_exclude" ]; then
+                    unison_cmd_base="$unison_cmd_base $cfg_exclude"
                 fi
+                if [ -n "$cfg_cageLocal" ]; then
+                    unison_cmd_base="$unison_cmd_base $cfg_cageLocal"
+                fi
+
+                unison_cmd_initial="$unison_cmd_base -force \"$cfg_source\" -prefer \"$cfg_source\""
+                unison_cmd_ongoing="$unison_cmd_base -auto"
+
+                # Check for watch mode
+                if command -v unison-fsmonitor >/dev/null 2>&1; then
+                    repeat_mode="watch"
+                else
+                    repeat_mode="1"
+                    echo "No unison-fsmonitor. Using polling mode (check every second)."
+                fi
+
+                # Run initial and ongoing sync
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] bash -c '$unison_cmd_initial'"
+                    echo "[dry-run] bash -c '$unison_cmd_ongoing -repeat $repeat_mode' &"
+                    unison_pid="<PID>"
+                else
+                    bash -c "$unison_cmd_initial" >/dev/null 2>&1
+                    bash -c "$unison_cmd_ongoing -repeat $repeat_mode" >/dev/null 2>&1 &
+                    unison_pid=$!
+                fi
+
+                # Write unison PID to file
+                run bash -c "echo '$unison_pid' > '$pid_file'"
+
+                docker_mount_source="$cfg_sync"
             fi
-        done
+
+            # Get host UID/GID for file ownership mapping
+            host_uid=$(id -u)
+            host_gid=$(id -g)
+
+            # Check if container already exists
+            if docker_container_exists "$docker_container_name_value"; then
+                if docker_container_running "$docker_container_name_value"; then
+                    echo "Container already runnin'. Reusin' it."
+                else
+                    echo "Container exists but stopped. Startin' it..."
+                    if [ "$dry_run" = true ]; then
+                        echo "[dry-run] docker start $docker_container_name_value"
+                    else
+                        docker start "$docker_container_name_value" >/dev/null 2>&1
+                    fi
+                fi
+            else
+                # Start new container
+                echo "Creatin' new container..."
+                docker_start_container "$docker_container_name_value" "$docker_image_to_use" \
+                    "$docker_mount_source" "$docker_mount_dest" \
+                    "$docker_network" "$cfg_docker_extraArgs" \
+                    "$host_uid" "$host_gid"
+
+                if [ "$dry_run" != true ] && ! docker_container_running "$docker_container_name_value"; then
+                    echo "Failed to start Docker container."
+                    exit 1
+                fi
+                echo "Container started."
+            fi
+
+            # Ensure home directory exists, create claude user, and set ownership
+            # Run as root to: create home dir, add claude user to /etc/passwd, chown
+            # Adding user entry ensures 'whoami' returns 'claude' not 'node' (which has same UID)
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] docker exec -u root ... setup claude user and home directory"
+            else
+                docker exec -u root "$docker_container_name_value" bash -c "
+                    mkdir -p /home/claude
+                    # Add claude user entry if not exists (maps host UID to 'claude' username)
+                    if ! grep -q '^claude:' /etc/passwd; then
+                        echo 'claude:x:${host_uid}:${host_gid}::/home/claude:/bin/bash' >> /etc/passwd
+                    fi
+                    # Add claude group if not exists
+                    if ! grep -q '^claude:' /etc/group; then
+                        echo 'claude:x:${host_gid}:' >> /etc/group
+                    fi
+                    chown ${host_uid}:${host_gid} /home/claude
+                "
+                # Create .profile with PATH if it doesn't exist
+                docker exec -e HOME=/home/claude "$docker_container_name_value" bash -c '[ -f ~/.profile ] || cat > ~/.profile << "PROFILE"
+export PATH="$HOME/.local/bin:$PATH"
+PROFILE'
+            fi
+
+            # Check if Claude Code is installed in container
+            # Check explicit path since the UID may not exist in /etc/passwd (no profile to set PATH)
+            if ! docker exec "$docker_container_name_value" test -x /home/claude/.local/bin/claude 2>/dev/null; then
+                echo "Claude Code ain't installed in the container. Installin' it now..."
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] Installing curl and Claude Code in container"
+                else
+                    # Install curl if needed (slim images don't have it)
+                    # Run as root since apt-get needs privileges
+                    if ! docker exec "$docker_container_name_value" which curl >/dev/null 2>&1; then
+                        echo "Installing curl first..."
+                        docker exec -u root "$docker_container_name_value" bash -c "apt-get update -qq && apt-get install -qq -y curl" >/dev/null
+                        if [ $? -ne 0 ]; then
+                            echo "Failed to install curl in container."
+                            exit 1
+                        fi
+                    fi
+                    # Install Claude Code (as the regular user for correct home dir)
+                    # HOME and PATH must be set for the installer to work correctly and not warn
+                    echo "Downloading and installing Claude Code..."
+                    docker exec -e HOME=/home/claude -e PATH="/home/claude/.local/bin:\$PATH" "$docker_container_name_value" bash -c "set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"
+                    if [ $? -ne 0 ]; then
+                        echo "Failed to install Claude Code in container."
+                        exit 1
+                    fi
+                    # Verify installation by checking explicit path
+                    if ! docker exec "$docker_container_name_value" test -x /home/claude/.local/bin/claude 2>/dev/null; then
+                        echo "Claude Code installation failed - binary not found at /home/claude/.local/bin/claude"
+                        exit 1
+                    fi
+                    echo "Claude Code installed."
+                fi
+            else
+                echo "Claude Code already installed in container."
+            fi
+
+            # Copy homeConfigSync files into container
+            original_home="/home/${original_user}"
+            for entry in "${cfg_homeConfigSync[@]}"; do
+                IFS='|' read -r sync_source sync_dest <<< "$entry"
+                source_path="${original_home}/${sync_source}"
+                # In container, home is /home/claude (matching the user ID mapping)
+                container_dest="/home/claude/${sync_dest}"
+
+                if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+                    # Create parent directory in container first
+                    container_dir=$(dirname "$container_dest")
+                    docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
+
+                    # Copy file/directory
+                    docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
+                    if [ "$dry_run" != true ]; then
+                        echo "Synced $sync_source -> $sync_dest (in container)"
+                    fi
+                fi
+            done
+        fi
 
     else
         # User mode setup (existing code)
@@ -2687,6 +2876,7 @@ if [ "$skip_setup" = false ]; then
         # In sync mode, create sync directory and set ownership
         if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
             run mkdir -p "$cfg_sync"
+            run chown -R "$original_user:$original_user" "$cfg_sync"
         fi
 
         # Check if mount point is already mounted
@@ -2850,8 +3040,8 @@ fi
 # Register this instance
 run bash -c "echo '$instance_id' >> '$local_instance_file'"
 
-# In single-user mode, also register globally
-if [ -n "$global_instance_file" ]; then
+# In user mode, also register globally
+if [ "$cfg_isolationMode" != "docker" ] && [ -n "$global_instance_file" ]; then
     run bash -c "echo '$instance_id' >> '$global_instance_file'"
 fi
 
@@ -2919,7 +3109,12 @@ elif [ "$test_mode" = true ]; then
         echo "When you're done pokin' around, type 'exit' and we'll clean up."
         echo "================="
         echo ""
-        docker_exec "$docker_container_name_value" bash
+        # Use bash with PATH set up so 'claude' command works
+        if [ -n "$cfg_docker_user" ]; then
+            docker_exec "$docker_container_name_value" --user "$cfg_docker_user" bash -c "export PATH=\"/home/claude/.local/bin:\$PATH\" && exec bash"
+        else
+            docker_exec "$docker_container_name_value" bash -c "export PATH=\"/home/claude/.local/bin:\$PATH\" && exec bash"
+        fi
         exit_code=$?
     else
         echo "Alright, everything's ready. Switchin' you over to user '$cfg_user' so you can test things out."
@@ -2948,11 +3143,16 @@ elif [ "$test_mode" = true ]; then
     fi
 else
     # Build claude command with optional flags
-    claude_cmd="claude"
+    # Use full path in Docker mode since PATH isn't set up for non-existent users
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        claude_cmd="/home/claude/.local/bin/claude"
+    else
+        claude_cmd="claude"
+    fi
     if [ "$claude_continue" = true ]; then
-        claude_cmd="claude --continue"
+        claude_cmd="$claude_cmd --continue"
     elif [ "$claude_resume" = true ]; then
-        claude_cmd="claude --resume"
+        claude_cmd="$claude_cmd --resume"
     fi
 
     if [ "$cfg_isolationMode" = "docker" ]; then
@@ -2964,7 +3164,11 @@ else
             docker_workdir="$docker_mount_dest"
         fi
 
-        docker_exec "$docker_container_name_value" bash -c "cd \"$docker_workdir\" && $claude_cmd"
+        if [ -n "$cfg_docker_user" ]; then
+            docker_exec "$docker_container_name_value" --user "$cfg_docker_user" bash -c "cd \"$docker_workdir\" && $claude_cmd"
+        else
+            docker_exec "$docker_container_name_value" bash -c "cd \"$docker_workdir\" && $claude_cmd"
+        fi
         exit_code=$?
     else
         # User mode: run Claude as the caged user in the mounted directory

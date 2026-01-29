@@ -10,9 +10,10 @@ claude_cage {
     -- ORGANIZATIONAL DEFAULTS
     -- ============================================================================
 
-    -- Default user mode (default: "single")
-    -- Most organizations should use single-user mode
-    userMode = "single",
+    -- Default isolation mode (default: "user")
+    -- "user" - Unix user isolation, requires sudo
+    -- "docker" - Container isolation, no sudo required
+    -- isolationMode = "user",
 
     -- ============================================================================
     -- ORGANIZATION-WIDE FILE EXCLUSIONS

@@ -427,22 +427,31 @@ ping 8.8.8.8  # Google DNS
 
 ## Claude Code Issues
 
-### Authentication required for every project
+### Authentication or reconfiguration prompt every time
 
-**Problem:** Claude Code asks for login every time you run claude-cage.
+**Problem:** Claude Code asks for login or shows the initial configuration prompts (color scheme, terms acceptance) every time you run claude-cage.
 
-**Cause:** Using per-project mode, which creates a new user for each project.
+**Cause:** Claude Code stores its state in two separate locations:
+
+- `~/.claude/` directory - contains credentials (`.credentials.json`), settings, projects, etc.
+- `~/.claude.json` file - contains onboarding state (color scheme, terms acceptance), MCP servers, account info
+
+Both must be present for Claude Code to recognize the session as configured and authenticated.
 
 **Solution:**
 
-Switch to single-user mode:
-```lua
--- Change from
-userMode = "per-project"
+Sync both your `.claude` directory and `.claude.json` file to the cage user's home:
 
--- To
-userMode = "single"  -- Or just remove this line (single is default)
+```lua
+homeConfigSync = {
+    ".claude",       -- Sync Claude credentials and settings directory
+    ".claude.json"   -- Sync onboarding state and MCP config (separate file!)
+}
 ```
+
+**Note:** The `.claude.json` file is a separate file at the home directory root - it's not inside the `.claude/` directory. Both are required.
+
+**For Docker mode:** Containers are kept after exit by default for `--continue`/`--resume` to work. If you've deleted the container, you'll need to re-authenticate unless you sync the config files as shown above.
 
 ### Claude Code won't start
 

@@ -402,46 +402,114 @@ fi
 echo "  PASS: Workspace mode shows mount point tracking"
 
 echo ""
-echo "=== Testing per-project mode cleanup ==="
+echo "=== Testing Docker mode ==="
 
-# Create a test config for per-project mode
-mkdir -p "$TEST_TMP/perproject-test/myproject"
-cat > "$TEST_TMP/perproject-test/claude-cage.config" << 'EOF'
+# Create a test config for Docker mode
+mkdir -p "$TEST_TMP/docker-test/myproject"
+cat > "$TEST_TMP/docker-test/claude-cage.config" << 'EOF'
 claude_cage {
-    user = "claude",
-    userMode = "per-project",
+    isolationMode = "docker",
     directMount = "workspace",
-    networkMode = "blocklist",
-    block = { ips = { "169.254.169.254" } }
+    docker = {
+        image = "node:lts-slim",
+        packages = { "git", "curl" }
+    }
 }
 EOF
-cd "$TEST_TMP/perproject-test/myproject"
+cd "$TEST_TMP/docker-test/myproject"
 
-echo "Test 23: Per-project mode should create user with project suffix"
-perproject_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
-if ! echo "$perproject_output" | grep -q "claude-myproject\|claude-perproject"; then
-    echo "FAIL: Per-project mode should create user with project suffix"
+echo "Test 23: Docker mode should show docker commands"
+docker_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$docker_output" | grep -q "docker\|Docker"; then
+    echo "FAIL: Docker mode should show docker commands"
     echo "Output was:"
-    echo "$perproject_output"
+    echo "$docker_output"
     exit 1
 fi
-echo "  PASS: Per-project mode creates suffixed username"
+echo "  PASS: Docker mode shows docker commands"
 
-echo "Test 24: Per-project mode should use per-process firewall chain"
-if ! echo "$perproject_output" | grep -q "CLAUDE_CAGE_"; then
-    echo "FAIL: Per-project mode should show firewall chain name"
+echo "Test 24: Docker mode should not require sudo message"
+if echo "$docker_output" | grep -q "Gonna need you to run this as root"; then
+    echo "FAIL: Docker mode should not require sudo"
     echo "Output was:"
-    echo "$perproject_output"
+    echo "$docker_output"
     exit 1
 fi
-echo "  PASS: Per-project mode uses named firewall chain"
+echo "  PASS: Docker mode does not require sudo"
+
+cd "$TEST_TMP/project"
+
+echo ""
+echo "=== Testing Docker isolated mode ==="
+
+# Create a test config for Docker isolated mode
+mkdir -p "$TEST_TMP/docker-isolated-test/myproject"
+cat > "$TEST_TMP/docker-isolated-test/claude-cage.config" << 'EOF'
+claude_cage {
+    isolationMode = "docker",
+    directMount = "workspace",
+    docker = {
+        isolated = true
+    }
+}
+EOF
+cd "$TEST_TMP/docker-isolated-test/myproject"
+
+echo "Test 25: Docker isolated mode should show project-specific container name"
+isolated_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$isolated_output" | grep -q "claude-cage-.*-"; then
+    echo "FAIL: Isolated mode should show project-specific container name with hash"
+    echo "Output was:"
+    echo "$isolated_output"
+    exit 1
+fi
+echo "  PASS: Docker isolated mode shows project-specific container name"
+
+cd "$TEST_TMP/project"
+
+echo ""
+echo "=== Testing Docker existing container ==="
+
+# Create a test config for existing container
+mkdir -p "$TEST_TMP/docker-existing-test/myproject"
+cat > "$TEST_TMP/docker-existing-test/claude-cage.config" << 'EOF'
+claude_cage {
+    isolationMode = "docker",
+    directMount = "workspace",
+    docker = {
+        container = "my-existing-container",
+        user = "myuser",
+        workdir = "/app"
+    }
+}
+EOF
+cd "$TEST_TMP/docker-existing-test/myproject"
+
+echo "Test 26: Docker existing container should show container name"
+existing_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$existing_output" | grep -q "my-existing-container"; then
+    echo "FAIL: Should show existing container name"
+    echo "Output was:"
+    echo "$existing_output"
+    exit 1
+fi
+echo "  PASS: Docker existing container shows container name"
+
+echo "Test 27: Docker existing container should mention user-managed"
+if ! echo "$existing_output" | grep -q "user-managed\|existing"; then
+    echo "FAIL: Should mention user-managed or existing container"
+    echo "Output was:"
+    echo "$existing_output"
+    exit 1
+fi
+echo "  PASS: Docker existing container mentions user-managed"
 
 cd "$TEST_TMP/project"
 
 echo ""
 echo "=== Testing homeConfigSync ==="
 
-echo "Test 25: Should show rsync command for homeConfigSync entries"
+echo "Test 28: Should show rsync command for homeConfigSync entries"
 if ! echo "$output" | grep -q "rsync.*\.gitconfig\|rsync.*claude-settings.json"; then
     echo "FAIL: Did not find homeConfigSync rsync commands"
     echo "Output was:"
@@ -450,7 +518,7 @@ if ! echo "$output" | grep -q "rsync.*\.gitconfig\|rsync.*claude-settings.json";
 fi
 echo "  PASS: Found homeConfigSync rsync commands"
 
-echo "Test 26: Should show recursive rsync for directories"
+echo "Test 29: Should show recursive rsync for directories"
 if ! echo "$output" | grep -q "rsync -r.*\.claude/"; then
     echo "FAIL: Did not find recursive rsync for .claude directory"
     echo "Output was:"
@@ -459,7 +527,7 @@ if ! echo "$output" | grep -q "rsync -r.*\.claude/"; then
 fi
 echo "  PASS: Found recursive rsync for directories"
 
-echo "Test 27: Should show rsync for override entries"
+echo "Test 30: Should show rsync for override entries"
 if ! echo "$output" | grep -q "rsync.*/claude-settings.json"; then
     echo "FAIL: Override entry should appear in output"
     echo "Output was:"

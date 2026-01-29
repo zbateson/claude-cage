@@ -10,9 +10,10 @@ claude_cage {
     -- PERSONAL PREFERENCES
     -- ============================================================================
 
-    -- User mode (default: "single")
-    -- Most users should use single-user mode for simpler authentication
-    -- userMode = "single",
+    -- Isolation mode (default: "user")
+    -- "user" - Unix user isolation, requires sudo
+    -- "docker" - Container isolation, no sudo required
+    -- isolationMode = "user",
 
     -- Show ASCII art banner (default: true)
     -- showBanner = false,

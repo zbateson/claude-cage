@@ -51,11 +51,21 @@ claude_cage {
     --     -- Additional packages to install (uses apt-get)
     --     packages = { "git", "curl" },
     --
-    --     -- Container name prefix (full name: prefix-project-hash)
+    --     -- Container name prefix (full name: prefix-uid for shared, prefix-project-hash for isolated)
     --     namePrefix = "claude-cage",
     --
     --     -- Extra arguments for docker run command
     --     extraArgs = "",
+    --
+    --     -- Container isolation (default: false = shared container for all projects)
+    --     -- Set to true for per-project containers (different packages/versions per project)
+    --     isolated = false,
+    --
+    --     -- Use an existing container (user-managed, see docs/docker-existing-container.md)
+    --     -- When set, claude-cage will exec into this container instead of creating one
+    --     -- container = "my-dev-container",
+    --     -- user = "node",              -- User to run as in existing container
+    --     -- workdir = "/app",           -- Working directory in existing container
     -- },
     --
     -- Containers are stopped on exit but kept for --continue/--resume.
@@ -174,8 +184,8 @@ claude_cage {
     --
     -- homeConfigSync = {
     --     ".gitconfig",                                                    -- same path
-    --     ".mcp.json",                                                     -- same path
-    --     ".claude",                                                       -- entire directory
+    --     ".claude",                                                       -- credentials and settings directory
+    --     ".claude.json",                                                  -- onboarding state (separate file!)
     --     { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
     -- },
 

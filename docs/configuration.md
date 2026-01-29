@@ -80,7 +80,7 @@ Project name used as identifier.
 - Example: Config at `~/Projects/claude-cage.config`, running from `~/Projects/myapp/src`
   → project = "myapp"
 - Command line overrides derived value: `sudo claude-cage backend`
-- In sync mode: Used for `sync` directory name and `userAppend` (if per-project mode)
+- In sync mode: Used for `sync` directory name
 - In direct mount mode: Used as identifier
 
 ```lua
@@ -101,52 +101,72 @@ sudo claude-cage         # Loads frontend.claude-cage.config if exists
 
 ### user
 
-Base user account name to run Claude Code as.
+Base user account name to run Claude Code as (user isolation mode only).
 
 - Default: `"claude"`
-- In single-user mode: This is the actual username
-- In per-project mode: Combined with `userAppend` to create `user-userAppend`
+- Only used when `isolationMode = "user"`
 
 ```lua
 user = "claude"
 ```
 
-### userMode
+### isolationMode
 
-User isolation mode.
+Isolation mode selection.
 
-- Default: `"single"`
-- Options: `"single"` or `"per-project"`
+- Default: `"user"`
+- Options: `"user"` or `"docker"`
 
-**Single-user mode (recommended):**
-- All projects share one user
-- Username: `"claude"` (just the base username)
-- User home: `/home/claude/`
-- Network rules: Shared across all projects
-- Claude Code authentication: Login once, works for all projects
+**User mode (default):**
+- Uses a separate Unix user for isolation
+- Requires sudo to run
+- Uses bindfs for permission mapping
+- Uses iptables/pf for network restrictions
+- Claude Code login persists in user's home directory
 
-**Per-project mode:**
-- Each project gets its own user
-- Username: `"claude-myproject"` (user + "-" + userAppend)
-- User home: `/home/.claude-cage/claude-myproject/`
-- Network rules: Project-specific, cleaned up when project exits
-- Claude Code authentication: **Requires login for each new project user**
+**Docker mode:**
+- Uses a Docker container for isolation
+- No sudo required (just Docker group membership)
+- Uses Docker volumes for file access
+- Uses Docker networking for restrictions
+- Claude Code login persists in container between runs
 
 ```lua
-userMode = "single"
+isolationMode = "user"    -- Default: Unix user isolation
+isolationMode = "docker"  -- Container isolation
 ```
 
-### userAppend
+### docker
 
-Custom suffix for per-project mode.
-
-- Default: Uses `project` value
-- Only applies when `userMode = "per-project"`
-- Creates username: `user + "-" + userAppend`
+Docker mode configuration (only used when `isolationMode = "docker"`).
 
 ```lua
-userMode = "per-project"
-userAppend = "custom"  -- Creates user "claude-custom"
+docker = {
+    -- Managed container options (claude-cage creates/manages the container)
+    image = "node:lts-slim",       -- Base image (must have Node.js)
+    packages = { "git", "curl" },  -- Packages to install via apt-get
+    namePrefix = "claude-cage",    -- Container name prefix
+    extraArgs = "",                -- Extra docker run arguments
+    isolated = false,              -- false: shared container, true: per-project container
+
+    -- Existing container options (you manage the container)
+    -- When 'container' is set, managed options above are ignored
+    container = "my-dev-container", -- Use existing container by name
+    user = "node",                  -- User to run as in existing container
+    workdir = "/workspace",         -- Working directory in existing container
+}
+```
+
+**Container sharing:**
+- `isolated = false` (default): All projects share a single container (`claude-cage-<uid>`)
+- `isolated = true`: Each project gets its own container (`claude-cage-<project>-<hash>`)
+
+**Existing containers:** See [Using an Existing Docker Container](docker-existing-container.md) for details on running Claude inside your own container.
+
+Containers are stopped on exit but kept for `--continue`/`--resume`. To delete a container:
+
+```bash
+claude-cage --delete-docker-container
 ```
 
 ### Username Validation
@@ -515,22 +535,24 @@ claude_cage {
 }
 ```
 
-### Per-Project Mode with Allowlist
+### Docker Mode with Allowlist
 
 ```lua
 claude_cage {
-    userMode = "per-project",
+    isolationMode = "docker",
+
+    docker = {
+        image = "node:lts-slim",
+        packages = { "git", "curl" }
+    },
 
     exclude = {
         name = { ".env", "credentials.json", "secrets" },
         belowPath = { ".git" }
     },
 
-    networkMode = "allowlist",
-    allow = {
-        domains = { "github.com:443", "api.company.com:443" },
-        ips = { "10.0.0.50:5432" }
-    }
+    networkMode = "allowlist"
+    -- Note: In Docker mode, allowlist = --network=none (no network)
 }
 ```
 
@@ -611,7 +633,6 @@ Use for personal preferences that apply to all your projects.
 -- ~/.config/claude-cage/config
 claude_cage {
     user = "claude",
-    userMode = "single",
 
     -- Your preferred excludes
     exclude = {
@@ -631,14 +652,20 @@ See `examples/example-system-config` and `examples/example-user-config` for temp
 Sync config files or directories from your home directory to the cage user's home directory. This is useful for:
 
 - `.gitconfig` - Git author info, aliases
-- `.mcp.json` - Claude Code MCP server config
-- `.claude/` - Claude Code directory (settings, projects, etc.)
+- `.claude/` - Claude Code directory (credentials, settings, projects, etc.)
+- `.claude.json` - Claude Code onboarding state and MCP servers (separate file!)
+
+**Important:** Claude Code stores state in two separate locations:
+- `~/.claude/` directory - contains credentials, settings, and projects
+- `~/.claude.json` file - contains onboarding state (color scheme, terms), MCP servers, account info
+
+Both must be synced for Claude Code to work without prompting for reconfiguration.
 
 ```lua
 homeConfigSync = {
     ".gitconfig",                                                    -- same path
-    ".mcp.json",                                                     -- same path
-    ".claude",                                                       -- entire directory
+    ".claude",                                                       -- credentials and settings directory
+    ".claude.json",                                                  -- onboarding state (separate file!)
     { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
 }
 ```
@@ -664,11 +691,12 @@ Files are always copied on each cage startup, overwriting any manual changes mad
 
 ### Claude Code Settings Example
 
-To sync your Claude Code directory, then apply cage-specific settings:
+To sync your Claude Code directory and state, then apply cage-specific settings:
 
 ```lua
 homeConfigSync = {
-    ".claude",                                                       -- sync whole directory
+    ".claude",                                                       -- sync credentials and settings directory
+    ".claude.json",                                                  -- sync onboarding state (separate file!)
     { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }  -- override settings
 }
 ```

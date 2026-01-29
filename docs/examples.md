@@ -317,7 +317,7 @@ claude_cage {
 
 ```lua
 claude_cage {
-    userMode = "per-project",
+    isolationMode = "docker",  -- Container isolation
 
     -- Aggressive file exclusions
     exclude = {
@@ -418,11 +418,11 @@ claude_cage {
 }
 ```
 
-Run `sudo claude-cage` in each directory. Project name derived from directory. Both share the `claude` user in single-user mode (default).
+Run `sudo claude-cage` in each directory. Project name derived from directory. Both share the `claude` user in user mode (default).
 
-**Per-project user isolation:**
+**Docker isolation:**
 
-Set `userMode = "per-project"` in any config to create separate users (`claude-frontend`, `claude-backend`). Each requires separate Claude Code authentication.
+Set `isolationMode = "docker"` for container-based isolation without sudo. Requires Docker group membership.
 
 ## Testing Your Configuration
 

@@ -49,6 +49,96 @@ if [ "$OS_TYPE" = "unsupported" ]; then
 fi
 
 # ============================================================================
+# Dry-run Mode Helper Functions
+# ============================================================================
+
+# Note: dry_run and OS_TYPE are parsed at the top of the script
+
+# Wrapper function for commands that modify the system
+# In dry-run mode, prints the command instead of executing it
+run() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] $*"
+        return 0
+    else
+        "$@"
+    fi
+}
+
+# Wrapper for commands that should be silent in normal mode but shown in dry-run
+run_quiet() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] $*"
+        return 0
+    else
+        "$@" >/dev/null 2>&1
+    fi
+}
+
+# Run unison in background with proper PID tracking (output suppressed)
+# Usage: run_unison_bg [--pid-file FILE --pid-label LABEL] [--as USER] [--cmd] unison_args_or_cmd...
+# Sets $unison_bg_pid to the PID of the backgrounded process
+# If --pid-file is provided, writes "LABEL|PID" to the file
+# If --as USER is provided, runs as that user via su
+# If --cmd is provided, treats remaining arg as a command string for bash -c
+run_unison_bg() {
+    local pid_file=""
+    local pid_label=""
+    local run_as_user=""
+    local is_cmd_string=false
+
+    # Parse optional arguments
+    while [[ "$1" == --* ]]; do
+        case "$1" in
+            --pid-file)
+                pid_file="$2"
+                shift 2
+                ;;
+            --pid-label)
+                pid_label="$2"
+                shift 2
+                ;;
+            --as)
+                run_as_user="$2"
+                shift 2
+                ;;
+            --cmd)
+                is_cmd_string=true
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    if [ "$dry_run" = true ]; then
+        if [ -n "$run_as_user" ]; then
+            echo "[dry-run] su $run_as_user -c \"bash -c '$1'\" &"
+        elif [ "$is_cmd_string" = true ]; then
+            echo "[dry-run] $1 &"
+        else
+            echo "[dry-run] unison $* &"
+        fi
+        unison_bg_pid="<PID>"
+        return 0
+    fi
+
+    if [ -n "$run_as_user" ]; then
+        su "$run_as_user" -c "bash -c '$1'" >/dev/null 2>&1 &
+    elif [ "$is_cmd_string" = true ]; then
+        bash -c "$1" >/dev/null 2>&1 &
+    else
+        unison "$@" >/dev/null 2>&1 &
+    fi
+    unison_bg_pid=$!
+
+    if [ -n "$pid_file" ] && [ -n "$pid_label" ]; then
+        echo "${pid_label}|${unison_bg_pid}" >> "$pid_file"
+    fi
+}
+
+# ============================================================================
 # OS Abstraction Functions - User Management
 # ============================================================================
 
@@ -218,7 +308,7 @@ create_firewall_chain() {
         echo "anchor \"$chain_name\"" >> "$pf_rules_file"
 
         # Load the anchor (this doesn't activate rules yet, just creates the anchor point)
-        pfctl -a "$chain_name" -f "$pf_rules_file" 2>/dev/null || return 1
+        run_quiet pfctl -a "$chain_name" -f "$pf_rules_file" || return 1
     fi
 }
 
@@ -296,7 +386,7 @@ add_firewall_rule() {
         fi
 
         # Reload the anchor with updated rules
-        pfctl -a "$chain_name" -f "$pf_rules_file" 2>/dev/null
+        run_quiet pfctl -a "$chain_name" -f "$pf_rules_file"
     fi
 }
 
@@ -373,7 +463,7 @@ add_catchall_firewall_rule() {
         else
             echo "block out" >> "$pf_rules_file"
         fi
-        pfctl -a "$chain_name" -f "$pf_rules_file" 2>/dev/null
+        run_quiet pfctl -a "$chain_name" -f "$pf_rules_file"
     fi
 }
 
@@ -495,7 +585,7 @@ docker_ensure_image() {
             echo "[dry-run] docker pull $base_image (if needed)" >&2
         else
             echo "Pullin' base image $base_image (this might take a minute)..." >&2
-            docker pull "$base_image" 2>&1 | grep -E '^[a-f0-9]+:|Status:|Digest:' >&2 || true
+            run docker pull "$base_image" 2>&1 | grep -E '^[a-f0-9]+:|Status:|Digest:' >&2 || true
         fi
         echo "$base_image"
         return 0
@@ -518,7 +608,7 @@ RUN apt-get update && apt-get install -y ${pkg_list} && rm -rf /var/lib/apt/list
     fi
 
     echo "Buildin' Docker image with packages: $pkg_list (this might take a minute)..." >&2
-    echo "$dockerfile_content" | docker build -t "$image_tag" - 2>&1 | grep -E '^Step |^Successfully |^ ---> ' >&2 || true
+    echo "$dockerfile_content" | run docker build -t "$image_tag" - 2>&1 | grep -E '^Step |^Successfully |^ ---> ' >&2 || true
     if [ $? -ne 0 ]; then
         echo "Failed to build Docker image" >&2
         return 1
@@ -606,7 +696,7 @@ docker_exec() {
     fi
 
     # Set HOME explicitly since the UID may not exist in container's /etc/passwd
-    docker exec -it -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
+    run docker exec -it -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
 }
 
 # Execute command in running container (non-interactive)
@@ -626,7 +716,7 @@ docker_exec_quiet() {
     fi
 
     # Set HOME explicitly since the UID may not exist in container's /etc/passwd
-    docker exec -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
+    run docker exec -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
 }
 
 # Stop a running container
@@ -638,7 +728,7 @@ docker_stop_container() {
         return 0
     fi
 
-    docker stop "$container_name" >/dev/null 2>&1
+    run_quiet docker stop "$container_name"
 }
 
 # Remove a container
@@ -650,7 +740,7 @@ docker_remove_container() {
         return 0
     fi
 
-    docker rm "$container_name" >/dev/null 2>&1
+    run_quiet docker rm "$container_name"
 }
 
 # Copy file/directory to container
@@ -668,10 +758,10 @@ docker_copy_to_container() {
     # For directories, remove destination first to avoid docker cp nesting issue
     # (docker cp copies INTO existing directories instead of replacing them)
     if [ -d "$source_path" ]; then
-        docker exec "$container_name" rm -rf "$dest_path" 2>/dev/null || true
+        run_quiet docker exec "$container_name" rm -rf "$dest_path" || true
     fi
 
-    docker cp "$source_path" "$container_name:$dest_path"
+    run docker cp "$source_path" "$container_name:$dest_path"
 }
 
 # Important things first
@@ -727,33 +817,6 @@ EOF
         sleep 0.01
     done <<< "$banner"
     sleep 0.3
-}
-
-# ============================================================================
-# Dry-run Mode Helper Functions
-# ============================================================================
-
-# Note: dry_run and OS_TYPE are parsed at the top of the script
-
-# Wrapper function for commands that modify the system
-# In dry-run mode, prints the command instead of executing it
-run() {
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] $*"
-        return 0
-    else
-        "$@"
-    fi
-}
-
-# Wrapper for commands that should be silent in normal mode but shown in dry-run
-run_quiet() {
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] $*"
-        return 0
-    else
-        "$@" >/dev/null 2>&1
-    fi
 }
 
 # Check if lua is available early (before sudo check)
@@ -1741,15 +1804,15 @@ if [ "$cleanup_mode" = true ]; then
                     echo "  Stopping shared homeConfigSync processes..."
                     while IFS='|' read -r entry_name entry_pid; do
                         if [ -n "$entry_pid" ] && kill -0 "$entry_pid" 2>/dev/null; then
-                            kill "$entry_pid" 2>/dev/null
+                            run_quiet kill "$entry_pid"
                         fi
                     done < "${homesync_dir}pids"
-                    rm -f "${homesync_dir}pids"
+                    run rm -f "${homesync_dir}pids"
                 fi
 
                 # Unmount cage-mount/ bindfs mount first (it references origin/)
                 if mountpoint -q "${homesync_dir}cage-mount" 2>/dev/null; then
-                    umount -l "${homesync_dir}cage-mount" 2>/dev/null
+                    run_quiet umount -l "${homesync_dir}cage-mount"
                     echo "  Unmounted ${homesync_dir}cage-mount"
                 fi
 
@@ -1760,14 +1823,14 @@ if [ "$cleanup_mode" = true ]; then
                     # Safe to grep - we control this specific path
                     for mount_path in $(mount | grep " ${homesync_origin_dest_dir}/" | awk '{print $3}'); do
                         if mountpoint -q "$mount_path" 2>/dev/null; then
-                            umount -l "$mount_path" 2>/dev/null
+                            run_quiet umount -l "$mount_path"
                             echo "    Unmounted $mount_path"
                         fi
                     done
                 fi
 
                 # Remove homesync directory and user directory if empty
-                rm -rf "$homesync_dir" 2>/dev/null
+                run_quiet rm -rf "$homesync_dir"
                 rmdir "$user_dir" 2>/dev/null  # only succeeds if empty
                 echo "  Cleaned up $homesync_dir"
             fi
@@ -1794,11 +1857,11 @@ if [ "$cleanup_mode" = true ]; then
                     echo "Found firewall chain: $chain (UID: $uid), cleanin' it up..."
 
                     # Remove the OUTPUT jump rule
-                    iptables -D OUTPUT -m owner --uid-owner "$uid" -j "$chain" 2>/dev/null
+                    run_quiet iptables -D OUTPUT -m owner --uid-owner "$uid" -j "$chain"
 
                     # Flush and delete the chain
-                    iptables -F "$chain" 2>/dev/null
-                    iptables -X "$chain" 2>/dev/null
+                    run_quiet iptables -F "$chain"
+                    run_quiet iptables -X "$chain"
 
                     echo "  Done. $chain is gone."
                 done
@@ -1834,11 +1897,11 @@ if [ "$cleanup_mode" = true ]; then
         else
             while IFS= read -r pid; do
                 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    kill "$pid" 2>/dev/null
+                    run_quiet kill "$pid"
                     echo "  Process $pid stopped."
                 fi
             done < "$pid_file"
-            rm -f "$pid_file"
+            run rm -f "$pid_file"
         fi
         echo "  PID file's gone."
     else
@@ -2237,13 +2300,13 @@ homeConfigSync_copy() {
                     else
                         if [ -d "$source_path" ]; then
                             # Directory: recursive sync with trailing slashes, follow symlinks
-                            rsync -rL "$source_path/" "$dest_path/"
-                            [ "$needs_chown" = true ] && chown -R "$cfg_user:$cfg_user" "$dest_path"
+                            run rsync -rL "$source_path/" "$dest_path/"
+                            [ "$needs_chown" = true ] && run chown -R "$cfg_user:$cfg_user" "$dest_path"
                             echo "Synced $sync_source/ -> $sync_dest/ (mode=$sync_mode)"
                         elif [ -f "$source_path" ]; then
                             # File: follow symlinks (-L)
-                            rsync -L "$source_path" "$dest_path"
-                            [ "$needs_chown" = true ] && chown "$cfg_user:$cfg_user" "$dest_path"
+                            run rsync -L "$source_path" "$dest_path"
+                            [ "$needs_chown" = true ] && run chown "$cfg_user:$cfg_user" "$dest_path"
                             echo "Synced $sync_source -> $sync_dest (mode=$sync_mode)"
                         fi
                     fi
@@ -2263,20 +2326,20 @@ homeConfigSync_copy() {
                 else
                     # Create parent directory if needed
                     if [ ! -d "$dest_dir" ]; then
-                        mkdir -p "$dest_dir"
+                        run mkdir -p "$dest_dir"
                         # Chown all new directories up to target_home
                         local current="$dest_dir"
                         while [ "$current" != "$target_home" ] && [ "$current" != "/" ]; do
-                            chown "$cfg_user:$cfg_user" "$current"
+                            run chown "$cfg_user:$cfg_user" "$current"
                             current=$(dirname "$current")
                         done
                     fi
                     # Remove existing file/link if present
                     if [ -e "$dest_path" ] || [ -L "$dest_path" ]; then
-                        rm -rf "$dest_path"
+                        run rm -rf "$dest_path"
                     fi
-                    ln -s "$source_path" "$dest_path"
-                    chown -h "$cfg_user:$cfg_user" "$dest_path"
+                    run ln -s "$source_path" "$dest_path"
+                    run chown -h "$cfg_user:$cfg_user" "$dest_path"
                     echo "Linked $sync_dest -> $source_path (mode=link)"
                     # Warn if source is a file (atomic writes will break symlink)
                     if [ -f "$source_path" ]; then
@@ -2328,17 +2391,26 @@ homeConfigSync_setup_unison() {
         needs_bindfs=true
     fi
 
-    # Build -path args for all entries
-    local path_args=""
+    # Build -path args for all entries (as array to avoid eval)
+    local -a path_args=()
     for entry_path in "${homesync_sync_sources[@]}"; do
-        path_args="$path_args -path \"$entry_path\""
+        path_args+=("-path" "$entry_path")
         [ "$dry_run" = true ] && echo "[dry-run] homeConfigSync sync entry: $entry_path"
     done
 
-    # Build exclude args (already prefixed with entry path by Lua parser)
-    local exclude_args=""
+    # Build exclude args as array (already prefixed with entry path by Lua parser)
+    # Each exclude is like "-ignore 'Path .claude/settings.json'"
+    local -a exclude_args=()
     for excl in "${homesync_sync_excludes[@]}"; do
-        exclude_args="$exclude_args $excl"
+        # excl contains flag and value, e.g. "-ignore 'Path foo'"
+        # We need to parse this carefully - the Lua parser outputs "-ignore 'Path x'"
+        # Extract the flag (-ignore) and the quoted value
+        local flag="${excl%% *}"
+        local value="${excl#* }"
+        # Remove surrounding quotes from value if present
+        value="${value#\'}"
+        value="${value%\'}"
+        exclude_args+=("$flag" "$value")
     done
 
     # Check if mounts already exist (another instance set them up)
@@ -2385,15 +2457,15 @@ homeConfigSync_setup_unison() {
                     echo "[dry-run]   if file: rsync -a \"$src\" \"$dst\" (then unison for sync)"
                 elif [ -d "$src" ]; then
                     # Directory: bindfs mount
-                    mkdir -p "$dst"
-                    chown "$original_user:$original_user" "$dst"
-                    bindfs "$src" "$dst"
+                    run mkdir -p "$dst"
+                    run chown "$original_user:$original_user" "$dst"
+                    run bindfs "$src" "$dst"
                     echo "  Mounted directory: $entry_path"
                 elif [ -f "$src" ]; then
                     # File: rsync copy (bindfs doesn't work for single files)
                     # Will use unison for ongoing bidirectional sync
-                    rsync -a "$src" "$dst"
-                    chown "$original_user:$original_user" "$dst"
+                    run rsync -a "$src" "$dst"
+                    run chown "$original_user:$original_user" "$dst"
                     file_entries+=("$entry_path")
                     echo "  Copied file: $entry_path"
                 else
@@ -2403,16 +2475,11 @@ homeConfigSync_setup_unison() {
 
             # bindfs mount origin/ -> cage/ with ownership mapping
             # Files appear owned by cage user, created as original user
-            if [ "$dry_run" = true ]; then
-                run bindfs -u "$cfg_user" -g "$cfg_user" \
-                    --chown-ignore --chgrp-ignore \
-                    --create-for-user="$original_user" --create-for-group="$original_user" \
-                    "$homesync_origin_dest_dir" "$cage_dir"
-            else
-                bindfs -u "$cfg_user" -g "$cfg_user" \
-                    --chown-ignore --chgrp-ignore \
-                    --create-for-user="$original_user" --create-for-group="$original_user" \
-                    "$homesync_origin_dest_dir" "$cage_dir"
+            run bindfs -u "$cfg_user" -g "$cfg_user" \
+                --chown-ignore --chgrp-ignore \
+                --create-for-user="$original_user" --create-for-group="$original_user" \
+                "$homesync_origin_dest_dir" "$cage_dir"
+            if [ "$dry_run" != true ]; then
                 echo "Created homeConfigSync bindfs mount: origin/ -> cage/"
             fi
         fi
@@ -2446,60 +2513,55 @@ homeConfigSync_setup_unison() {
         unison_dst="$target_home"
     fi
 
-    local unison_base="unison \"$unison_src\" \"$unison_dst\" -batch -confirmbigdel=false $path_args $exclude_args"
-    # Initial sync: ignore any stale archives and force from source
-    local unison_initial="$unison_base -ignorearchives -force \"$unison_src\""
+    # Build unison args as array (avoids eval)
+    local -a unison_base_args=("$unison_src" "$unison_dst" "-batch" "-confirmbigdel=false")
+    unison_base_args+=("${path_args[@]}")
+    unison_base_args+=("${exclude_args[@]}")
 
     # In user mode, add -owner -group so unison preserves ownership from source
     # (source files appear owned by cage user via bindfs mapping)
     if [ "$needs_bindfs" = true ]; then
-        unison_base="$unison_base -owner -group"
-        unison_initial="$unison_initial -owner -group"
+        unison_base_args+=("-owner" "-group")
     fi
 
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] $unison_initial"
-        echo "[dry-run] $unison_base -repeat watch &"
-    elif [ "$unison_running" = true ]; then
+    # Initial sync args: ignore any stale archives and force from source
+    local -a unison_initial_args=("${unison_base_args[@]}" "-ignorearchives" "-force" "$unison_src")
+
+    if [ "$unison_running" = true ]; then
         echo "homeConfigSync unison already running (shared)"
     else
         # Initial one-shot sync (force from source to populate destination)
-        eval "$unison_initial"
-        echo "homeConfigSync initial sync complete"
+        run unison "${unison_initial_args[@]}"
+        [ "$dry_run" != true ] && echo "homeConfigSync initial sync complete"
 
         # Start watch mode (bidirectional)
-        eval "$unison_base -repeat watch" &
-        local unison_pid=$!
         if [ -n "$homesync_pid_file" ]; then
-            echo "unison|${unison_pid}" >> "$homesync_pid_file"
+            run_unison_bg --pid-file "$homesync_pid_file" --pid-label "unison" \
+                "${unison_base_args[@]}" -repeat watch
         else
-            homesync_unison_pid=$!
+            run_unison_bg "${unison_base_args[@]}" -repeat watch
+            homesync_unison_pid="$unison_bg_pid"
         fi
-        echo "homeConfigSync unison watch started (PID: $unison_pid)"
+        echo "homeConfigSync unison watch started (PID: $unison_bg_pid)"
     fi
 
     # For files in user mode: run second unison to sync original_home <-> origin/
     # (Directories use bindfs so changes flow through automatically, but files are copies)
-    if [ "$needs_bindfs" = true ] && [ ${#file_entries[@]} -gt 0 ]; then
-        # Build -path args for file entries
-        local file_path_args=""
+    if [ "$needs_bindfs" = true ] && [ ${#file_entries[@]} -gt 0 ] && [ "$unison_running" != true ]; then
+        # Build file unison args as array
+        local -a file_unison_args=("$original_home" "$homesync_origin_dest_dir" "-batch" "-confirmbigdel=false" "-owner" "-group")
         for entry in "${file_entries[@]}"; do
-            file_path_args="$file_path_args -path \"$entry\""
+            file_unison_args+=("-path" "$entry")
         done
 
-        local file_unison_base="unison \"$original_home\" \"$homesync_origin_dest_dir\" -batch -confirmbigdel=false -owner -group $file_path_args"
-
-        if [ "$dry_run" = true ]; then
-            echo "[dry-run] File sync: $file_unison_base -repeat watch &"
-        elif [ "$unison_running" != true ]; then
-            # Start watch mode for files (bidirectional original <-> origin)
-            eval "$file_unison_base -repeat watch" &
-            local file_unison_pid=$!
-            if [ -n "$homesync_pid_file" ]; then
-                echo "unison-files|${file_unison_pid}" >> "$homesync_pid_file"
-            fi
-            echo "homeConfigSync file sync started (PID: $file_unison_pid)"
+        # Start watch mode for files (bidirectional original <-> origin)
+        if [ -n "$homesync_pid_file" ]; then
+            run_unison_bg --pid-file "$homesync_pid_file" --pid-label "unison-files" \
+                "${file_unison_args[@]}" -repeat watch
+        else
+            run_unison_bg "${file_unison_args[@]}" -repeat watch
         fi
+        echo "homeConfigSync file sync started (PID: $unison_bg_pid)"
     fi
 }
 
@@ -2694,10 +2756,10 @@ cleanup() {
             echo "Stoppin' unison sync..."
             while IFS= read -r pid; do
                 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    kill "$pid" 2>/dev/null
+                    run_quiet kill "$pid"
                 fi
             done < "$pid_file"
-            rm -f "$pid_file"
+            run rm -f "$pid_file"
         fi
 
         # Stop container (it stays around for --continue/--resume)
@@ -2733,7 +2795,7 @@ cleanup() {
             should_unmount=false
         else
             # Last instance using this mount, clean up the instance file
-            rm -f "$mount_instance_file"
+            run rm -f "$mount_instance_file"
         fi
     fi
 
@@ -2763,7 +2825,7 @@ cleanup() {
             return
         else
             # No more instances of this project, remove the local instance file
-            rm -f "$local_instance_file"
+            run rm -f "$local_instance_file"
         fi
     fi
 
@@ -2790,10 +2852,10 @@ cleanup() {
                 echo "Stoppin' processes from $pid_file..."
                 while IFS= read -r pid; do
                     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                        kill "$pid" 2>/dev/null
+                        run_quiet kill "$pid"
                     fi
                 done < "$pid_file"
-                rm -f "$pid_file"
+                run rm -f "$pid_file"
             fi
 
             # Note: homeConfigSync mounts are shared across all instances for this user
@@ -2801,14 +2863,14 @@ cleanup() {
 
             if [ "$should_unmount" = "true" ] && mountpoint -q "$mount_point" 2>/dev/null; then
                 echo "Unmountin' $mount_point..."
-                umount -l "$mount_point" 2>/dev/null
+                run_quiet umount -l "$mount_point"
             fi
 
             echo "This project's done. Other projects still flyin'. homeConfigSync mounts stay for other instances."
             return
         else
             # No more instances for this user, remove the global instance file
-            rm -f "$global_instance_file"
+            run rm -f "$global_instance_file"
         fi
     fi
 
@@ -2820,16 +2882,16 @@ cleanup() {
         echo "Stoppin' processes from $pid_file..."
         while IFS= read -r pid; do
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                kill "$pid" 2>/dev/null
+                run_quiet kill "$pid"
             fi
         done < "$pid_file"
-        rm -f "$pid_file"
+        run rm -f "$pid_file"
     fi
 
     # Unmount the bindfs mount (only if we should)
     if [ "$should_unmount" = "true" ] && mountpoint -q "$mount_point" 2>/dev/null; then
         echo "Unmountin' $mount_point..."
-        umount -l "$mount_point" 2>/dev/null
+        run_quiet umount -l "$mount_point"
     fi
 
     # Check for other instances before cleaning up shared resources
@@ -2855,16 +2917,16 @@ cleanup() {
                 echo "Stoppin' shared homeConfigSync processes..."
                 while IFS='|' read -r entry_name entry_pid; do
                     if [ -n "$entry_pid" ] && kill -0 "$entry_pid" 2>/dev/null; then
-                        kill "$entry_pid" 2>/dev/null
+                        run_quiet kill "$entry_pid"
                     fi
                 done < "$homesync_pid_file"
-                rm -f "$homesync_pid_file"
+                run rm -f "$homesync_pid_file"
             fi
 
             # Unmount cage-mount/ bindfs mount first (it references origin/)
             if mountpoint -q "${homesync_base_dir}/cage-mount" 2>/dev/null; then
                 echo "Unmounting cage-mount/ bindfs mount..."
-                umount -l "${homesync_base_dir}/cage-mount" 2>/dev/null
+                run_quiet umount -l "${homesync_base_dir}/cage-mount"
             fi
 
             # Unmount per-entry bindfs mounts in origin/ (both files and directories)
@@ -2874,13 +2936,13 @@ cleanup() {
                 # Safe to grep - we control this specific path
                 for mount_path in $(mount | grep " ${homesync_origin_dest_dir}/" | awk '{print $3}'); do
                     if mountpoint -q "$mount_path" 2>/dev/null; then
-                        umount -l "$mount_path" 2>/dev/null
+                        run_quiet umount -l "$mount_path"
                     fi
                 done
             fi
 
             # Clean up directory
-            rm -rf "$homesync_base_dir" 2>/dev/null
+            run_quiet rm -rf "$homesync_base_dir"
         fi
 
         # Clean up firewall rules
@@ -3143,7 +3205,7 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] 
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
                     for file in "${excluded_files[@]}"; do
-                        rm -rf "$file"
+                        run rm -rf "$file"
                         echo "Gone: $file"
                     done
                 else
@@ -3177,7 +3239,7 @@ if [ -f "$pid_file" ]; then
         skip_setup=true
     else
         echo "Those processes are gone. Cleanin' up the old PID file..."
-        rm -f "$pid_file"
+        run rm -f "$pid_file"
     fi
 fi
 
@@ -3211,14 +3273,10 @@ if [ "$skip_setup" = false ]; then
             # Verify container is running
             if ! docker_container_running "$docker_container_name_value"; then
                 echo "Container exists but ain't runnin'. Startin' it..."
-                if [ "$dry_run" = true ]; then
-                    echo "[dry-run] docker start $docker_container_name_value"
-                else
-                    docker start "$docker_container_name_value" >/dev/null 2>&1
-                    if ! docker_container_running "$docker_container_name_value"; then
-                        echo "Failed to start container."
-                        exit 1
-                    fi
+                run_quiet docker start "$docker_container_name_value"
+                if [ "$dry_run" != true ] && ! docker_container_running "$docker_container_name_value"; then
+                    echo "Failed to start container."
+                    exit 1
                 fi
             fi
             echo "Container ready."
@@ -3277,18 +3335,11 @@ if [ "$skip_setup" = false ]; then
                 fi
 
                 # Run initial and ongoing sync
-                if [ "$dry_run" = true ]; then
-                    echo "[dry-run] bash -c '$unison_cmd_initial'"
-                    echo "[dry-run] bash -c '$unison_cmd_ongoing -repeat $repeat_mode' &"
-                    unison_pid="<PID>"
-                else
-                    bash -c "$unison_cmd_initial" >/dev/null 2>&1
-                    bash -c "$unison_cmd_ongoing -repeat $repeat_mode" >/dev/null 2>&1 &
-                    unison_pid=$!
-                fi
+                run_quiet bash -c "$unison_cmd_initial"
+                run_unison_bg --cmd "$unison_cmd_ongoing -repeat $repeat_mode"
 
                 # Write unison PID to file
-                run bash -c "echo '$unison_pid' > '$pid_file'"
+                run bash -c "echo '$unison_bg_pid' > '$pid_file'"
 
                 docker_mount_source="$cfg_sync"
             fi
@@ -3303,11 +3354,7 @@ if [ "$skip_setup" = false ]; then
                     echo "Container already runnin'. Reusin' it."
                 else
                     echo "Container exists but stopped. Startin' it..."
-                    if [ "$dry_run" = true ]; then
-                        echo "[dry-run] docker start $docker_container_name_value"
-                    else
-                        docker start "$docker_container_name_value" >/dev/null 2>&1
-                    fi
+                    run_quiet docker start "$docker_container_name_value"
                 fi
             else
                 # Start new container
@@ -3334,7 +3381,7 @@ if [ "$skip_setup" = false ]; then
             if [ "$dry_run" = true ]; then
                 echo "[dry-run] docker exec -u root ... setup claude user and home directory"
             else
-                docker exec -u root "$docker_container_name_value" bash -c "
+                run docker exec -u root "$docker_container_name_value" bash -c "
                     mkdir -p /home/claude
                     # Add claude user entry if not exists (maps host UID to 'claude' username)
                     if ! grep -q '^claude:' /etc/passwd; then
@@ -3347,7 +3394,7 @@ if [ "$skip_setup" = false ]; then
                     chown ${host_uid}:${host_gid} /home/claude
                 "
                 # Create .profile with PATH if it doesn't exist
-                docker exec -e HOME=/home/claude "$docker_container_name_value" bash -c '[ -f ~/.profile ] || cat > ~/.profile << "PROFILE"
+                run docker exec -e HOME=/home/claude "$docker_container_name_value" bash -c '[ -f ~/.profile ] || cat > ~/.profile << "PROFILE"
 export PATH="$HOME/.local/bin:$PATH"
 PROFILE'
             fi
@@ -3368,7 +3415,7 @@ PROFILE'
                     # Run as root since apt-get needs privileges
                     if ! docker exec "$docker_container_name_value" which curl >/dev/null 2>&1; then
                         echo "Installing curl first..."
-                        docker exec -u root "$docker_container_name_value" bash -c "apt-get update -qq && apt-get install -qq -y curl" >/dev/null
+                        run_quiet docker exec -u root "$docker_container_name_value" bash -c "apt-get update -qq && apt-get install -qq -y curl"
                         if [ $? -ne 0 ]; then
                             echo "Failed to install curl in container."
                             exit 1
@@ -3377,7 +3424,7 @@ PROFILE'
                     # Install Claude Code (as the regular user for correct home dir)
                     # HOME and PATH must be set for the installer to work correctly and not warn
                     echo "Downloading and installing Claude Code..."
-                    docker exec -e HOME=/home/claude -e PATH="/home/claude/.local/bin:\$PATH" "$docker_container_name_value" bash -c "set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"
+                    run docker exec -e HOME=/home/claude -e PATH="/home/claude/.local/bin:\$PATH" "$docker_container_name_value" bash -c "set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"
                     if [ $? -ne 0 ]; then
                         echo "Failed to install Claude Code in container."
                         exit 1
@@ -3532,23 +3579,16 @@ PROFILE'
         fi
 
         # Run initial sync, then ongoing sync as the original user
-        # Pass command to bash to preserve quoting
-        if [ "$dry_run" = true ]; then
-            echo "[dry-run] su $original_user -c \"bash -c '$unison_cmd_initial'\""
-            echo "[dry-run] su $original_user -c \"bash -c '$unison_cmd_ongoing -repeat $repeat_mode'\" &"
-            unison_pid="<PID>"
-        else
-            su "$original_user" -c "bash -c '$unison_cmd_initial'" >/dev/null 2>&1
-            su "$original_user" -c "bash -c '$unison_cmd_ongoing -repeat $repeat_mode'" >/dev/null 2>&1 &
-            unison_pid=$!
-        fi
+        run_quiet su "$original_user" -c "bash -c '$unison_cmd_initial'"
+        run_unison_bg --as "$original_user" --cmd "$unison_cmd_ongoing -repeat $repeat_mode"
+        unison_pid="$unison_bg_pid"
 
         if ! run bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_sync" "$mount_point"; then
             if [ "$dry_run" != true ]; then
                 echo "Now we got a problem. bindfs failed to mount."
                 echo "Check that bindfs is installed and $cfg_sync exists."
                 # Kill unison since we're bailing
-                kill "$unison_pid" 2>/dev/null
+                run_quiet kill "$unison_pid"
                 exit 1
             fi
         fi
@@ -3557,7 +3597,7 @@ PROFILE'
         if [ "$dry_run" != true ] && ! mountpoint -q "$mount_point" 2>/dev/null; then
             echo "Somethin' went wrong. Mount point ain't there after bindfs."
             echo "Check your permissions and try again."
-            kill "$unison_pid" 2>/dev/null
+            run_quiet kill "$unison_pid"
             exit 1
         fi
 

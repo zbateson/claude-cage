@@ -770,7 +770,7 @@ echo "Test 36i: Shared PID file should be used for sync processes"
 if ! echo "$modes_output" | grep -qE 'homesync/testuser/pids|already running.*shared'; then
     # In dry-run we won't see "already running" but we should see the unison commands are being set up
     # User mode: unison syncs cage/ <-> target_home with -path args
-    if ! echo "$modes_output" | grep -q 'unison "/run/claude-cage/.*/homesync/cage-mount".*-batch.*-path'; then
+    if ! echo "$modes_output" | grep -qE 'unison .*/homesync/cage-mount.*-batch.*-path'; then
         echo "FAIL: Did not find shared unison setup"
         echo "Output was:"
         echo "$modes_output"

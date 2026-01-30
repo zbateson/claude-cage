@@ -196,6 +196,68 @@ section_header() {
 }
 
 # ============================================================================
+# Instance and Process Management Helpers
+# ============================================================================
+
+# Filter live instances/PIDs from a file into an array
+# Usage: filter_live_instances <file_path> <array_name>
+# The array will contain only PIDs that are still running
+filter_live_instances() {
+    local file_path="$1"
+    local -n result_array="$2"
+    result_array=()
+
+    [ -f "$file_path" ] || return 0
+
+    while IFS= read -r inst_id; do
+        if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
+            result_array+=("$inst_id")
+        fi
+    done < "$file_path"
+}
+
+# Kill processes from a PID file (simple format: one PID per line)
+# Usage: kill_processes_from_file <file_path> [--remove]
+# If --remove is specified, removes the file after killing processes
+kill_processes_from_file() {
+    local file_path="$1"
+    local remove_file=false
+    [ "$2" = "--remove" ] && remove_file=true
+
+    [ -f "$file_path" ] || return 0
+
+    while IFS= read -r pid; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            run_quiet kill "$pid"
+        fi
+    done < "$file_path"
+
+    if [ "$remove_file" = true ]; then
+        run rm -f "$file_path"
+    fi
+}
+
+# Kill processes from a labeled PID file (format: label|PID per line)
+# Usage: kill_labeled_processes_from_file <file_path> [--remove]
+kill_labeled_processes_from_file() {
+    local file_path="$1"
+    local remove_file=false
+    [ "$2" = "--remove" ] && remove_file=true
+
+    [ -f "$file_path" ] || return 0
+
+    while IFS='|' read -r entry_name entry_pid; do
+        if [ -n "$entry_pid" ] && kill -0 "$entry_pid" 2>/dev/null; then
+            run_quiet kill "$entry_pid"
+        fi
+    done < "$file_path"
+
+    if [ "$remove_file" = true ]; then
+        run rm -f "$file_path"
+    fi
+}
+
+# ============================================================================
 # OS Abstraction Functions - User Management
 # ============================================================================
 
@@ -524,6 +586,35 @@ add_catchall_firewall_rule() {
     fi
 }
 
+# Add network rules for a batch of domains/IPs/networks
+# Usage: add_network_rules_batch <chain> <action> <type> <config_var> [insert_mode]
+# type: "domains", "ips", or "networks"
+# config_var: pipe-separated list of addresses (e.g., "domain1:443|domain2")
+# insert_mode: optional "insert" to add at beginning of chain
+add_network_rules_batch() {
+    local chain_name="$1"
+    local action="$2"
+    local type="$3"
+    local config_var="$4"
+    local insert_mode="$5"
+
+    [ -z "$config_var" ] && return 0
+
+    IFS='|' read -ra items <<< "$config_var"
+    for item_spec in "${items[@]}"; do
+        IFS='|' read -r item ports < <(parse_ip_port "$item_spec")
+        if [ "$type" = "domains" ]; then
+            # Resolve domain to IPs
+            while IFS= read -r ip; do
+                [ -n "$ip" ] && add_firewall_rule "$chain_name" "$action" "$ip" "$ports" "$insert_mode"
+            done < <(resolve_domain "$item")
+        else
+            # IPs or networks - add directly
+            add_firewall_rule "$chain_name" "$action" "$item" "$ports" "$insert_mode"
+        fi
+    done
+}
+
 # ============================================================================
 # Docker Mode Functions
 # ============================================================================
@@ -736,44 +827,44 @@ docker_start_container() {
     fi
 }
 
-# Execute command in running container
-# Usage: docker_exec container_name [--user username] command...
-docker_exec() {
-    local container_name="$1"
-    shift
+# Execute command in running container (internal implementation)
+# Usage: _docker_exec_impl <interactive> container_name [--user username] command...
+_docker_exec_impl() {
+    local interactive="$1"
+    local container_name="$2"
+    shift 2
     local -a user_opt=()
     if [ "$1" = "--user" ]; then
         user_opt=("-u" "$2")
         shift 2
     fi
 
+    local -a it_flag=()
+    local it_display=""
+    if [ "$interactive" = true ]; then
+        it_flag=("-it")
+        it_display="-it "
+    fi
+
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker exec -it -e HOME=/home/claude ${user_opt[*]} $container_name $*"
+        echo "[dry-run] docker exec ${it_display}-e HOME=/home/claude ${user_opt[*]} $container_name $*"
         return 0
     fi
 
     # Set HOME explicitly since the UID may not exist in container's /etc/passwd
-    run docker exec -it -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
+    run docker exec "${it_flag[@]}" -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
+}
+
+# Execute command in running container (interactive)
+# Usage: docker_exec container_name [--user username] command...
+docker_exec() {
+    _docker_exec_impl true "$@"
 }
 
 # Execute command in running container (non-interactive)
 # Usage: docker_exec_quiet container_name [--user username] command...
 docker_exec_quiet() {
-    local container_name="$1"
-    shift
-    local -a user_opt=()
-    if [ "$1" = "--user" ]; then
-        user_opt=("-u" "$2")
-        shift 2
-    fi
-
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker exec -e HOME=/home/claude ${user_opt[*]} $container_name $*"
-        return 0
-    fi
-
-    # Set HOME explicitly since the UID may not exist in container's /etc/passwd
-    run docker exec -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
+    _docker_exec_impl false "$@"
 }
 
 # Stop a running container
@@ -1841,12 +1932,7 @@ if [ "$cleanup_mode" = true ]; then
             # Check if any instances are still running for this user
             global_inst_file="/run/claude-cage/${homesync_user}/instances/global"
             if [ -f "$global_inst_file" ] && [ "$dry_run" != true ]; then
-                running_instances=()
-                while IFS= read -r inst_id; do
-                    if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
-                        running_instances+=("$inst_id")
-                    fi
-                done < "$global_inst_file"
+                filter_live_instances "$global_inst_file" running_instances
                 if [ ${#running_instances[@]} -gt 0 ]; then
                     echo "  WARNING: ${#running_instances[@]} instance(s) still running for user $homesync_user"
                     echo "           PIDs: ${running_instances[*]}"
@@ -1864,12 +1950,7 @@ if [ "$cleanup_mode" = true ]; then
                 # Kill shared processes from the homesync PID file
                 if [ -f "${homesync_dir}pids" ]; then
                     echo "  Stopping shared homeConfigSync processes..."
-                    while IFS='|' read -r entry_name entry_pid; do
-                        if [ -n "$entry_pid" ] && kill -0 "$entry_pid" 2>/dev/null; then
-                            run_quiet kill "$entry_pid"
-                        fi
-                    done < "${homesync_dir}pids"
-                    run rm -f "${homesync_dir}pids"
+                    kill_labeled_processes_from_file "${homesync_dir}pids" --remove
                 fi
 
                 # Unmount cage-mount/ bindfs mount first (it references origin/)
@@ -2846,12 +2927,7 @@ cleanup() {
         # Kill unison if running (sync mode)
         if [ -f "$pid_file" ]; then
             echo "Stoppin' unison sync..."
-            while IFS= read -r pid; do
-                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    run_quiet kill "$pid"
-                fi
-            done < "$pid_file"
-            run rm -f "$pid_file"
+            kill_processes_from_file "$pid_file" --remove
         fi
 
         # Stop container (it stays around for --continue/--resume)
@@ -2873,12 +2949,7 @@ cleanup() {
         sed -i "/^$instance_id$/d" "$mount_instance_file"
 
         # Check if other instances are still using this mount point
-        remaining_mount=()
-        while IFS= read -r inst_id; do
-            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
-                remaining_mount+=("$inst_id")
-            fi
-        done < "$mount_instance_file"
+        filter_live_instances "$mount_instance_file" remaining_mount
 
         if [ ${#remaining_mount[@]} -gt 0 ]; then
             echo "Other instances still usin' mount point (${remaining_mount[*]}). Leavin' it mounted."
@@ -2896,12 +2967,7 @@ cleanup() {
         sed -i "/^$instance_id$/d" "$local_instance_file"
 
         # Check if there are other instances of THIS project still running
-        remaining_local=()
-        while IFS= read -r inst_id; do
-            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
-                remaining_local+=("$inst_id")
-            fi
-        done < "$local_instance_file"
+        filter_live_instances "$local_instance_file" remaining_local
 
         if [ ${#remaining_local[@]} -gt 0 ]; then
             echo "Other instances of this project still runnin' (${remaining_local[*]}). Leavin' processes alone."
@@ -2926,12 +2992,7 @@ cleanup() {
         sed -i "/^$instance_id$/d" "$global_instance_file"
 
         # Check if there are other projects still running as this user
-        remaining_global=()
-        while IFS= read -r inst_id; do
-            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
-                remaining_global+=("$inst_id")
-            fi
-        done < "$global_instance_file" 2>/dev/null
+        filter_live_instances "$global_instance_file" remaining_global
 
         if [ ${#remaining_global[@]} -gt 0 ]; then
             echo "Other projects still runnin' as user $cfg_user (${remaining_global[*]})."
@@ -2942,12 +3003,7 @@ cleanup() {
             # Clean up local processes and mount (only if we should unmount)
             if [ -f "$pid_file" ]; then
                 echo "Stoppin' processes from $pid_file..."
-                while IFS= read -r pid; do
-                    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                        run_quiet kill "$pid"
-                    fi
-                done < "$pid_file"
-                run rm -f "$pid_file"
+                kill_processes_from_file "$pid_file" --remove
             fi
 
             # Note: homeConfigSync mounts are shared across all instances for this user
@@ -2972,12 +3028,7 @@ cleanup() {
     # Kill processes from PID file
     if [ -f "$pid_file" ]; then
         echo "Stoppin' processes from $pid_file..."
-        while IFS= read -r pid; do
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                run_quiet kill "$pid"
-            fi
-        done < "$pid_file"
-        run rm -f "$pid_file"
+        kill_processes_from_file "$pid_file" --remove
     fi
 
     # Unmount the bindfs mount (only if we should)
@@ -2989,12 +3040,9 @@ cleanup() {
     # Check for other instances before cleaning up shared resources
     has_other_instances=false
     if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
-        while IFS= read -r inst_id; do
-            if [ -n "$inst_id" ] && kill -0 "$inst_id" 2>/dev/null; then
-                has_other_instances=true
-                break
-            fi
-        done < "$global_instance_file"
+        local _check_instances=()
+        filter_live_instances "$global_instance_file" _check_instances
+        [ ${#_check_instances[@]} -gt 0 ] && has_other_instances=true
     fi
 
     # Clean up shared resources only if this is the last instance
@@ -3007,12 +3055,7 @@ cleanup() {
             local homesync_pid_file="${homesync_base_dir}/pids"
             if [ -f "$homesync_pid_file" ]; then
                 echo "Stoppin' shared homeConfigSync processes..."
-                while IFS='|' read -r entry_name entry_pid; do
-                    if [ -n "$entry_pid" ] && kill -0 "$entry_pid" 2>/dev/null; then
-                        run_quiet kill "$entry_pid"
-                    fi
-                done < "$homesync_pid_file"
-                run rm -f "$homesync_pid_file"
+                kill_labeled_processes_from_file "$homesync_pid_file" --remove
             fi
 
             # Unmount cage-mount/ bindfs mount first (it references origin/)
@@ -3116,103 +3159,24 @@ setup_network_restrictions() {
     fi
 
     if [ "$mode" = "allowlist" ]; then
-        # No need to remove final rule here - already done above if chain exists
+        # Allow user-configured destinations
+        add_network_rules_batch "$iptables_chain" "ACCEPT" "domains" "$cfg_allow_domains"
+        add_network_rules_batch "$iptables_chain" "ACCEPT" "ips" "$cfg_allow_ips"
+        add_network_rules_batch "$iptables_chain" "ACCEPT" "networks" "$cfg_allow_networks"
 
-        # Allow user-configured domains
-        if [ -n "$cfg_allow_domains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_allow_domains"
-            for domain_spec in "${domains[@]}"; do
-                IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
-                while IFS= read -r ip; do
-                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
-                done < <(resolve_domain "$domain")
-            done
-        fi
-
-        # Allow user-configured IPs
-        if [ -n "$cfg_allow_ips" ]; then
-            IFS='|' read -ra ips <<< "$cfg_allow_ips"
-            for ip_spec in "${ips[@]}"; do
-                IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
-                add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports"
-            done
-        fi
-
-        # Allow user-configured networks
-        if [ -n "$cfg_allow_networks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_allow_networks"
-            for network_spec in "${networks[@]}"; do
-                IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
-                add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports"
-            done
-        fi
-
-        # Reject everything else (re-add at the end)
+        # Reject everything else
         add_catchall_firewall_rule "$iptables_chain" "REJECT"
 
     elif [ "$mode" = "blocklist" ]; then
-        # No need to remove final rule here - already done above if chain exists
-
-        # First, allow exceptions (these rules are processed first)
-        # Use INSERT mode so exceptions go at the beginning of the chain, before any existing blocks
-        # Allow user-configured domains
-        if [ -n "$cfg_allow_domains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_allow_domains"
-            for domain_spec in "${domains[@]}"; do
-                IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
-                while IFS= read -r ip; do
-                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports" "insert"
-                done < <(resolve_domain "$domain")
-            done
-        fi
-
-        # Allow user-configured IPs
-        if [ -n "$cfg_allow_ips" ]; then
-            IFS='|' read -ra ips <<< "$cfg_allow_ips"
-            for ip_spec in "${ips[@]}"; do
-                IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
-                add_iptables_rule "$iptables_chain" "ACCEPT" "$ip" "$ports" "insert"
-            done
-        fi
-
-        # Allow user-configured networks
-        if [ -n "$cfg_allow_networks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_allow_networks"
-            for network_spec in "${networks[@]}"; do
-                IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
-                add_iptables_rule "$iptables_chain" "ACCEPT" "$network" "$ports" "insert"
-            done
-        fi
+        # First, allow exceptions (insert at beginning so they're processed first)
+        add_network_rules_batch "$iptables_chain" "ACCEPT" "domains" "$cfg_allow_domains" "insert"
+        add_network_rules_batch "$iptables_chain" "ACCEPT" "ips" "$cfg_allow_ips" "insert"
+        add_network_rules_batch "$iptables_chain" "ACCEPT" "networks" "$cfg_allow_networks" "insert"
 
         # Then, block configured targets
-        # Block user-configured domains
-        if [ -n "$cfg_block_domains" ]; then
-            IFS='|' read -ra domains <<< "$cfg_block_domains"
-            for domain_spec in "${domains[@]}"; do
-                IFS='|' read -r domain ports < <(parse_ip_port "$domain_spec")
-                while IFS= read -r ip; do
-                    [ -n "$ip" ] && add_iptables_rule "$iptables_chain" "REJECT" "$ip" "$ports"
-                done < <(resolve_domain "$domain")
-            done
-        fi
-
-        # Block user-configured IPs
-        if [ -n "$cfg_block_ips" ]; then
-            IFS='|' read -ra ips <<< "$cfg_block_ips"
-            for ip_spec in "${ips[@]}"; do
-                IFS='|' read -r ip ports < <(parse_ip_port "$ip_spec")
-                add_iptables_rule "$iptables_chain" "REJECT" "$ip" "$ports"
-            done
-        fi
-
-        # Block user-configured networks
-        if [ -n "$cfg_block_networks" ]; then
-            IFS='|' read -ra networks <<< "$cfg_block_networks"
-            for network_spec in "${networks[@]}"; do
-                IFS='|' read -r network ports < <(parse_ip_port "$network_spec")
-                add_iptables_rule "$iptables_chain" "REJECT" "$network" "$ports"
-            done
-        fi
+        add_network_rules_batch "$iptables_chain" "REJECT" "domains" "$cfg_block_domains"
+        add_network_rules_batch "$iptables_chain" "REJECT" "ips" "$cfg_block_ips"
+        add_network_rules_batch "$iptables_chain" "REJECT" "networks" "$cfg_block_networks"
 
         # Accept everything else
         add_catchall_firewall_rule "$iptables_chain" "ACCEPT"
@@ -3317,12 +3281,7 @@ if [ -f "$pid_file" ]; then
     echo "Hold on now. Found a PID file from a previous run."
     echo "Checkin' if those processes are still alive..."
 
-    running_pids=()
-    while IFS= read -r pid; do
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            running_pids+=("$pid")
-        fi
-    done < "$pid_file"
+    filter_live_instances "$pid_file" running_pids
 
     if [ ${#running_pids[@]} -gt 0 ]; then
         echo "Processes still runnin': ${running_pids[*]}"

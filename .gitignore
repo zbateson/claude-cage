@@ -1,6 +1,3 @@
-# Claude Cage PID and instance tracking files
+# Legacy files (no longer generated, kept for backwards compatibility)
 claude-cage.pid
 claude-cage.instances
-
-# Sync directories (generated at runtime, hidden)
-.caged

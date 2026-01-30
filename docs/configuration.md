@@ -228,20 +228,19 @@ Source directory to sync/mount.
 source = "my-directory"  -- Override to use a different subdirectory
 ```
 
-**Important for sync mode:** You cannot run from the config root directory itself. The script requires you to be in a subdirectory to prevent the `.caged` directory from being synced into itself.
+**Important for sync mode:** You cannot run from the config root directory itself. The script requires you to be in a subdirectory (otherwise it would sync the entire workspace).
 
 ### sync
 
-Sync directory name (ignored in direct mount mode).
+Sync directory path (ignored in direct mount mode).
 
-- Default: Auto-generated as `.caged/<project>/sync`
+- Default: `/run/claude-cage/<user>/projects/<project>/sync` (user mode)
+- Default: `/run/user/<uid>/claude-cage/projects/<project>/sync` (docker mode)
 - Only used in sync mode
-- Structure: `.caged/<project>/sync` and `.caged/<project>/excludes-cache`
-- **Important:** Add `.caged` to `.gitignore` if running from within a git repository
-- The `.caged` directory is automatically excluded from syncing to prevent recursion
+- Stored in `/run/` so it's cleared on reboot and can't be accidentally deleted
 
 ```lua
-sync = ".caged/myproject/sync"  -- Only needed if you want to override default
+sync = "/custom/path/sync"  -- Only override if you have a specific need
 ```
 
 ### mounted
@@ -271,7 +270,6 @@ showBanner = true
 
 All exclude options are grouped under the `exclude` object. Arrays within are merged across all config levels.
 
-**Note:** The `.caged` directory is automatically excluded in sync mode to prevent recursion issues. You don't need to add it to your config.
 
 ### exclude
 

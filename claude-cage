@@ -438,18 +438,17 @@ docker_compute_container_name() {
 }
 
 # Compute persistent home path based on isolation mode
-# Consolidates the persistent home path logic used in multiple places
+# Both modes use ~/.local/share/claude-cage/docker/<container-name>/
+# Container name is unique per-project in isolated mode, shared otherwise
 docker_persistent_home_path() {
     local isolated="$1"
     local config_root="$2"
     local project="$3"
     local container_name="$4"
 
-    if [ "$isolated" = "true" ]; then
-        echo "$config_root/.caged/$project/home"
-    else
-        echo "$HOME/.local/share/claude-cage/docker/$container_name/docker-home"
-    fi
+    # Both isolated and shared use the same path structure
+    # Container name uniqueness handles the isolation
+    echo "$HOME/.local/share/claude-cage/docker/$container_name/docker-home"
 }
 
 # Check if container exists (running or stopped)
@@ -1162,15 +1161,11 @@ if source == "" then
     end
 end
 
--- If sync is empty, determine from project
--- Structure: config_root/.caged/project-name/sync
--- The .caged directory is always at the config root for consistency
+-- If sync is empty, set a placeholder (overridden in bash to use /run/)
+-- Actual path: /run/claude-cage/<user>/projects/<project>/sync (user mode)
+--              /run/user/<uid>/claude-cage/projects/<project>/sync (docker mode)
 if sync == "" then
-    if project ~= "" then
-        sync = config_root .. "/.caged/" .. project .. "/sync"
-    else
-        sync = config_root .. "/.caged/default/sync"
-    end
+    sync = "__default__"
 end
 
 -- Set mounted default to project name
@@ -1236,11 +1231,6 @@ end
 -- Build exclude arguments for unison
 local exclude = config.exclude or {}
 local exclude_args = ""
-
--- In sync mode, always exclude .caged to prevent recursion issues
-if not directMount or directMount == false then
-    exclude_args = '-ignore "Name .caged" '
-end
 
 -- Add exclude patterns using reusable function
 exclude_args = exclude_args .. build_pattern_args(exclude, "ignore", nil, nil)
@@ -1568,7 +1558,7 @@ if [ "$cfg_isolationMode" = "docker" ]; then
     fi
 fi
 
-# Override sync directory to use /run/ instead of .caged/ (prevents accidental deletion)
+# Set sync directory in /run/
 # User mode: /run/claude-cage/<user>/projects/<project>/sync
 # Docker mode: /run/user/<uid>/claude-cage/projects/<project>/sync
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
@@ -1580,11 +1570,11 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ];
 fi
 
 # In sync mode, validate we're not at the config root
-# Running from config root would cause the .caged directory to be synced into itself
+# Running from config root would sync everything including sibling projects
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
     if [ -z "$cfg_relative_path" ]; then
         echo "Hold on now. You're tryin' to run sync mode from the config root directory."
-        echo "That ain't gonna work. The .caged directory would end up syncing into itself."
+        echo "That would sync everythin' includin' all your sibling projects."
         echo ""
         echo "You got a few options:"
         echo "  1. cd into a subdirectory and run from there"
@@ -3142,15 +3132,6 @@ if [ -f "$pid_file" ]; then
 fi
 
 if [ "$skip_setup" = false ]; then
-    # Create .caged/project-name/ directory for instance/PID files at config root
-    run mkdir -p "$cfg_config_root/.caged/$cfg_project"
-
-    # Set ownership of .caged directory and everything under it to original user
-    # (only needed in user mode where we run as root - Docker mode runs as user already)
-    if [ "$cfg_isolationMode" != "docker" ]; then
-        run chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
-    fi
-
     # Create instance tracking directory
     run mkdir -p "$instance_dir"
 

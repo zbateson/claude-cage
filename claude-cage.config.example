@@ -74,7 +74,7 @@ claude_cage {
     --
     -- Persistent home directory:
     -- - Managed containers: Home directory is mounted from ~/.local/share/claude-cage/docker/{container}/docker-home/
-    --   (or .caged/{project}/home/ for isolated mode). Credentials persist between runs.
+    --   Container name is unique per-project in isolated mode. Credentials persist between runs.
     -- - Existing containers: Can't mount directly as home (would overwrite content).
     --   Uses symlinks from actual home to mounted persistent directory.
     --
@@ -116,14 +116,14 @@ claude_cage {
     -- You can override this to sync only a subdirectory.
     --
     -- IMPORTANT: In sync mode, you cannot run from the config root directory.
-    -- You must cd into a subdirectory first to avoid .caged recursion issues.
+    -- You must cd into a subdirectory first (would sync entire workspace otherwise).
     -- source = "my-directory",
 
     -- Sync directory for unison to sync source with (sync mode only)
-    -- Default: .caged/project-name/sync
-    -- Structure: .caged/project-name/sync and .caged/project-name/excludes-cache
-    -- Add ".caged" to .gitignore if running from within a git repository
-    -- sync = ".caged/myproject/sync",
+    -- Default: /run/claude-cage/<user>/projects/<project>/sync (user mode)
+    --          /run/user/<uid>/claude-cage/projects/<project>/sync (docker mode)
+    -- Stored in /run/ so it's cleared on reboot and can't be accidentally deleted.
+    -- sync = "/custom/path/sync",  -- Only override if you have a specific need
 
     -- mounted: Final directory name in the mount path (default: project name)
     --   Mount points are in /home/<user>/caged/<mounted>/

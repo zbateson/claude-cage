@@ -277,7 +277,7 @@ tail -f /tmp/unison.log  # If logging enabled
 3. **Check file permissions:**
    ```bash
    ls -la your-source-directory/
-   ls -la .caged/your-project/sync/
+   ls -la /run/claude-cage/claude/projects/your-project/sync/
    ```
 
 ### Excluded files still appearing
@@ -286,8 +286,8 @@ tail -f /tmp/unison.log  # If logging enabled
 
 **Diagnosis:**
 ```bash
-# Check what's in sync directory
-ls -la .caged/myproject/sync/
+# Check what's in sync directory (user mode)
+ls -la /run/claude-cage/claude/projects/myproject/sync/
 
 # Verify exclude patterns in config
 cat claude-cage.config
@@ -335,8 +335,9 @@ Conflict: file changed on both sides
 
 3. **Reset sync directory:**
    ```bash
-   # Remove sync directory and let claude-cage recreate it
-   rm -rf .caged/myproject
+   # Sync directory is in /run/ and cleared on reboot
+   # To force reset, remove the sync directory:
+   sudo rm -rf /run/claude-cage/claude/projects/myproject/sync
    sudo ./claude-cage
    ```
 
@@ -504,7 +505,7 @@ No space left on device
 1. **Check disk usage:**
    ```bash
    df -h
-   du -sh .caged/*/sync
+   du -sh /run/claude-cage/*/projects/*/sync  # User mode
    ```
 
 2. **Add more exclusions:**

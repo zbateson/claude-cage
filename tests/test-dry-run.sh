@@ -512,15 +512,15 @@ if ! echo "$isolated_output" | grep -q "claude-cage-.*-"; then
 fi
 echo "  PASS: Docker isolated mode shows project-specific container name"
 
-# Test 40 moved here - uses same isolated mode config
-echo "Test 25b: Docker isolated mode should use .caged for persistent home"
-if ! echo "$isolated_output" | grep -q "Persistent home:.*\.caged.*home"; then
-    echo "FAIL: Isolated mode should use .caged directory for persistent home"
+# Test 25b - uses same isolated mode config
+echo "Test 25b: Docker isolated mode should use .local/share for persistent home"
+if ! echo "$isolated_output" | grep -q "Persistent home:.*\.local/share/claude-cage/docker/.*docker-home"; then
+    echo "FAIL: Isolated mode should use .local/share directory for persistent home"
     echo "Output was:"
     echo "$isolated_output"
     exit 1
 fi
-echo "  PASS: Isolated mode uses .caged for persistent home"
+echo "  PASS: Isolated mode uses .local/share for persistent home"
 
 cd "$TEST_TMP/project"
 

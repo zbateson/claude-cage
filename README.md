@@ -130,9 +130,7 @@ claude_cage {
 ```
 
 **Important for sync mode:**
-- Add `.caged` to your `.gitignore`
 - You must run from a **subdirectory** of the config root (not from the same directory)
-- `.caged` is automatically excluded to prevent recursion
 
 **Direct mount - workspace mode** (mount entire directory, access sibling projects):
 ```lua

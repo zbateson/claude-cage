@@ -711,6 +711,112 @@ echo "  PASS: Found symlink command for link mode"
 cd "$TEST_TMP/project"
 
 echo ""
+echo "=== Testing config merging across user and local configs ==="
+
+# Create a test setup with user config and local config
+# Note: script uses /home/$USER/.config/claude-cage/config for user config
+mkdir -p "$TEST_TMP/merge-test/myproject"
+USER_CONFIG_DIR="$HOME/.config/claude-cage"
+USER_CONFIG_BACKUP=""
+
+# Backup existing user config if present
+if [ -f "$USER_CONFIG_DIR/config" ]; then
+    USER_CONFIG_BACKUP=$(mktemp)
+    cp "$USER_CONFIG_DIR/config" "$USER_CONFIG_BACKUP"
+fi
+mkdir -p "$USER_CONFIG_DIR"
+
+# User config with entries that should be merged
+cat > "$USER_CONFIG_DIR/config" << 'EOF'
+claude_cage {
+    exclude = {
+        name = { "from-user-exclude" },
+    },
+    cageLocal = {
+        name = { "from-user-cagelocal" },
+    },
+    homeConfigSync = {
+        ".from-user-config",
+    }
+}
+EOF
+
+# Local config with different entries (sync mode to test exclude/cageLocal)
+cat > "$TEST_TMP/merge-test/claude-cage.config" << 'EOF'
+claude_cage {
+    exclude = {
+        name = { "from-local-exclude" },
+    },
+    cageLocal = {
+        name = { "from-local-cagelocal" },
+    },
+    homeConfigSync = {
+        ".from-local-config",
+    }
+}
+EOF
+
+cd "$TEST_TMP/merge-test/myproject"
+
+echo "Test 37b: Config arrays should be merged from user and local configs"
+merge_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+
+# Restore user config before checking results (so cleanup happens even on failure)
+if [ -n "$USER_CONFIG_BACKUP" ]; then
+    cp "$USER_CONFIG_BACKUP" "$USER_CONFIG_DIR/config"
+    rm -f "$USER_CONFIG_BACKUP"
+else
+    rm -f "$USER_CONFIG_DIR/config"
+fi
+
+# Check exclude merging (appears in unison -ignore args)
+if ! echo "$merge_output" | grep -q "from-user-exclude"; then
+    echo "FAIL: Did not find from-user-exclude from user config"
+    echo "Output was:"
+    echo "$merge_output"
+    exit 1
+fi
+if ! echo "$merge_output" | grep -q "from-local-exclude"; then
+    echo "FAIL: Did not find from-local-exclude from local config"
+    echo "Output was:"
+    echo "$merge_output"
+    exit 1
+fi
+echo "  PASS: exclude entries merged"
+
+# Check cageLocal merging (appears in unison -nocreationpartial args)
+if ! echo "$merge_output" | grep -q "from-user-cagelocal"; then
+    echo "FAIL: Did not find from-user-cagelocal from user config"
+    echo "Output was:"
+    echo "$merge_output"
+    exit 1
+fi
+if ! echo "$merge_output" | grep -q "from-local-cagelocal"; then
+    echo "FAIL: Did not find from-local-cagelocal from local config"
+    echo "Output was:"
+    echo "$merge_output"
+    exit 1
+fi
+echo "  PASS: cageLocal entries merged"
+
+# Check homeConfigSync merging
+if ! echo "$merge_output" | grep -q "\.from-user-config"; then
+    echo "FAIL: Did not find .from-user-config from user config"
+    echo "Output was:"
+    echo "$merge_output"
+    exit 1
+fi
+if ! echo "$merge_output" | grep -q "\.from-local-config"; then
+    echo "FAIL: Did not find .from-local-config from local config"
+    echo "Output was:"
+    echo "$merge_output"
+    exit 1
+fi
+echo "  PASS: homeConfigSync entries merged"
+
+cd "$TEST_TMP/project"
+
+echo ""
 echo "=== Testing Docker persistent home ==="
 
 # Create a test config for Docker mode with managed container

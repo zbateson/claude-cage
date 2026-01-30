@@ -957,6 +957,12 @@ local function merge_config(base, override)
                     end
                 end
             end
+        elseif k == "homeConfigSync" and type(v) == "table" then
+            -- Merge homeConfigSync entries (array of paths/tables)
+            result.homeConfigSync = result.homeConfigSync or {}
+            for _, item in ipairs(v) do
+                table.insert(result.homeConfigSync, item)
+            end
         else
             -- Override value
             result[k] = v

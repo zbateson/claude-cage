@@ -49,8 +49,8 @@ You can also override the project name:
 
 ### Merge Behavior
 
-- **Simple values** (user, source, sync, etc.): Later configs override earlier ones
-- **Arrays** (exclude.name, exclude.path, etc., and network arrays): Values are **merged** across all configs
+- **Most values** (user, source, networkMode, directMount, etc.): Later configs **override** earlier ones
+- **These arrays are merged**: `exclude`, `cageLocal`, `block`, `allow`, `homeConfigSync`
 
 Example: If system config has `exclude = { path = {"config/production.yml"} }` and local config has `exclude = { path = {"deploy/secrets.txt"} }`, the final exclude.path list will be `{"config/production.yml", "deploy/secrets.txt"}`.
 
@@ -670,6 +670,8 @@ Supported modes:
 - `link`: Symlink from cage home to host path
 
 Both files and directories are supported. Directories are synced recursively.
+
+**Note:** Entries are merged across config levels (see [Merge Behavior](#merge-behavior)).
 
 **Processing order matters.** Entries are processed in the order listed. This lets you copy a directory first, then overwrite specific files:
 

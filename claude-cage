@@ -13,8 +13,9 @@ detect_os() {
 
 OS_TYPE=$(detect_os)
 
-# Parse --dry-run and --os early to allow OS simulation
+# Parse --dry-run, --verbose, and --os early to allow OS simulation
 dry_run=false
+verbose=false
 simulated_os=""
 next_is_os=false
 for arg in "$@"; do
@@ -23,6 +24,8 @@ for arg in "$@"; do
         next_is_os=false
     elif [ "$arg" = "--dry-run" ]; then
         dry_run=true
+    elif [ "$arg" = "--verbose" ] || [ "$arg" = "-v" ]; then
+        verbose=true
     elif [ "$arg" = "--os" ]; then
         next_is_os=true
     fi
@@ -52,27 +55,37 @@ fi
 # Dry-run Mode Helper Functions
 # ============================================================================
 
-# Note: dry_run and OS_TYPE are parsed at the top of the script
+# Note: dry_run, verbose, and OS_TYPE are parsed at the top of the script
+
+# ANSI color codes
+_yellow='\033[33m'
+_reset='\033[0m'
 
 # Wrapper function for commands that modify the system
 # In dry-run mode, prints the command instead of executing it
+# In verbose mode, prints the command in yellow before executing
 run() {
     if [ "$dry_run" = true ]; then
         echo "[dry-run] $*"
         return 0
-    else
-        "$@"
     fi
+    if [ "$verbose" = true ]; then
+        echo -e "${_yellow}[run] $*${_reset}" >&2
+    fi
+    "$@"
 }
 
 # Wrapper for commands that should be silent in normal mode but shown in dry-run
+# In verbose mode, prints the command in yellow before executing
 run_quiet() {
     if [ "$dry_run" = true ]; then
         echo "[dry-run] $*"
         return 0
-    else
-        "$@" >/dev/null 2>&1
     fi
+    if [ "$verbose" = true ]; then
+        echo -e "${_yellow}[run] $*${_reset}" >&2
+    fi
+    "$@" >/dev/null 2>&1
 }
 
 # Run unison in background with proper PID tracking (output suppressed)
@@ -112,16 +125,23 @@ run_unison_bg() {
         esac
     done
 
+    local cmd_display
+    if [ -n "$run_as_user" ]; then
+        cmd_display="su $run_as_user -c \"bash -c '$1'\" &"
+    elif [ "$is_cmd_string" = true ]; then
+        cmd_display="$1 &"
+    else
+        cmd_display="unison $* &"
+    fi
+
     if [ "$dry_run" = true ]; then
-        if [ -n "$run_as_user" ]; then
-            echo "[dry-run] su $run_as_user -c \"bash -c '$1'\" &"
-        elif [ "$is_cmd_string" = true ]; then
-            echo "[dry-run] $1 &"
-        else
-            echo "[dry-run] unison $* &"
-        fi
+        echo "[dry-run] $cmd_display"
         unison_bg_pid="<PID>"
         return 0
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo -e "${_yellow}[run] $cmd_display${_reset}" >&2
     fi
 
     if [ -n "$run_as_user" ]; then
@@ -941,7 +961,7 @@ for arg in "$@"; do
         skip_next=true
         continue
     fi
-    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ] && [ "$arg" != "--dry-run" ] && [ "$arg" != "--delete-docker-container" ]; then
+    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ] && [ "$arg" != "--dry-run" ] && [ "$arg" != "--verbose" ] && [ "$arg" != "-v" ] && [ "$arg" != "--delete-docker-container" ]; then
         cli_project_arg="$arg"
         break
     fi
@@ -1554,6 +1574,9 @@ for arg in "$@"; do
     elif [ "$arg" = "--config" ] || [ "$arg" = "--os" ]; then
         skip_next_arg=true
     elif [ "$arg" = "--dry-run" ]; then
+        # Already parsed early, just skip here
+        :
+    elif [ "$arg" = "--verbose" ] || [ "$arg" = "-v" ]; then
         # Already parsed early, just skip here
         :
     else

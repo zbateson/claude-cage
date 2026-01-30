@@ -249,11 +249,11 @@ sync = ".caged/myproject/sync"  -- Only needed if you want to override default
 Final directory name in the mount path.
 
 - Default: Project name
-- Mount points are in `/run/claude-cage/mounts/projects/<mounted>/`
+- Mount points are in `/home/<user>/caged/<mounted>/`
 - This is the actual working directory where Claude starts
 
 ```lua
-mounted = "my-app"  -- Results in /run/claude-cage/mounts/projects/my-app/
+mounted = "my-app"  -- Results in /home/claude/caged/my-app/
 ```
 
 ### showBanner

@@ -97,12 +97,12 @@ claude_cage {
     --
     -- Workspace mode: Mount point name derived from source directory basename
     --   Example: cd ~/Projects/public && sudo claude-cage my-project
-    --   Mounts ~/Projects/public/ to /run/claude-cage/mounts/projects/public/
+    --   Mounts ~/Projects/public/ to /home/claude/caged/public/
     --   Claude starts in .../public/my-project/ but can cd to siblings
     --
     -- Project mode: Mount point name is the project subdirectory name
     --   Example: cd ~/Projects/public && sudo claude-cage my-project
-    --   Mounts ~/Projects/public/my-project/ to /run/claude-cage/mounts/projects/my-project/
+    --   Mounts ~/Projects/public/my-project/ to /home/claude/caged/my-project/
     --   Claude starts at mount root, cannot access sibling projects
     --
     -- directMount = false,
@@ -126,9 +126,9 @@ claude_cage {
     -- sync = ".caged/myproject/sync",
 
     -- mounted: Final directory name in the mount path (default: project name)
-    --   Mount points are in /run/claude-cage/mounts/projects/<mounted>/
+    --   Mount points are in /home/<user>/caged/<mounted>/
     --   This is the actual working directory where Claude starts
-    --   Example: mounted = "my-app" → /run/claude-cage/mounts/projects/my-app/
+    --   Example: mounted = "my-app" → /home/claude/caged/my-app/
     -- mounted = "",  -- Defaults to project name
 
     -- Show ASCII art banner (default: true)

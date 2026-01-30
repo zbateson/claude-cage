@@ -2215,7 +2215,14 @@ homeConfigSync_copy() {
                     # Create destination parent directory if needed
                     if [ ! -d "$dest_dir" ]; then
                         run mkdir -p "$dest_dir"
-                        [ "$needs_chown" = true ] && run chown "$cfg_user:$cfg_user" "$dest_dir"
+                        # Chown all new directories up to target_home
+                        if [ "$needs_chown" = true ]; then
+                            local current="$dest_dir"
+                            while [ "$current" != "$target_home" ] && [ "$current" != "/" ]; do
+                                run chown "$cfg_user:$cfg_user" "$current"
+                                current=$(dirname "$current")
+                            done
+                        fi
                     fi
 
                     # Sync file or directory
@@ -2257,7 +2264,12 @@ homeConfigSync_copy() {
                     # Create parent directory if needed
                     if [ ! -d "$dest_dir" ]; then
                         mkdir -p "$dest_dir"
-                        chown "$cfg_user:$cfg_user" "$dest_dir"
+                        # Chown all new directories up to target_home
+                        local current="$dest_dir"
+                        while [ "$current" != "$target_home" ] && [ "$current" != "/" ]; do
+                            chown "$cfg_user:$cfg_user" "$current"
+                            current=$(dirname "$current")
+                        done
                     fi
                     # Remove existing file/link if present
                     if [ -e "$dest_path" ] || [ -L "$dest_path" ]; then
@@ -2339,7 +2351,10 @@ homeConfigSync_setup_unison() {
         fi
     fi
 
-    # User mode: set up origin/ with mounts/symlinks, bindfs to cage/, unison to home
+    # Track file entries separately (need different sync strategy than directories)
+    local -a file_entries=()
+
+    # User mode: set up origin/ with mounts (dirs) or copies (files), bindfs to cage/, unison to home
     if [ "$needs_bindfs" = true ]; then
         if [ "$mounts_exist" = true ]; then
             echo "homeConfigSync mounts already exist (shared with other instances)"
@@ -2348,7 +2363,9 @@ homeConfigSync_setup_unison() {
             run mkdir -p "$homesync_origin_dest_dir" "$cage_dir"
             [ "$dry_run" != true ] && chown "$original_user:$original_user" "$homesync_origin_dest_dir"
 
-            # Mount/symlink original files into origin/ (preserving home structure)
+            # Set up entries in origin/ (preserving home structure)
+            # Directories: bindfs mount
+            # Files: rsync copy (bindfs doesn't support single files)
             for entry_path in "${homesync_sync_sources[@]}"; do
                 local src="${original_home}/${entry_path}"
                 local dst="${homesync_origin_dest_dir}/${entry_path}"
@@ -2363,9 +2380,9 @@ homeConfigSync_setup_unison() {
                 if [ "$dry_run" = true ]; then
                     # In dry-run, check if source exists and is a directory
                     # Since we can't know for sure, show both possibilities
-                    echo "[dry-run] homeConfigSync mount: $entry_path"
+                    echo "[dry-run] homeConfigSync setup: $entry_path"
                     echo "[dry-run]   if directory: bindfs \"$src\" \"$dst\""
-                    echo "[dry-run]   if file: touch \"$dst\" && bindfs \"$src\" \"$dst\""
+                    echo "[dry-run]   if file: rsync -a \"$src\" \"$dst\" (then unison for sync)"
                 elif [ -d "$src" ]; then
                     # Directory: bindfs mount
                     mkdir -p "$dst"
@@ -2373,11 +2390,12 @@ homeConfigSync_setup_unison() {
                     bindfs "$src" "$dst"
                     echo "  Mounted directory: $entry_path"
                 elif [ -f "$src" ]; then
-                    # File: bindfs mount (can't use symlink - unison would copy the symlink)
-                    touch "$dst"
+                    # File: rsync copy (bindfs doesn't work for single files)
+                    # Will use unison for ongoing bidirectional sync
+                    rsync -a "$src" "$dst"
                     chown "$original_user:$original_user" "$dst"
-                    bindfs "$src" "$dst"
-                    echo "  Mounted file: $entry_path"
+                    file_entries+=("$entry_path")
+                    echo "  Copied file: $entry_path"
                 else
                     echo "  Warning: Source does not exist: $src"
                 fi
@@ -2432,6 +2450,13 @@ homeConfigSync_setup_unison() {
     # Initial sync: ignore any stale archives and force from source
     local unison_initial="$unison_base -ignorearchives -force \"$unison_src\""
 
+    # In user mode, add -owner -group so unison preserves ownership from source
+    # (source files appear owned by cage user via bindfs mapping)
+    if [ "$needs_bindfs" = true ]; then
+        unison_base="$unison_base -owner -group"
+        unison_initial="$unison_initial -owner -group"
+    fi
+
     if [ "$dry_run" = true ]; then
         echo "[dry-run] $unison_initial"
         echo "[dry-run] $unison_base -repeat watch &"
@@ -2441,6 +2466,7 @@ homeConfigSync_setup_unison() {
         # Initial one-shot sync (force from source to populate destination)
         eval "$unison_initial"
         echo "homeConfigSync initial sync complete"
+
         # Start watch mode (bidirectional)
         eval "$unison_base -repeat watch" &
         local unison_pid=$!
@@ -2450,6 +2476,30 @@ homeConfigSync_setup_unison() {
             homesync_unison_pid=$!
         fi
         echo "homeConfigSync unison watch started (PID: $unison_pid)"
+    fi
+
+    # For files in user mode: run second unison to sync original_home <-> origin/
+    # (Directories use bindfs so changes flow through automatically, but files are copies)
+    if [ "$needs_bindfs" = true ] && [ ${#file_entries[@]} -gt 0 ]; then
+        # Build -path args for file entries
+        local file_path_args=""
+        for entry in "${file_entries[@]}"; do
+            file_path_args="$file_path_args -path \"$entry\""
+        done
+
+        local file_unison_base="unison \"$original_home\" \"$homesync_origin_dest_dir\" -batch -confirmbigdel=false -owner -group $file_path_args"
+
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] File sync: $file_unison_base -repeat watch &"
+        elif [ "$unison_running" != true ]; then
+            # Start watch mode for files (bidirectional original <-> origin)
+            eval "$file_unison_base -repeat watch" &
+            local file_unison_pid=$!
+            if [ -n "$homesync_pid_file" ]; then
+                echo "unison-files|${file_unison_pid}" >> "$homesync_pid_file"
+            fi
+            echo "homeConfigSync file sync started (PID: $file_unison_pid)"
+        fi
     fi
 }
 
@@ -3132,8 +3182,9 @@ if [ -f "$pid_file" ]; then
 fi
 
 if [ "$skip_setup" = false ]; then
-    # Create instance tracking directory
+    # Create instance tracking directory and project directory (for PID/instance files)
     run mkdir -p "$instance_dir"
+    run mkdir -p "$(dirname "$local_instance_file")"
 
     if [ "$cfg_isolationMode" = "docker" ]; then
         # Docker mode setup
@@ -3353,6 +3404,12 @@ PROFILE'
 
         # Create mount point if it doesn't exist
         run mkdir -p "$mount_point"
+        # Set ownership of mount point and all parent directories up to user_home
+        current="$mount_point"
+        while [ "$current" != "$user_home" ] && [ "$current" != "/" ]; do
+            run chown "$cfg_user:$cfg_user" "$current"
+            current=$(dirname "$current")
+        done
 
         # In sync mode, create sync directory and set ownership
         if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then

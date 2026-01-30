@@ -220,19 +220,19 @@ if ! echo "$cleanup_output" | grep -q "\[dry-run\]"; then
 fi
 echo "  PASS: Cleanup mode shows dry-run commands"
 
-echo "Test 11b: Cleanup mode should check for homeConfigSync mounts"
-if ! echo "$cleanup_output" | grep -q "homeConfigSync mounts\|homesync-"; then
-    echo "FAIL: Cleanup mode should check for homeConfigSync mounts"
+echo "Test 11b: Cleanup mode should check for homeConfigSync directories"
+if ! echo "$cleanup_output" | grep -q "homeConfigSync directories\|/homesync/"; then
+    echo "FAIL: Cleanup mode should check for homeConfigSync directories"
     echo "Output was:"
     echo "$cleanup_output"
     exit 1
 fi
-echo "  PASS: Cleanup mode checks for homeConfigSync mounts"
+echo "  PASS: Cleanup mode checks for homeConfigSync directories"
 
 echo "Test 11c: Cleanup mode should report homesync status"
 # In dry-run without actual mounts, should report "No homeConfigSync mounts found"
 # With mounts, would show unmount commands
-if ! echo "$cleanup_output" | grep -q "No homeConfigSync mounts found\|umount.*homesync-"; then
+if ! echo "$cleanup_output" | grep -q "No homeConfigSync mounts found\|umount.*homesync"; then
     echo "FAIL: Cleanup mode should report homeConfigSync status"
     echo "Output was:"
     echo "$cleanup_output"
@@ -748,7 +748,7 @@ echo "  PASS: Homesync mounts use username for sharing"
 
 echo "Test 36g: Origin dir should use bindfs mounts for entries"
 # User mode: origin/ contains bindfs mounts for both directories and files
-if ! echo "$modes_output" | grep -qE 'homeConfigSync mount:|if directory: bindfs|if file: touch.*bindfs'; then
+if ! echo "$modes_output" | grep -qE 'homeConfigSync setup:|if directory: bindfs|if file: rsync'; then
     echo "FAIL: Did not find origin/ bindfs mount setup"
     echo "Output was:"
     echo "$modes_output"

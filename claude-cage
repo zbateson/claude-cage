@@ -1568,6 +1568,17 @@ if [ "$cfg_isolationMode" = "docker" ]; then
     fi
 fi
 
+# Override sync directory to use /run/ instead of .caged/ (prevents accidental deletion)
+# User mode: /run/claude-cage/<user>/projects/<project>/sync
+# Docker mode: /run/user/<uid>/claude-cage/projects/<project>/sync
+if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        cfg_sync="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/sync"
+    else
+        cfg_sync="/run/claude-cage/${cfg_user}/projects/${cfg_project}/sync"
+    fi
+fi
+
 # In sync mode, validate we're not at the config root
 # Running from config root would cause the .caged directory to be synced into itself
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
@@ -1584,9 +1595,15 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ];
 fi
 
 # Define PID and instance file paths early (needed for cleanup mode)
-# These are at the config root to be consistent regardless of where you run from
-pid_file="$cfg_config_root/.caged/$cfg_project/claude-cage.pid"
-local_instance_file="$cfg_config_root/.caged/$cfg_project/claude-cage.instances"
+# User mode: /run/claude-cage/<user>/projects/<project>/
+# Docker mode: /run/user/<uid>/claude-cage/projects/<project>/
+if [ "$cfg_isolationMode" = "docker" ]; then
+    pid_file="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/claude-cage.pid"
+    local_instance_file="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/claude-cage.instances"
+else
+    pid_file="/run/claude-cage/${cfg_user}/projects/${cfg_project}/claude-cage.pid"
+    local_instance_file="/run/claude-cage/${cfg_user}/projects/${cfg_project}/claude-cage.instances"
+fi
 
 # For direct mount mode, we track instances by mount point (not project)
 # This allows multiple projects under the same mount to share it
@@ -3013,7 +3030,8 @@ setup_network_restrictions() {
 # Check for excluded files in sync directory (skip in directMount mode)
 # Only check patterns that changed since last run
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ] && [ -d "$cfg_sync" ]; then
-    config_cache="$cfg_config_root/.caged/${cfg_project}/excludes-cache"
+    # excludes-cache is in the same directory as sync (parent of sync/)
+    config_cache="$(dirname "$cfg_sync")/excludes-cache"
     current_excludes="${cfg_exclude_path}|${cfg_exclude_name}|${cfg_exclude_regex}|${cfg_exclude_belowPath}"
 
     # Check if exclude patterns changed since last run

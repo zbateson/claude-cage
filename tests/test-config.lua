@@ -56,6 +56,12 @@ local function merge_config(base, override)
                     end
                 end
             end
+        elseif k == "homeConfigSync" and type(v) == "table" then
+            -- Merge homeConfigSync arrays (each entry is a string or table)
+            result.homeConfigSync = result.homeConfigSync or {}
+            for _, item in ipairs(v) do
+                table.insert(result.homeConfigSync, item)
+            end
         else
             -- Override value
             result[k] = v
@@ -195,4 +201,132 @@ assert(#block.networks == 2, "block.networks should have 2 items (merged from sy
 assert(#allow.ips == 2, "allow.ips should have 2 items (merged from user and local)")
 assert(#allow.domains == 1, "allow.domains should have 1 item (from local)")
 
-print("✓ All tests passed!")
+-- ============================================================================
+-- Test homeConfigSync parsing (new syntax)
+-- ============================================================================
+print("\n=== Testing homeConfigSync parsing ===")
+
+-- Reset configs for homeConfigSync test
+configs = {}
+claude_cage {
+    homeConfigSync = {
+        -- Simple string: init mode
+        ".gitconfig",
+
+        -- Table syntax with modes
+        { path = ".claude", mode = "sync",
+          exclude = { path = { "settings.json" }, belowPath = { "logs" } } },
+        { path = ".claude.json", mode = "sync" },
+        { path = ".npmrc", mode = "copy" },
+        { path = ".some-dir", mode = "link" },
+        { path = ".config/foo", destination = ".foo", mode = "init" },
+    }
+}
+
+-- Process homeConfigSync
+local homeConfigSync = configs[1].homeConfigSync
+
+-- Helper to parse entry
+local function parse_entry(entry)
+    local path, dest, mode, exclude_path, exclude_belowPath = "", "", "init", "", ""
+
+    if type(entry) == "string" then
+        path = entry
+        dest = entry
+    elseif type(entry) == "table" and entry.path then
+        path = entry.path
+        dest = entry.destination or entry.path
+        mode = entry.mode or "init"
+        if entry.exclude then
+            if entry.exclude.path then
+                exclude_path = table.concat(entry.exclude.path, "|")
+            end
+            if entry.exclude.belowPath then
+                exclude_belowPath = table.concat(entry.exclude.belowPath, "|")
+            end
+        end
+    end
+
+    return path, dest, mode, exclude_path, exclude_belowPath
+end
+
+-- Test simple string
+local path, dest, mode = parse_entry(homeConfigSync[1])
+assert(path == ".gitconfig", "Simple string: path should be .gitconfig")
+assert(dest == ".gitconfig", "Simple string: dest should be .gitconfig")
+assert(mode == "init", "Simple string: mode should be init")
+print("  ✓ Simple string parsing works")
+
+-- Test table syntax with sync mode and excludes
+local exclude_path, exclude_belowPath
+path, dest, mode, exclude_path, exclude_belowPath = parse_entry(homeConfigSync[2])
+assert(path == ".claude", "Table sync: path should be .claude")
+assert(dest == ".claude", "Table sync: dest should be .claude")
+assert(mode == "sync", "Table sync: mode should be sync")
+assert(exclude_path == "settings.json", "Table sync: exclude_path should be settings.json")
+assert(exclude_belowPath == "logs", "Table sync: exclude_belowPath should be logs")
+print("  ✓ Table syntax with sync mode and excludes works")
+
+-- Test copy mode
+path, dest, mode = parse_entry(homeConfigSync[4])
+assert(path == ".npmrc", "Copy mode: path should be .npmrc")
+assert(mode == "copy", "Copy mode: mode should be copy")
+print("  ✓ Copy mode works")
+
+-- Test link mode
+path, dest, mode = parse_entry(homeConfigSync[5])
+assert(path == ".some-dir", "Link mode: path should be .some-dir")
+assert(mode == "link", "Link mode: mode should be link")
+print("  ✓ Link mode works")
+
+-- Test destination override
+path, dest, mode = parse_entry(homeConfigSync[6])
+assert(path == ".config/foo", "Dest override: path should be .config/foo")
+assert(dest == ".foo", "Dest override: dest should be .foo")
+assert(mode == "init", "Dest override: mode should be init")
+print("  ✓ Destination override works")
+
+-- ============================================================================
+-- Test homeConfigSync merging
+-- ============================================================================
+print("\n=== Testing homeConfigSync merging ===")
+
+-- Reset configs for merge test
+configs = {}
+
+-- Simulate user config
+claude_cage {
+    homeConfigSync = {
+        ".gitconfig",
+        { path = ".claude", mode = "sync" },
+    }
+}
+
+-- Simulate project config
+claude_cage {
+    homeConfigSync = {
+        ".npmrc",
+        { path = ".project-specific", mode = "copy" },
+    }
+}
+
+-- Merge configs
+local merged = {}
+for _, cfg in ipairs(configs) do
+    merged = merge_config(merged, cfg)
+end
+
+-- Test that homeConfigSync entries are merged (not overwritten)
+local mergedHomeConfigSync = merged.homeConfigSync or {}
+assert(#mergedHomeConfigSync == 4, "homeConfigSync should have 4 items (merged from both configs), got " .. #mergedHomeConfigSync)
+
+-- Verify order (user config entries come first)
+local first_path = type(mergedHomeConfigSync[1]) == "string" and mergedHomeConfigSync[1] or mergedHomeConfigSync[1].path
+assert(first_path == ".gitconfig", "First entry should be .gitconfig from user config")
+
+local third_path = type(mergedHomeConfigSync[3]) == "string" and mergedHomeConfigSync[3] or mergedHomeConfigSync[3].path
+assert(third_path == ".npmrc", "Third entry should be .npmrc from project config")
+
+print("  ✓ homeConfigSync entries are merged across configs")
+
+print("\n✓ All tests passed!")

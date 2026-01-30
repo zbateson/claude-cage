@@ -110,6 +110,8 @@ chmod +x claude-cage
 sudo cp claude-cage /usr/local/bin/
 ```
 
+**Optional: [Shell Completions](docs/configuration.md#shell-completions)** - Tab completion for flags and arguments.
+
 ### 2. Configure
 
 Create `claude-cage.config` in your project root (or parent directory):
@@ -300,7 +302,8 @@ homeConfigSync = {
     ".gitconfig",
     ".claude",       -- Claude credentials and settings directory
     ".claude.json",  -- Claude onboarding state (separate file!)
-    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+    { path = ".config/claude-cage/claude-settings.json",
+      destination = ".claude/settings.json" }
 }
 ```
 

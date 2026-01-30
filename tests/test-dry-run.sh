@@ -29,7 +29,7 @@ claude_cage {
     homeConfigSync = {
         ".gitconfig",
         ".claude",
-        { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+        { path = ".config/claude-cage/claude-settings.json", destination = ".claude/settings.json" }
     },
     networkMode = "blocklist",
     block = {
@@ -101,6 +101,21 @@ if ! echo "$output" | grep -q "\[dry-run\] bindfs"; then
     exit 1
 fi
 echo "  PASS: Found bindfs command"
+
+echo "Test 7b: Project mount points should be in /run/ (not user home)"
+if echo "$output" | grep -q "bindfs.*/home/[^/]*/caged\|bindfs.*/home/[^/]*/[^/]*\"* *\$"; then
+    echo "FAIL: Found project mount point in user home (security issue)"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q "/run/claude-cage/mounts/projects"; then
+    echo "FAIL: Did not find /run/claude-cage/mounts/projects for project mounts"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Project mounts use /run/claude-cage/mounts/projects/"
 
 echo "Test 8: Should show mkdir commands"
 if ! echo "$output" | grep -q "\[dry-run\] mkdir"; then
@@ -379,6 +394,21 @@ if ! echo "$macos_output" | grep -qE "pass out|block out|pfctl"; then
 fi
 echo "  PASS: macOS simulation uses pf syntax"
 
+echo "Test 20b: macOS pf should use mktemp (not hardcoded /tmp paths)"
+if echo "$macos_output" | grep -q '/tmp/.*\.pf'; then
+    echo "FAIL: macOS pf should not use hardcoded /tmp paths (security issue)"
+    echo "Output was:"
+    echo "$macos_output"
+    exit 1
+fi
+if ! echo "$macos_output" | grep -q 'mktemp'; then
+    echo "FAIL: macOS pf should use mktemp for secure temp file creation"
+    echo "Output was:"
+    echo "$macos_output"
+    exit 1
+fi
+echo "  PASS: macOS pf uses mktemp for secure temp files"
+
 echo ""
 echo "=== Testing instance tracking ==="
 
@@ -442,7 +472,7 @@ cd "$TEST_TMP/project"
 echo ""
 echo "=== Testing Docker isolated mode ==="
 
-# Create a test config for Docker isolated mode
+# Create a test config for Docker isolated mode (reused for multiple tests)
 mkdir -p "$TEST_TMP/docker-isolated-test/myproject"
 cat > "$TEST_TMP/docker-isolated-test/claude-cage.config" << 'EOF'
 claude_cage {
@@ -455,8 +485,10 @@ claude_cage {
 EOF
 cd "$TEST_TMP/docker-isolated-test/myproject"
 
-echo "Test 25: Docker isolated mode should show project-specific container name"
+# Run once and check multiple assertions
 isolated_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+
+echo "Test 25: Docker isolated mode should show project-specific container name"
 if ! echo "$isolated_output" | grep -q "claude-cage-.*-"; then
     echo "FAIL: Isolated mode should show project-specific container name with hash"
     echo "Output was:"
@@ -464,6 +496,16 @@ if ! echo "$isolated_output" | grep -q "claude-cage-.*-"; then
     exit 1
 fi
 echo "  PASS: Docker isolated mode shows project-specific container name"
+
+# Test 40 moved here - uses same isolated mode config
+echo "Test 25b: Docker isolated mode should use .caged for persistent home"
+if ! echo "$isolated_output" | grep -q "Persistent home:.*\.caged.*home"; then
+    echo "FAIL: Isolated mode should use .caged directory for persistent home"
+    echo "Output was:"
+    echo "$isolated_output"
+    exit 1
+fi
+echo "  PASS: Isolated mode uses .caged for persistent home"
 
 cd "$TEST_TMP/project"
 
@@ -509,17 +551,17 @@ cd "$TEST_TMP/project"
 echo ""
 echo "=== Testing homeConfigSync ==="
 
-echo "Test 28: Should show rsync command for homeConfigSync entries"
-if ! echo "$output" | grep -q "rsync.*\.gitconfig\|rsync.*claude-settings.json"; then
-    echo "FAIL: Did not find homeConfigSync rsync commands"
+echo "Test 28: Should show copy command for homeConfigSync entries"
+if ! echo "$output" | grep -qE "(rsync|cp).*\.gitconfig|(rsync|cp).*claude-settings.json"; then
+    echo "FAIL: Did not find homeConfigSync copy commands"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Found homeConfigSync rsync commands"
+echo "  PASS: Found homeConfigSync copy commands"
 
 echo "Test 29: Should show recursive rsync for directories"
-if ! echo "$output" | grep -q "rsync -r.*\.claude/"; then
+if ! echo "$output" | grep -qE "rsync -r[lL].*\.claude/"; then
     echo "FAIL: Did not find recursive rsync for .claude directory"
     echo "Output was:"
     echo "$output"
@@ -527,14 +569,187 @@ if ! echo "$output" | grep -q "rsync -r.*\.claude/"; then
 fi
 echo "  PASS: Found recursive rsync for directories"
 
-echo "Test 30: Should show rsync for override entries"
-if ! echo "$output" | grep -q "rsync.*/claude-settings.json"; then
+echo "Test 30: Should show copy for override entries"
+if ! echo "$output" | grep -qE "(rsync|cp).*/claude-settings.json"; then
     echo "FAIL: Override entry should appear in output"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
 echo "  PASS: Override entries synced"
+
+echo ""
+echo "=== Testing homeConfigSync modes ==="
+
+# Create a test config with new homeConfigSync modes
+mkdir -p "$TEST_TMP/homesync-modes-test/project"
+cat > "$TEST_TMP/homesync-modes-test/claude-cage.config" << 'EOF'
+claude_cage {
+    user = "testuser",
+    homeConfigSync = {
+        -- Simple string: init mode (backward compatible)
+        ".gitconfig",
+
+        -- New table syntax with modes
+        { path = ".claude", mode = "sync", exclude = { path = { "settings.json" }, belowPath = { "logs" } } },
+        { path = ".claude.json", mode = "sync" },
+        { path = ".npmrc", mode = "copy" },
+        { path = ".some-dir", mode = "link" },
+        { path = ".profile", mode = "init" },
+    }
+}
+EOF
+cd "$TEST_TMP/homesync-modes-test/project"
+
+echo "Test 31: Should parse new homeConfigSync table syntax"
+modes_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+
+if ! echo "$modes_output" | grep -q "mode=init"; then
+    echo "FAIL: Did not find mode=init in output"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found mode=init"
+
+echo "Test 32: Should show mode=copy for copy entries"
+if ! echo "$modes_output" | grep -q "mode=copy"; then
+    echo "FAIL: Did not find mode=copy in output"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found mode=copy"
+
+echo "Test 33: Should show mode=link for link entries"
+if ! echo "$modes_output" | grep -q "mode=link"; then
+    echo "FAIL: Did not find mode=link in output"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found mode=link"
+
+echo "Test 34: Should show mode=sync entries collected for unison"
+if ! echo "$modes_output" | grep -q "mode=sync.*unison\|Will sync.*bidirectionally"; then
+    echo "FAIL: Did not find mode=sync unison preparation"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found mode=sync entries"
+
+echo "Test 35: Should show single unison process for all sync entries"
+if ! echo "$modes_output" | grep -q "homeConfigSync unison"; then
+    echo "FAIL: Did not find homeConfigSync unison process"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found homeConfigSync unison process"
+
+echo "Test 36: Should show -path arguments in unison command"
+if ! echo "$modes_output" | grep -q '\-path "\.claude".*\-path "\.claude\.json"\|\-path'; then
+    echo "FAIL: Did not find -path arguments in unison command"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found -path arguments in unison command"
+
+echo "Test 36b: Should show bindfs setup for homeConfigSync sync mode"
+if ! echo "$modes_output" | grep -q 'bindfs.*--create-for-user.*--create-for-group'; then
+    echo "FAIL: Did not find bindfs setup for homeConfigSync sync mode"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found bindfs setup for homeConfigSync sync mode"
+
+echo "Test 36c: Bindfs mounts should use /run/ (not /tmp or user home)"
+if echo "$modes_output" | grep -q '/tmp/.*home-sync\|/tmp/.*bindfs'; then
+    echo "FAIL: Found /tmp path for homeConfigSync bindfs mounts (security issue)"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+if ! echo "$modes_output" | grep -q '/run/claude-cage/'; then
+    echo "FAIL: Did not find /run/claude-cage/ directory for homeConfigSync bindfs mounts"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Bindfs mounts use /run/claude-cage/"
+
+echo "Test 36d: Should mount individual paths (not entire home)"
+if echo "$modes_output" | grep -q 'bindfs.*\$original_home \|bindfs.*/home/[^/]*"* /run'; then
+    echo "FAIL: Found bindfs mounting entire home directory (security issue)"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+if ! echo "$modes_output" | grep -q 'Creating per-path bindfs mounts'; then
+    echo "FAIL: Did not find per-path bindfs mount message"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Mounts individual paths, not entire home"
+
+echo "Test 37: mode=link should warn about files"
+# Create config with link mode on a file (which should warn)
+# The warning happens when the source is a file, which we can't easily test in dry-run
+# since dry-run doesn't check actual filesystem. Test that link mode works at least.
+if ! echo "$modes_output" | grep -q "ln -s.*\.some-dir"; then
+    echo "FAIL: Did not find ln -s command for link mode"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Found symlink command for link mode"
+
+cd "$TEST_TMP/project"
+
+echo ""
+echo "=== Testing Docker persistent home ==="
+
+# Create a test config for Docker mode with managed container
+mkdir -p "$TEST_TMP/docker-persistent-test/myproject"
+cat > "$TEST_TMP/docker-persistent-test/claude-cage.config" << 'EOF'
+claude_cage {
+    isolationMode = "docker",
+    directMount = "workspace",
+    docker = {
+        image = "node:lts-slim",
+    },
+    homeConfigSync = {
+        ".gitconfig",
+        { path = ".claude", mode = "sync" },
+    }
+}
+EOF
+cd "$TEST_TMP/docker-persistent-test/myproject"
+
+echo "Test 38: Docker managed container should show persistent home"
+docker_persist_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$docker_persist_output" | grep -q "Persistent home:"; then
+    echo "FAIL: Did not find persistent home message"
+    echo "Output was:"
+    echo "$docker_persist_output"
+    exit 1
+fi
+echo "  PASS: Found persistent home message"
+
+echo "Test 39: Docker managed container should mount home directory"
+if ! echo "$docker_persist_output" | grep -q '\-v ".*home.*:/home/claude"'; then
+    echo "FAIL: Did not find home volume mount in docker run command"
+    echo "Output was:"
+    echo "$docker_persist_output"
+    exit 1
+fi
+echo "  PASS: Found home volume mount"
+
+# Test 40 was moved to Test 25b (uses same isolated mode config)
 
 echo ""
 echo "=== All dry-run tests passed! ==="

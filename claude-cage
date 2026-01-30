@@ -199,15 +199,19 @@ create_firewall_chain() {
         run iptables -I OUTPUT -m owner --uid-owner "$user_uid" -j "$chain_name"
     elif [ "$OS_TYPE" = "macos" ]; then
         # Create anchor in pf
-        # macOS pf uses anchors - we'll load rules from a temp file
-        local pf_rules_file="/tmp/${chain_name}.pf"
-
+        # macOS pf uses anchors - we'll load rules from a secure temp file
         if [ "$dry_run" = true ]; then
-            echo "[dry-run] echo '# Claude-cage rules for UID $user_uid' > $pf_rules_file"
-            echo "[dry-run] echo 'anchor \"$chain_name\"' >> $pf_rules_file"
-            echo "[dry-run] pfctl -a $chain_name -f $pf_rules_file"
+            echo "[dry-run] pf_rules_file=\$(mktemp)"
+            echo "[dry-run] echo '# Claude-cage rules for UID $user_uid' > \$pf_rules_file"
+            echo "[dry-run] echo 'anchor \"$chain_name\"' >> \$pf_rules_file"
+            echo "[dry-run] pfctl -a $chain_name -f \$pf_rules_file"
+            # Set a dummy path for dry-run mode (used by other pf functions)
+            pf_rules_file="/tmp/dry-run-pf-rules"
             return 0
         fi
+
+        # Use mktemp for secure temporary file (avoid TOCTOU attacks)
+        pf_rules_file=$(mktemp)
 
         # Create the anchor definition
         echo "# Claude-cage rules for UID $user_uid" > "$pf_rules_file"
@@ -256,7 +260,7 @@ add_firewall_rule() {
         fi
     elif [ "$OS_TYPE" = "macos" ]; then
         # macOS pfctl - append rules to the anchor's rule file
-        local pf_rules_file="/tmp/${chain_name}.pf"
+        # pf_rules_file is set by create_firewall_chain
         local pf_action
 
         if [ "$action" = "ACCEPT" ]; then
@@ -267,15 +271,15 @@ add_firewall_rule() {
 
         if [ "$dry_run" = true ]; then
             if [ -z "$ports" ]; then
-                echo "[dry-run] echo '$pf_action out to $ip_or_network' >> $pf_rules_file"
+                echo "[dry-run] echo '$pf_action out to $ip_or_network' >> \$pf_rules_file"
             else
                 IFS=',' read -ra port_array <<< "$ports"
                 for port in "${port_array[@]}"; do
-                    echo "[dry-run] echo '$pf_action out proto tcp to $ip_or_network port $port' >> $pf_rules_file"
-                    echo "[dry-run] echo '$pf_action out proto udp to $ip_or_network port $port' >> $pf_rules_file"
+                    echo "[dry-run] echo '$pf_action out proto tcp to $ip_or_network port $port' >> \$pf_rules_file"
+                    echo "[dry-run] echo '$pf_action out proto udp to $ip_or_network port $port' >> \$pf_rules_file"
                 done
             fi
-            echo "[dry-run] pfctl -a $chain_name -f $pf_rules_file"
+            echo "[dry-run] pfctl -a $chain_name -f \$pf_rules_file"
             return 0
         fi
 
@@ -312,9 +316,10 @@ delete_firewall_chain() {
         # Flush rules from anchor
         run_quiet pfctl -a "$chain_name" -F all
 
-        # Remove the anchor (by clearing its rules, pf will clean it up)
-        local pf_rules_file="/tmp/${chain_name}.pf"
-        run_quiet rm -f "$pf_rules_file"
+        # Remove the temp file (pf_rules_file set by create_firewall_chain)
+        if [ -n "$pf_rules_file" ] && [ -f "$pf_rules_file" ]; then
+            run_quiet rm -f "$pf_rules_file"
+        fi
     fi
 }
 
@@ -352,15 +357,14 @@ add_catchall_firewall_rule() {
     if [ "$OS_TYPE" = "linux" ]; then
         run iptables -A "$chain_name" -j "$action"
     elif [ "$OS_TYPE" = "macos" ]; then
-        local pf_rules_file="/tmp/${chain_name}.pf"
-
+        # pf_rules_file is set by create_firewall_chain
         if [ "$dry_run" = true ]; then
             if [ "$action" = "ACCEPT" ]; then
-                echo "[dry-run] echo 'pass out' >> $pf_rules_file"
+                echo "[dry-run] echo 'pass out' >> \$pf_rules_file"
             else
-                echo "[dry-run] echo 'block out' >> $pf_rules_file"
+                echo "[dry-run] echo 'block out' >> \$pf_rules_file"
             fi
-            echo "[dry-run] pfctl -a $chain_name -f $pf_rules_file"
+            echo "[dry-run] pfctl -a $chain_name -f \$pf_rules_file"
             return 0
         fi
 
@@ -407,6 +411,45 @@ docker_container_name_shared() {
     local prefix="$1"
     local uid="$2"
     echo "${prefix}-${uid}"
+}
+
+# Compute container name based on mode (existing, isolated, or shared)
+# Consolidates the container name logic used in multiple places
+docker_compute_container_name() {
+    local existing_container="$1"
+    local isolated="$2"
+    local name_prefix="$3"
+    local project="$4"
+    local source="$5"
+    local direct_mount="$6"
+
+    if [ -n "$existing_container" ]; then
+        echo "$existing_container"
+    elif [ "$isolated" = "true" ]; then
+        if [ "$direct_mount" = "workspace" ]; then
+            local workspace_name=$(basename "$source")
+            docker_container_name_isolated "$name_prefix" "$workspace_name" "$source"
+        else
+            docker_container_name_isolated "$name_prefix" "$project" "$source"
+        fi
+    else
+        docker_container_name_shared "$name_prefix" "$(id -u)"
+    fi
+}
+
+# Compute persistent home path based on isolation mode
+# Consolidates the persistent home path logic used in multiple places
+docker_persistent_home_path() {
+    local isolated="$1"
+    local config_root="$2"
+    local project="$3"
+    local container_name="$4"
+
+    if [ "$isolated" = "true" ]; then
+        echo "$config_root/.caged/$project/home"
+    else
+        echo "$HOME/.local/share/claude-cage/docker/$container_name/docker-home"
+    fi
 }
 
 # Check if container exists (running or stopped)
@@ -495,9 +538,16 @@ docker_start_container() {
     local extra_args="$6"
     local host_uid="$7"
     local host_gid="$8"
+    local home_mount="$9"    # Optional: host path for persistent home
+
+    # Build home volume arg if provided
+    local home_vol_arg=""
+    if [ -n "$home_mount" ]; then
+        home_vol_arg="-v \"$home_mount:/home/claude\""
+    fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker run -d --name $container_name --hostname $container_name --network=$network_mode -u ${host_uid}:${host_gid} -e HOME=/home/claude -v \"$mount_source:$mount_dest\" -w \"$mount_dest\" --init $extra_args $image tail -f /dev/null"
+        echo "[dry-run] docker run -d --name $container_name --hostname $container_name --network=$network_mode -u ${host_uid}:${host_gid} -e HOME=/home/claude $home_vol_arg -v \"$mount_source:$mount_dest\" -w \"$mount_dest\" --init $extra_args $image tail -f /dev/null"
         return 0
     fi
 
@@ -511,6 +561,14 @@ docker_start_container() {
         "--network=$network_mode"
         "-u" "${host_uid}:${host_gid}"
         "-e" "HOME=/home/claude"
+    )
+
+    # Add home volume mount if provided
+    if [ -n "$home_mount" ]; then
+        docker_args+=("-v" "$home_mount:/home/claude")
+    fi
+
+    docker_args+=(
         "-v" "$mount_source:$mount_dest"
         "-w" "$mount_dest"
         "--init"
@@ -1052,8 +1110,6 @@ local user = config.user or "claude"
 local isolationMode = config.isolationMode or "user"  -- Options: "user" or "docker"
 local source = config.source or ""
 local sync = config.sync or ""
-local mountBase = config.mountBase  -- nil if not set, "" if explicitly empty
-local mountBaseExplicitlySet = config.mountBase ~= nil
 local mounted = config.mounted or ""
 local directMount = config.directMount or false
 local showBanner = config.showBanner
@@ -1111,13 +1167,6 @@ if sync == "" then
     end
 end
 
--- Set mountBase default (only if not explicitly set in config)
-if not mountBaseExplicitlySet then
-    mountBase = "caged"
-elseif mountBase == nil then
-    mountBase = ""
-end
-
 -- Set mounted default to project name
 if mounted == "" then
     if project ~= "" then
@@ -1130,79 +1179,73 @@ end
 -- Network configuration defaults
 local networkMode = config.networkMode or "disabled"
 
+-- ============================================================================
+-- Reusable function to build unison pattern arguments
+-- Handles path, name, regex, belowPath arrays for both -ignore and -nocreationpartial
+-- ============================================================================
+local function build_pattern_args(obj, arg_type, source_path, path_prefix)
+    if not obj then return "" end
+    local args = ""
+    path_prefix = path_prefix or ""
+
+    -- For nocreationpartial, we need " -> source" suffix
+    local suffix = ""
+    if arg_type == "nocreationpartial" and source_path then
+        suffix = " -> " .. source_path
+    end
+
+    -- name: Match files/folders by name anywhere in tree
+    if obj.name then
+        for _, item in ipairs(obj.name) do
+            args = args .. '-' .. arg_type .. ' "Name ' .. item .. suffix .. '" '
+        end
+    end
+
+    -- path: Match exact paths relative to replica root
+    if obj.path then
+        for _, item in ipairs(obj.path) do
+            local full_path = path_prefix ~= "" and (path_prefix .. "/" .. item) or item
+            args = args .. '-' .. arg_type .. ' "Path ' .. full_path .. suffix .. '" '
+        end
+    end
+
+    -- regex: Match paths using regex patterns
+    if obj.regex then
+        for _, item in ipairs(obj.regex) do
+            args = args .. '-' .. arg_type .. ' "Regex ' .. item .. suffix .. '" '
+        end
+    end
+
+    -- belowPath: Match path and everything below it
+    if obj.belowPath then
+        for _, item in ipairs(obj.belowPath) do
+            local full_path = path_prefix ~= "" and (path_prefix .. "/" .. item) or item
+            args = args .. '-' .. arg_type .. ' "BelowPath ' .. full_path .. suffix .. '" '
+        end
+    end
+
+    return args
+end
+
 -- Build exclude arguments for unison
-local exclude_args = ""
 local exclude = config.exclude or {}
+local exclude_args = ""
 
 -- In sync mode, always exclude .caged to prevent recursion issues
 if not directMount or directMount == false then
-    exclude_args = exclude_args .. '-ignore "Name .caged" '
+    exclude_args = '-ignore "Name .caged" '
 end
 
--- exclude.name: Ignore files/folders by name anywhere in the tree
-if exclude.name then
-    for _, item in ipairs(exclude.name) do
-        exclude_args = exclude_args .. '-ignore "Name ' .. item .. '" '
-    end
-end
-
--- exclude.path: Ignore exact paths relative to replica root
-if exclude.path then
-    for _, item in ipairs(exclude.path) do
-        exclude_args = exclude_args .. '-ignore "Path ' .. item .. '" '
-    end
-end
-
--- exclude.regex: Ignore paths matching regex patterns
-if exclude.regex then
-    for _, item in ipairs(exclude.regex) do
-        exclude_args = exclude_args .. '-ignore "Regex ' .. item .. '" '
-    end
-end
-
--- exclude.belowPath: Ignore everything below a certain path
-if exclude.belowPath then
-    for _, item in ipairs(exclude.belowPath) do
-        exclude_args = exclude_args .. '-ignore "BelowPath ' .. item .. '" '
-    end
-end
+-- Add exclude patterns using reusable function
+exclude_args = exclude_args .. build_pattern_args(exclude, "ignore", nil, nil)
 
 -- Build cageLocal arguments for unison (prevent new files in cage from being created on source)
 -- Uses -nocreationpartial - only blocks creation, existing files still sync normally
--- Syntax: -nocreationpartial "Name pattern -> /path/to/source"
-local cageLocal_args = ""
 local cageLocal = config.cageLocal or {}
-
--- cageLocal.name: Block creation of new files by name on source (existing files sync normally)
-if cageLocal.name then
-    for _, item in ipairs(cageLocal.name) do
-        cageLocal_args = cageLocal_args .. '-nocreationpartial "Name ' .. item .. ' -> ' .. source .. '" '
-    end
-end
-
--- cageLocal.path: Block creation of new files at exact paths on source
-if cageLocal.path then
-    for _, item in ipairs(cageLocal.path) do
-        cageLocal_args = cageLocal_args .. '-nocreationpartial "Path ' .. item .. ' -> ' .. source .. '" '
-    end
-end
-
--- cageLocal.regex: Block creation of new files matching regex on source
-if cageLocal.regex then
-    for _, item in ipairs(cageLocal.regex) do
-        cageLocal_args = cageLocal_args .. '-nocreationpartial "Regex ' .. item .. ' -> ' .. source .. '" '
-    end
-end
-
--- cageLocal.belowPath: Block creation of new files below a path on source
-if cageLocal.belowPath then
-    for _, item in ipairs(cageLocal.belowPath) do
-        cageLocal_args = cageLocal_args .. '-nocreationpartial "BelowPath ' .. item .. ' -> ' .. source .. '" '
-    end
-end
+local cageLocal_args = build_pattern_args(cageLocal, "nocreationpartial", source, nil)
 
 -- Output basic config (use | delimiter to preserve empty fields)
-print(user .. "|" .. source .. "|" .. sync .. "|" .. mountBase .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner) .. "|" .. cageLocal_args)
+print(user .. "|" .. source .. "|" .. sync .. "|" .. mounted .. "|" .. exclude_args .. "|" .. tostring(showBanner) .. "|" .. cageLocal_args)
 
 -- Output exclude patterns for validation (pipe-separated)
 local function array_to_string(arr)
@@ -1290,16 +1333,36 @@ for _, src in ipairs(sources) do
 end
 
 -- Output homeConfigSync entries
--- Format: source|dest (dest may be same as source)
+-- Format: path|dest|mode|exclude_args (exclude_args are unison -ignore arguments)
 local homeConfigSync = config.homeConfigSync or {}
 print(#homeConfigSync)
 for _, entry in ipairs(homeConfigSync) do
+    local path, dest, mode, exclude_args = "", "", "init", ""
+
     if type(entry) == "string" then
-        -- Simple string: source = dest
-        print(entry .. "|" .. entry)
-    elseif type(entry) == "table" and #entry == 2 then
-        -- Array with source, dest
-        print(entry[1] .. "|" .. entry[2])
+        -- Simple string: path = dest, mode = init
+        path = entry
+        dest = entry
+    elseif type(entry) == "table" then
+        if entry.path then
+            -- New table syntax: { path = "...", destination = "...", mode = "...", exclude = {...} }
+            path = entry.path
+            dest = entry.destination or entry.path
+            mode = entry.mode or "init"
+            -- Build unison -ignore args for excludes, scoped to this entry's path
+            -- Only path and belowPath are supported for homeConfigSync excludes
+            if entry.exclude then
+                exclude_args = build_pattern_args(entry.exclude, "ignore", nil, path)
+            end
+        elseif #entry == 2 then
+            -- Legacy array syntax: { source, dest }
+            path = entry[1]
+            dest = entry[2]
+        end
+    end
+
+    if path ~= "" then
+        print(path .. "|" .. dest .. "|" .. mode .. "|" .. exclude_args)
     end
 end
 
@@ -1338,7 +1401,7 @@ fi
 
 # Parse the lua output (only if lua succeeded)
 {
-    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_mountBase cfg_mounted cfg_exclude cfg_showBanner cfg_cageLocal
+    IFS='|' read -r cfg_user cfg_source cfg_sync cfg_mounted cfg_exclude cfg_showBanner cfg_cageLocal
     read -r cfg_exclude_path
     read -r cfg_exclude_name
     read -r cfg_exclude_regex
@@ -1564,22 +1627,9 @@ if [ "$delete_docker_container" = true ]; then
         exit 1
     fi
 
-    # Compute container name
-    if [ -n "$cfg_docker_container" ]; then
-        # User-specified existing container
-        container_name="$cfg_docker_container"
-    elif [ "$cfg_docker_isolated" = "true" ]; then
-        # Isolated mode: per-project container
-        if [ "$cfg_directMount" = "workspace" ]; then
-            workspace_name=$(basename "$cfg_source")
-            container_name=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
-        else
-            container_name=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
-        fi
-    else
-        # Shared mode (default): single container for all projects
-        container_name=$(docker_container_name_shared "$cfg_docker_namePrefix" "$(id -u)")
-    fi
+    # Compute container name using helper
+    container_name=$(docker_compute_container_name "$cfg_docker_container" "$cfg_docker_isolated" \
+        "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source" "$cfg_directMount")
 
     echo "Container: $container_name"
 
@@ -1621,11 +1671,8 @@ if [ "$cleanup_mode" = true ]; then
     fi
 
     # Construct mount point using same logic as main script
-    if [ -n "$cfg_mountBase" ]; then
-        mount_point="$user_home/${cfg_mountBase}/${cfg_mounted}"
-    else
-        mount_point="$user_home/${cfg_mounted}"
-    fi
+    # Mount points are in /run/claude-cage/mounts/projects/ for security
+    mount_point="/run/claude-cage/mounts/projects/${cfg_mounted}"
 
     # Find and unmount any bindfs mounts for this user
     if mountpoint -q "$mount_point" 2>/dev/null || [ "$dry_run" = true ]; then
@@ -1771,11 +1818,7 @@ else
     fi
 fi
 if [ "$cfg_isolationMode" != "docker" ]; then
-    if [ -n "$cfg_mountBase" ]; then
-        echo "  Mount point:   /home/$cfg_user/$cfg_mountBase/$cfg_mounted"
-    else
-        echo "  Mount point:   /home/$cfg_user/$cfg_mounted"
-    fi
+    echo "  Mount point:   /run/claude-cage/mounts/projects/$cfg_mounted"
 fi
 echo "  Network mode:  $cfg_networkMode"
 
@@ -2087,9 +2130,11 @@ elif ! check_claude_installed "$cfg_user" "$user_home"; then
     fi
 fi
 
-# Construct mount point: /home/<user>/<mountBase>/<mounted>/ or /home/<user>/<mounted>/
+# Construct mount point in /run/claude-cage/mounts/projects/ for security
+# Using /run ensures mount points are not accessible to cage user via path traversal
 # In workspace mode, use source directory basename or "workspace" if source is "."
 # In project mode, use the project/subdirectory name
+mount_base="/run/claude-cage/mounts/projects"
 if [ "$cfg_directMount" = "workspace" ]; then
     # Workspace mode: mounted name based on source directory
     if [ "$cfg_source" = "." ]; then
@@ -2097,25 +2142,13 @@ if [ "$cfg_directMount" = "workspace" ]; then
     else
         workspace_name=$(basename "$cfg_source")
     fi
-    if [ -n "$cfg_mountBase" ]; then
-        mount_point="$user_home/${cfg_mountBase}/${workspace_name}"
-    else
-        mount_point="$user_home/${workspace_name}"
-    fi
+    mount_point="${mount_base}/${workspace_name}"
 elif [ "$cfg_directMount" = "project" ]; then
     # Project mode: mounted name is the project subdirectory
-    if [ -n "$cfg_mountBase" ]; then
-        mount_point="$user_home/${cfg_mountBase}/${start_subdir}"
-    else
-        mount_point="$user_home/${start_subdir}"
-    fi
+    mount_point="${mount_base}/${start_subdir}"
 else
     # Sync mode: use configured mounted name
-    if [ -n "$cfg_mountBase" ]; then
-        mount_point="$user_home/${cfg_mountBase}/${cfg_mounted}"
-    else
-        mount_point="$user_home/${cfg_mounted}"
-    fi
+    mount_point="${mount_base}/${cfg_mounted}"
 fi
 
 # For workspace direct mount mode, track instances by mount point instead of project
@@ -2142,23 +2175,14 @@ fi
 # Pre-compute Docker container name and mount destination
 # (needs to be available for cleanup and launch)
 if [ "$cfg_isolationMode" = "docker" ]; then
-    # Determine container name
+    # Determine container name using helper
+    docker_container_name_value=$(docker_compute_container_name "$cfg_docker_container" "$cfg_docker_isolated" \
+        "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source" "$cfg_directMount")
+
+    # Track whether we're using an existing container (affects homeConfigSync behavior)
     if [ -n "$cfg_docker_container" ]; then
-        # User-specified existing container
-        docker_container_name_value="$cfg_docker_container"
         docker_using_existing_container=true
-    elif [ "$cfg_docker_isolated" = "true" ]; then
-        # Isolated mode: per-project container
-        if [ "$cfg_directMount" = "workspace" ]; then
-            workspace_name=$(basename "$cfg_source")
-            docker_container_name_value=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$workspace_name" "$cfg_source")
-        else
-            docker_container_name_value=$(docker_container_name_isolated "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source")
-        fi
-        docker_using_existing_container=false
     else
-        # Shared mode (default): single container for all projects
-        docker_container_name_value=$(docker_container_name_shared "$cfg_docker_namePrefix" "$(id -u)")
         docker_using_existing_container=false
     fi
 
@@ -2656,6 +2680,12 @@ if [ "$skip_setup" = false ]; then
         echo "Docker mode: settin' up container..."
         echo "Container name: $docker_container_name_value"
 
+        # Display persistent home path (for managed containers)
+        if [ "$docker_using_existing_container" != true ]; then
+            persistent_home=$(docker_persistent_home_path "$cfg_docker_isolated" "$cfg_config_root" "$cfg_project" "$docker_container_name_value")
+            echo "Persistent home: $persistent_home"
+        fi
+
         if [ "$docker_using_existing_container" = true ]; then
             # Using user-specified existing container
             echo "Using existing container (user-managed)..."
@@ -2771,10 +2801,14 @@ if [ "$skip_setup" = false ]; then
             else
                 # Start new container
                 echo "Creatin' new container..."
+
+                # Create persistent home directory if it doesn't exist
+                run mkdir -p "$persistent_home"
+
                 docker_start_container "$docker_container_name_value" "$docker_image_to_use" \
                     "$docker_mount_source" "$docker_mount_dest" \
                     "$docker_network" "$cfg_docker_extraArgs" \
-                    "$host_uid" "$host_gid"
+                    "$host_uid" "$host_gid" "$persistent_home"
 
                 if [ "$dry_run" != true ] && ! docker_container_running "$docker_container_name_value"; then
                     echo "Failed to start Docker container."
@@ -2844,24 +2878,57 @@ PROFILE'
             fi
 
             # Copy homeConfigSync files into container
+            # Format: path|dest|mode|exclude_args
+            # For Docker: init/copy modes supported, sync/link not applicable
             original_home="/home/${original_user}"
             for entry in "${cfg_homeConfigSync[@]}"; do
-                IFS='|' read -r sync_source sync_dest <<< "$entry"
+                IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
                 source_path="${original_home}/${sync_source}"
                 # In container, home is /home/claude (matching the user ID mapping)
                 container_dest="/home/claude/${sync_dest}"
 
-                if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
-                    # Create parent directory in container first
-                    container_dir=$(dirname "$container_dest")
-                    docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
-
-                    # Copy file/directory
-                    docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
-                    if [ "$dry_run" != true ]; then
-                        echo "Synced $sync_source -> $sync_dest (in container)"
-                    fi
+                # Display mode info in dry-run
+                if [ "$dry_run" = true ]; then
+                    echo "homeConfigSync: $sync_source -> $sync_dest (mode=$sync_mode)"
                 fi
+
+                case "$sync_mode" in
+                    init)
+                        # Check if destination exists in container
+                        if [ "$dry_run" != true ]; then
+                            if docker exec "$docker_container_name_value" test -e "$container_dest" 2>/dev/null; then
+                                echo "Skipping $sync_source (already exists, mode=init)"
+                                continue
+                            fi
+                        fi
+                        ;&  # Fall through to copy
+                    copy)
+                        if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+                            # Create parent directory in container first
+                            container_dir=$(dirname "$container_dest")
+                            docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
+
+                            # Copy file/directory
+                            docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
+                            if [ "$dry_run" != true ]; then
+                                echo "Synced $sync_source -> $sync_dest (mode=$sync_mode, in container)"
+                            fi
+                        fi
+                        ;;
+                    sync)
+                        # Sync mode not yet supported for Docker
+                        echo "Warning: mode=sync not supported for Docker containers, using copy instead"
+                        if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+                            container_dir=$(dirname "$container_dest")
+                            docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
+                            docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
+                        fi
+                        ;;
+                    link)
+                        # Link mode not applicable for Docker (can't symlink across container boundary)
+                        echo "Warning: mode=link not supported for Docker containers, skipping $sync_source"
+                        ;;
+                esac
             done
         fi
 
@@ -3047,46 +3114,157 @@ fi
 
 # Sync home config files from original user's home to cage user's home
 # Configured via homeConfigSync in config file
-# Entries are processed in order - useful for copying a directory then overwriting specific files
+# Format: path|dest|mode|exclude_args
+# Modes: init (copy if missing), copy (overwrite), sync (bidirectional unison), link (symlink)
 # Skip for Docker mode - handled in Docker setup branch
 if [ "$cfg_isolationMode" != "docker" ]; then
     original_home="/home/${original_user}"
+
+    # Collect sync mode entries for combined unison process
+    declare -a sync_mode_entries=()
+    declare -a sync_mode_excludes=()
+
     for entry in "${cfg_homeConfigSync[@]}"; do
-        IFS='|' read -r sync_source sync_dest <<< "$entry"
+        IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
         source_path="${original_home}/${sync_source}"
         dest_path="${user_home}/${sync_dest}"
         dest_dir=$(dirname "$dest_path")
 
-        if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
-        # Create destination parent directory if needed
-        if [ ! -d "$dest_dir" ]; then
-            run mkdir -p "$dest_dir"
-            run chown "$cfg_user:$cfg_user" "$dest_dir"
+        # Display mode info in dry-run
+        if [ "$dry_run" = true ]; then
+            echo "homeConfigSync: $sync_source -> $sync_dest (mode=$sync_mode)"
         fi
 
-        # Sync file or directory
+        case "$sync_mode" in
+            init)
+                # Copy only if destination doesn't exist
+                if [ -e "$dest_path" ] && [ "$dry_run" != true ]; then
+                    echo "Skipping $sync_source (already exists, mode=init)"
+                    continue
+                fi
+                # Fall through to copy logic
+                ;&
+            copy)
+                # Copy on startup, overwrites existing
+                if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+                    # Create destination parent directory if needed
+                    if [ ! -d "$dest_dir" ]; then
+                        run mkdir -p "$dest_dir"
+                        run chown "$cfg_user:$cfg_user" "$dest_dir"
+                    fi
+
+                    # Sync file or directory
+                    if [ "$dry_run" = true ]; then
+                        if [ -d "$source_path" ]; then
+                            echo "[dry-run] rsync -rL $source_path/ $dest_path/"
+                            echo "[dry-run] chown -R $cfg_user:$cfg_user $dest_path"
+                        else
+                            echo "[dry-run] rsync $source_path $dest_path"
+                            echo "[dry-run] chown $cfg_user:$cfg_user $dest_path"
+                        fi
+                    else
+                        if [ -d "$source_path" ]; then
+                            # Directory: recursive sync with trailing slashes, follow symlinks
+                            rsync -rL "$source_path/" "$dest_path/"
+                            chown -R "$cfg_user:$cfg_user" "$dest_path"
+                            echo "Synced $sync_source/ -> $sync_dest/ (mode=$sync_mode)"
+                        elif [ -f "$source_path" ]; then
+                            rsync "$source_path" "$dest_path"
+                            chown "$cfg_user:$cfg_user" "$dest_path"
+                            echo "Synced $sync_source -> $sync_dest (mode=$sync_mode)"
+                        fi
+                    fi
+                fi
+                ;;
+            sync)
+                # Bidirectional sync via unison - collect for combined process
+                sync_mode_entries+=("$sync_source")
+                if [ -n "$sync_excludes" ]; then
+                    sync_mode_excludes+=("$sync_excludes")
+                fi
+                echo "Will sync $sync_source bidirectionally (mode=sync, unison)"
+                ;;
+            link)
+                # Symlink from cage home to host path
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] ln -s $source_path $dest_path"
+                else
+                    # Create parent directory if needed
+                    if [ ! -d "$dest_dir" ]; then
+                        mkdir -p "$dest_dir"
+                        chown "$cfg_user:$cfg_user" "$dest_dir"
+                    fi
+                    # Remove existing file/link if present
+                    if [ -e "$dest_path" ] || [ -L "$dest_path" ]; then
+                        rm -rf "$dest_path"
+                    fi
+                    ln -s "$source_path" "$dest_path"
+                    chown -h "$cfg_user:$cfg_user" "$dest_path"
+                    echo "Linked $sync_dest -> $source_path (mode=link)"
+                    # Warn if source is a file (atomic writes will break symlink)
+                    if [ -f "$source_path" ]; then
+                        echo "  Warning: $sync_source is a file. Atomic writes may break the symlink."
+                    fi
+                fi
+                ;;
+        esac
+    done
+
+    # Start combined unison process for all sync mode entries
+    if [ ${#sync_mode_entries[@]} -gt 0 ]; then
+        echo "Starting homeConfigSync unison for bidirectional sync..."
+
+        # Build path arguments
+        path_args=""
+        for entry_path in "${sync_mode_entries[@]}"; do
+            path_args="$path_args -path \"$entry_path\""
+        done
+
+        # Build exclude arguments
+        exclude_args=""
+        for excl in "${sync_mode_excludes[@]}"; do
+            exclude_args="$exclude_args $excl"
+        done
+
+        # Create per-path bindfs mounts for sync mode
+        # This mounts ONLY the specific paths, not the entire home directory (security)
+        echo "Creating per-path bindfs mounts for homeConfigSync sync mode..."
+
+        # Use /run for secure mount points (not accessible to cage user)
+        homesync_mount_base="/run/claude-cage/mounts/homesync-$$"
+
+        # Mount each individual path with bindfs (not entire home)
+        for entry_path in "${sync_mode_entries[@]}"; do
+            src_path="${original_home}/${entry_path}"
+            dest_path="${user_home}/${entry_path}"
+            orig_mount="${homesync_mount_base}/original/${entry_path}"
+            cage_mount="${homesync_mount_base}/cage/${entry_path}"
+
+            run mkdir -p "$orig_mount"
+            run mkdir -p "$cage_mount"
+
+            # Mount individual path from original home with permission mapping
+            run bindfs --map=$(id -u):${cage_uid}:@$(id -g):@${cage_gid} \
+                --create-for-user=$(id -u) --create-for-group=$(id -g) \
+                "$src_path" "$orig_mount"
+
+            # Mount individual path from cage home with reverse permission mapping
+            run bindfs -u "$cfg_user" -g "$cfg_user" \
+                --create-for-user=$(id -u) --create-for-group=$(id -g) \
+                "$dest_path" "$cage_mount"
+        done
+
+        # Build and start unison command
+        homesync_unison_cmd="unison \"${homesync_mount_base}/original\" \"${homesync_mount_base}/cage\" -batch -repeat watch $path_args $exclude_args"
+
         if [ "$dry_run" = true ]; then
-            if [ -d "$source_path" ]; then
-                echo "[dry-run] rsync -r $source_path/ $dest_path/"
-                echo "[dry-run] chown -R $cfg_user:$cfg_user $dest_path"
-            else
-                echo "[dry-run] rsync $source_path $dest_path"
-                echo "[dry-run] chown $cfg_user:$cfg_user $dest_path"
-            fi
+            echo "[dry-run] $homesync_unison_cmd &"
         else
-            if [ -d "$source_path" ]; then
-                # Directory: recursive sync with trailing slashes
-                rsync -r "$source_path/" "$dest_path/"
-                chown -R "$cfg_user:$cfg_user" "$dest_path"
-                echo "Synced $sync_source/ -> $sync_dest/"
-            elif [ -f "$source_path" ]; then
-                rsync "$source_path" "$dest_path"
-                chown "$cfg_user:$cfg_user" "$dest_path"
-                echo "Synced $sync_source -> $sync_dest"
-            fi
+            eval "$homesync_unison_cmd" &
+            homesync_unison_pid=$!
+            echo "homeConfigSync unison started (PID: $homesync_unison_pid)"
         fi
     fi
-    done
 fi  # End of homeConfigSync for user mode
 
 if [ "$dry_run" = true ]; then

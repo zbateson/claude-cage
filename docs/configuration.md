@@ -244,28 +244,16 @@ Sync directory name (ignored in direct mount mode).
 sync = ".caged/myproject/sync"  -- Only needed if you want to override default
 ```
 
-### mountBase
-
-Base directory under user home where projects get mounted.
-
-- Default: `"caged"`
-- Set to `""` to mount directly under user home without a base directory
-- Combined with `mounted` to form full path
-
-```lua
-mountBase = "caged"  -- Results in /home/claude/caged/<mounted>/
-```
-
 ### mounted
 
-Final directory name where Claude works.
+Final directory name in the mount path.
 
 - Default: Project name
+- Mount points are in `/run/claude-cage/mounts/projects/<mounted>/`
 - This is the actual working directory where Claude starts
-- Combined with `mountBase` to form the full path
 
 ```lua
-mounted = "my-app"  -- With mountBase="caged" → /home/claude/caged/my-app/
+mounted = "my-app"  -- Results in /run/claude-cage/mounts/projects/my-app/
 ```
 
 ### showBanner
@@ -666,13 +654,20 @@ homeConfigSync = {
     ".gitconfig",                                                    -- same path
     ".claude",                                                       -- credentials and settings directory
     ".claude.json",                                                  -- onboarding state (separate file!)
-    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+    { path = ".config/claude-cage/claude-settings.json",
+      destination = ".claude/settings.json" }                        -- different destination
 }
 ```
 
 Each entry can be:
 - A string: source path (destination is the same path under cage user's home)
-- An array `{ source, dest }`: source → destination mapping
+- A table with `path` and optional `destination`, `mode`, `exclude` fields
+
+Supported modes:
+- `init` (default): Copy only if destination doesn't exist
+- `copy`: Copy on startup, overwrites existing
+- `sync`: Bidirectional sync via background unison
+- `link`: Symlink from cage home to host path
 
 Both files and directories are supported. Directories are synced recursively.
 
@@ -680,12 +675,11 @@ Both files and directories are supported. Directories are synced recursively.
 
 ```lua
 homeConfigSync = {
-    ".claude",                                                       -- copy whole directory first
-    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }  -- then overwrite settings
+    ".claude",                                                       -- copy whole directory first (mode=init)
+    { path = ".config/claude-cage/claude-settings.json",
+      destination = ".claude/settings.json", mode = "copy" }         -- overwrite settings each run
 }
 ```
-
-Files are always copied on each cage startup, overwriting any manual changes made within the cage.
 
 **⚠️ Security Warning:** Be careful not to sync files containing secrets (API keys, tokens, credentials). Review each file before adding it here. Files like `.bashrc` may source other files or set environment variables with secrets.
 
@@ -695,9 +689,10 @@ To sync your Claude Code directory and state, then apply cage-specific settings:
 
 ```lua
 homeConfigSync = {
-    ".claude",                                                       -- sync credentials and settings directory
-    ".claude.json",                                                  -- sync onboarding state (separate file!)
-    { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }  -- override settings
+    ".claude",                                                       -- credentials and settings directory
+    ".claude.json",                                                  -- onboarding state (separate file!)
+    { path = ".config/claude-cage/claude-settings.json",
+      destination = ".claude/settings.json" }                        -- override settings
 }
 ```
 
@@ -722,3 +717,61 @@ Then create `~/.config/claude-cage/claude-settings.json`:
 ```
 
 See `claude-settings.json.example` for a template.
+
+## Shell Completions
+
+Tab completion for flags and arguments. Supports bash, zsh, and fish.
+
+### Method 1: Install to Completions Directory (Recommended)
+
+This method lazy-loads completions only when you first try to tab-complete `claude-cage`:
+
+**Bash:**
+```bash
+mkdir -p ~/.local/share/bash-completion/completions
+claude-cage --completions bash > ~/.local/share/bash-completion/completions/claude-cage
+```
+
+**Zsh:**
+```bash
+mkdir -p ~/.zsh/completions
+claude-cage --completions zsh > ~/.zsh/completions/_claude-cage
+```
+
+Then add to `~/.zshrc` (if not already present):
+```zsh
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+**Fish:**
+```bash
+mkdir -p ~/.config/fish/completions
+claude-cage --completions fish > ~/.config/fish/completions/claude-cage.fish
+```
+
+### Method 2: Eval in Shell Config
+
+This method loads completions on every shell startup:
+
+**Bash** - add to `~/.bashrc`:
+```bash
+eval "$(claude-cage --completions bash)"
+```
+
+**Zsh** - add to `~/.zshrc`:
+```zsh
+eval "$(claude-cage --completions zsh)"
+```
+
+**Fish** - add to `~/.config/fish/config.fish`:
+```fish
+claude-cage --completions fish | source
+```
+
+### What Gets Completed
+
+- All flags (`--dry-run`, `--test`, `--cleanup`, etc.) with descriptions
+- `--config` completes file paths
+- `--os` completes with `linux` or `macos`
+- Project argument completes directory names

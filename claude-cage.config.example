@@ -61,12 +61,22 @@ claude_cage {
     --     -- Set to true for per-project containers (different packages/versions per project)
     --     isolated = false,
     --
+    --     -- Note: Container names include host UID (e.g., "claude-cage-1000") to avoid
+    --     -- collisions when multiple users on the same system use claude-cage.
+    --
     --     -- Use an existing container (user-managed, see docs/docker-existing-container.md)
     --     -- When set, claude-cage will exec into this container instead of creating one
     --     -- container = "my-dev-container",
     --     -- user = "node",              -- User to run as in existing container
     --     -- workdir = "/app",           -- Working directory in existing container
+    --     -- homeMount = "/workspace/.persist",  -- Custom mount location for persistent home (existing containers only)
     -- },
+    --
+    -- Persistent home directory:
+    -- - Managed containers: Home directory is mounted from ~/.local/share/claude-cage/docker/{container}/docker-home/
+    --   (or .caged/{project}/home/ for isolated mode). Credentials persist between runs.
+    -- - Existing containers: Can't mount directly as home (would overwrite content).
+    --   Uses symlinks from actual home to mounted persistent directory.
     --
     -- Containers are stopped on exit but kept for --continue/--resume.
     -- To delete a container: claude-cage --delete-docker-container
@@ -87,12 +97,12 @@ claude_cage {
     --
     -- Workspace mode: Mount point name derived from source directory basename
     --   Example: cd ~/Projects/public && sudo claude-cage my-project
-    --   Mounts ~/Projects/public/ to /home/claude/caged/public/
-    --   Claude starts in /home/claude/caged/public/my-project/ but can cd to siblings
+    --   Mounts ~/Projects/public/ to /run/claude-cage/mounts/projects/public/
+    --   Claude starts in .../public/my-project/ but can cd to siblings
     --
     -- Project mode: Mount point name is the project subdirectory name
     --   Example: cd ~/Projects/public && sudo claude-cage my-project
-    --   Mounts ~/Projects/public/my-project/ to /home/claude/caged/my-project/
+    --   Mounts ~/Projects/public/my-project/ to /run/claude-cage/mounts/projects/my-project/
     --   Claude starts at mount root, cannot access sibling projects
     --
     -- directMount = false,
@@ -115,16 +125,10 @@ claude_cage {
     -- Add ".caged" to .gitignore if running from within a git repository
     -- sync = ".caged/myproject/sync",
 
-    -- Mount configuration
-    -- mountBase: Base directory under user home (default: "caged")
-    --   Set to "" to mount directly under user home
-    --   Example: mountBase = "caged" → /home/claude/caged/<project>/
-    --   Example: mountBase = "" → /home/claude/<project>/
-    -- mountBase = "caged",
-
-    -- mounted: Final directory name (default: project name)
+    -- mounted: Final directory name in the mount path (default: project name)
+    --   Mount points are in /run/claude-cage/mounts/projects/<mounted>/
     --   This is the actual working directory where Claude starts
-    --   Example: mounted = "my-app" → /home/claude/caged/my-app/
+    --   Example: mounted = "my-app" → /run/claude-cage/mounts/projects/my-app/
     -- mounted = "",  -- Defaults to project name
 
     -- Show ASCII art banner (default: true)
@@ -173,8 +177,7 @@ claude_cage {
     -- ============================================================================
 
     -- Sync config files or directories from your home directory to the cage
-    -- user's home. Paths are relative to home directory. If only source is
-    -- specified, destination is the same path under the cage user's home.
+    -- user's persistent home. Paths are relative to home directory.
     --
     -- Entries are processed in order - useful for copying a directory first,
     -- then overwriting specific files within it.
@@ -182,12 +185,46 @@ claude_cage {
     -- WARNING: Be careful not to sync files containing secrets (API keys,
     -- tokens, credentials). Review each file before adding it here.
     --
+    -- MODES:
+    --   init (default): Copy only if destination doesn't exist. Good for bootstrap.
+    --   copy: Copy on startup, overwrites existing each run.
+    --   sync: Bidirectional sync via background unison process. Changes go both ways.
+    --   link: Symlink from cage home to host path. Best for directories (files may break).
+    --
+    -- SYNTAX:
+    --   Simple string → init mode, same source/destination path
+    --   Table with options → full control over mode, destination, excludes
+
+    -- Ready-to-use example: sync Claude credentials and binary
+    homeConfigSync = {
+        ".gitconfig",
+        { path = ".claude", mode = "sync" },
+        { path = ".claude.json", mode = "sync" },
+        ".local/bin/claude",  -- init mode: copy once (see note below)
+    },
+
+    -- More examples (commented out):
     -- homeConfigSync = {
-    --     ".gitconfig",                                                    -- same path
-    --     ".claude",                                                       -- credentials and settings directory
-    --     ".claude.json",                                                  -- onboarding state (separate file!)
-    --     { ".config/claude-cage/claude-settings.json", ".claude/settings.json" }
+    --     -- Simple strings: init mode (backward compatible)
+    --     ".gitconfig",                                                    -- same path, mode=init
+    --     ".npmrc",                                                        -- same path, mode=init
+    --
+    --     -- New table syntax with modes
+    --     { path = ".claude", mode = "sync",                               -- bidirectional sync
+    --       exclude = { path = { "settings.json" }, belowPath = { "logs" } } },
+    --     { path = ".claude.json", mode = "sync" },                        -- bidirectional sync
+    --     { path = ".config/claude-cage/claude-settings.json",             -- different destination
+    --       destination = ".claude/settings.json" },                       -- mode=init (default)
+    --     { path = ".bashrc", mode = "copy" },                             -- overwrite each run
+    --     { path = ".ssh", mode = "link" },                                -- symlink (directories OK)
     -- },
+    --
+    -- Note: For sync mode, only exclude.path and exclude.belowPath are supported
+    -- (not exclude.name or exclude.regex since they can't be scoped to a specific path).
+    --
+    -- Note: .local/bin/claude should use init mode (not sync). Claude Code installs as
+    -- a symlink to a versioned directory. If synced, cage updates could copy back a
+    -- broken symlink pointing to a version that only exists in the cage.
 
     -- ============================================================================
     -- NETWORK RESTRICTIONS (optional - defense in depth)

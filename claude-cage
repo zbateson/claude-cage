@@ -1863,8 +1863,29 @@ if [ "$delete_docker_container" = true ]; then
 
     echo "Container: $container_name"
 
+    # Check for active instances before deleting
+    if [ -f "$local_instance_file" ]; then
+        live_instances=()
+        filter_live_instances "$local_instance_file" live_instances
+        if [ ${#live_instances[@]} -gt 0 ]; then
+            echo "Hold on there. Got ${#live_instances[@]} active instance(s) using this container."
+            echo "Close 'em first, then try again."
+            exit 1
+        fi
+    fi
+
+    # Persistent home directory path
+    persistent_home_dir="$HOME/.local/share/claude-cage/docker/$container_name"
+
     if ! docker_container_exists "$container_name"; then
         echo "Container don't exist. Nothin' to delete."
+        # Still check for orphaned persistent home
+        if [ -d "$persistent_home_dir" ] || [ "$dry_run" = true ]; then
+            echo "But there's leftover data at: $persistent_home_dir"
+            echo "Cleanin' that up..."
+            run rm -rf "$persistent_home_dir"
+            echo "Done."
+        fi
         exit 0
     fi
 
@@ -1875,7 +1896,14 @@ if [ "$delete_docker_container" = true ]; then
 
     echo "Removin' container..."
     docker_remove_container "$container_name"
-    echo "Done. Container's gone."
+
+    # Also delete persistent home directory
+    if [ -d "$persistent_home_dir" ] || [ "$dry_run" = true ]; then
+        echo "Removin' persistent home data..."
+        run rm -rf "$persistent_home_dir"
+    fi
+
+    echo "Done. Container and all its data are gone."
     exit 0
 fi
 
@@ -1916,116 +1944,110 @@ if [ "$cleanup_mode" = true ]; then
         echo "No mounted directory at $mount_point. Already clean."
     fi
 
-    # Find and unmount any homeConfigSync mounts (/run/claude-cage/<user>/homesync/)
-    run_base="/run/claude-cage"
-    if [ -d "$run_base" ] || [ "$dry_run" = true ]; then
-        echo "Checking for homeConfigSync directories..."
-        found_homesync=false
-        for user_dir in "$run_base"/*/; do
-            [ -d "$user_dir" ] || continue
-            homesync_dir="${user_dir}homesync/"
-            [ -d "$homesync_dir" ] || continue
-            found_homesync=true
-            homesync_user=$(basename "$user_dir")
-            echo "Found homeConfigSync directory: $homesync_dir (user: $homesync_user)"
+    # Find and unmount homeConfigSync mounts for this user (user mode only)
+    # Docker mode uses different paths and doesn't have bindfs mounts
+    if [ "$cfg_isolationMode" != "docker" ]; then
+        homesync_dir="/run/claude-cage/${cfg_user}/homesync/"
+        echo "Checking for homeConfigSync directory..."
+        if [ -d "$homesync_dir" ] || [ "$dry_run" = true ]; then
+            echo "Found homeConfigSync directory: $homesync_dir"
 
             # Check if any instances are still running for this user
-            global_inst_file="/run/claude-cage/${homesync_user}/instances/global"
+            global_inst_file="/run/claude-cage/${cfg_user}/instances/global"
             if [ -f "$global_inst_file" ] && [ "$dry_run" != true ]; then
                 filter_live_instances "$global_inst_file" running_instances
                 if [ ${#running_instances[@]} -gt 0 ]; then
-                    echo "  WARNING: ${#running_instances[@]} instance(s) still running for user $homesync_user"
+                    echo "  WARNING: ${#running_instances[@]} instance(s) still running for user $cfg_user"
                     echo "           PIDs: ${running_instances[*]}"
                     echo "           Skipping cleanup. Stop instances first or use --cleanup again after they exit."
-                    continue
+                fi
+            else
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] kill <PIDs from ${homesync_dir}pids>"
+                    echo "[dry-run] umount -l ${homesync_dir}cage-mount (bindfs mount)"
+                    echo "[dry-run] umount per-entry mounts under ${homesync_dir}origin/"
+                    echo "[dry-run] rm -rf $homesync_dir"
+                else
+                    # Kill shared processes from the homesync PID file
+                    if [ -f "${homesync_dir}pids" ]; then
+                        echo "  Stopping shared homeConfigSync processes..."
+                        kill_labeled_processes_from_file "${homesync_dir}pids" --remove
+                    fi
+
+                    # Unmount cage-mount/ bindfs mount first (it references origin/)
+                    if mountpoint -q "${homesync_dir}cage-mount" 2>/dev/null; then
+                        run_quiet umount -l "${homesync_dir}cage-mount"
+                        echo "  Unmounted ${homesync_dir}cage-mount"
+                    fi
+
+                    # Unmount per-entry bindfs mounts in origin/ (both files and directories)
+                    homesync_origin_dest_dir="${homesync_dir}origin"
+                    if [ -d "$homesync_origin_dest_dir" ]; then
+                        echo "  Unmounting origin/ per-entry mounts..."
+                        # Safe to grep - we control this specific path
+                        for mount_path in $(mount | grep " ${homesync_origin_dest_dir}/" | awk '{print $3}'); do
+                            if mountpoint -q "$mount_path" 2>/dev/null; then
+                                run_quiet umount -l "$mount_path"
+                                echo "    Unmounted $mount_path"
+                            fi
+                        done
+                    fi
+
+                    # Remove homesync directory and user directory if empty
+                    run_quiet rm -rf "$homesync_dir"
+                    rmdir "/run/claude-cage/${cfg_user}" 2>/dev/null  # only succeeds if empty
+                    echo "  Cleaned up $homesync_dir"
                 fi
             fi
+        else
+            echo "  No homeConfigSync directory found for user $cfg_user."
+        fi
+    fi
 
-            if [ "$dry_run" = true ]; then
-                echo "[dry-run] kill <PIDs from ${homesync_dir}pids>"
-                echo "[dry-run] umount -l ${homesync_dir}cage-mount (bindfs mount)"
-                echo "[dry-run] umount per-entry mounts under ${homesync_dir}origin/"
-                echo "[dry-run] rm -rf $homesync_dir"
-            else
-                # Kill shared processes from the homesync PID file
-                if [ -f "${homesync_dir}pids" ]; then
-                    echo "  Stopping shared homeConfigSync processes..."
-                    kill_labeled_processes_from_file "${homesync_dir}pids" --remove
-                fi
+    # Clean up iptables rules for this user (user mode only)
+    # Docker mode uses Docker networking, not iptables
+    if [ "$cfg_isolationMode" != "docker" ]; then
+        if user_exists "$cfg_user" || [ "$dry_run" = true ]; then
+            user_uid=$(get_user_uid "$cfg_user")
+            # Look for any chains with our pattern
+            if [ "$OS_TYPE" = "linux" ]; then
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] iptables -L OUTPUT -n | grep CLAUDE_CAGE_"
+                    echo "[dry-run] (would clean up any matching firewall chains)"
+                else
+                    # First, get all CLAUDE_CAGE chains and their associated UIDs from OUTPUT rules
+                    iptables -L OUTPUT -n | grep "CLAUDE_CAGE_" | while read -r line; do
+                        chain=$(echo "$line" | awk '{print $1}')
+                        uid=$(echo "$line" | grep -o "owner UID match [0-9]*" | awk '{print $4}')
 
-                # Unmount cage-mount/ bindfs mount first (it references origin/)
-                if mountpoint -q "${homesync_dir}cage-mount" 2>/dev/null; then
-                    run_quiet umount -l "${homesync_dir}cage-mount"
-                    echo "  Unmounted ${homesync_dir}cage-mount"
-                fi
+                        echo "Found firewall chain: $chain (UID: $uid), cleanin' it up..."
 
-                # Unmount per-entry bindfs mounts in origin/ (both files and directories)
-                homesync_origin_dest_dir="${homesync_dir}origin"
-                if [ -d "$homesync_origin_dest_dir" ]; then
-                    echo "  Unmounting origin/ per-entry mounts..."
-                    # Safe to grep - we control this specific path
-                    for mount_path in $(mount | grep " ${homesync_origin_dest_dir}/" | awk '{print $3}'); do
-                        if mountpoint -q "$mount_path" 2>/dev/null; then
-                            run_quiet umount -l "$mount_path"
-                            echo "    Unmounted $mount_path"
-                        fi
+                        # Remove the OUTPUT jump rule
+                        run_quiet iptables -D OUTPUT -m owner --uid-owner "$uid" -j "$chain"
+
+                        # Flush and delete the chain
+                        run_quiet iptables -F "$chain"
+                        run_quiet iptables -X "$chain"
+
+                        echo "  Done. $chain is gone."
                     done
                 fi
-
-                # Remove homesync directory and user directory if empty
-                run_quiet rm -rf "$homesync_dir"
-                rmdir "$user_dir" 2>/dev/null  # only succeeds if empty
-                echo "  Cleaned up $homesync_dir"
-            fi
-        done
-        if [ "$found_homesync" = false ]; then
-            echo "  No homeConfigSync mounts found."
-        fi
-    fi
-
-    # Clean up iptables rules for this user
-    if user_exists "$cfg_user" || [ "$dry_run" = true ]; then
-        user_uid=$(get_user_uid "$cfg_user")
-        # Look for any chains with our pattern
-        if [ "$OS_TYPE" = "linux" ]; then
-            if [ "$dry_run" = true ]; then
-                echo "[dry-run] iptables -L OUTPUT -n | grep CLAUDE_CAGE_"
-                echo "[dry-run] (would clean up any matching firewall chains)"
-            else
-                # First, get all CLAUDE_CAGE chains and their associated UIDs from OUTPUT rules
-                iptables -L OUTPUT -n | grep "CLAUDE_CAGE_" | while read -r line; do
-                    chain=$(echo "$line" | awk '{print $1}')
-                    uid=$(echo "$line" | grep -o "owner UID match [0-9]*" | awk '{print $4}')
-
-                    echo "Found firewall chain: $chain (UID: $uid), cleanin' it up..."
-
-                    # Remove the OUTPUT jump rule
-                    run_quiet iptables -D OUTPUT -m owner --uid-owner "$uid" -j "$chain"
-
-                    # Flush and delete the chain
-                    run_quiet iptables -F "$chain"
-                    run_quiet iptables -X "$chain"
-
-                    echo "  Done. $chain is gone."
-                done
-            fi
-        elif [ "$OS_TYPE" = "macos" ]; then
-            if [ "$dry_run" = true ]; then
-                echo "[dry-run] pfctl -s Anchors | grep CLAUDE_CAGE_"
-                echo "[dry-run] (would clean up any matching pf anchors)"
-            else
-                # Clean up pf anchors
-                for anchor in $(pfctl -s Anchors 2>/dev/null | grep "CLAUDE_CAGE_"); do
-                    echo "Found firewall anchor: $anchor, cleanin' it up..."
-                    delete_firewall_chain "$anchor" "$user_uid"
-                    echo "  Done. $anchor is gone."
-                done
+            elif [ "$OS_TYPE" = "macos" ]; then
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] pfctl -s Anchors | grep CLAUDE_CAGE_"
+                    echo "[dry-run] (would clean up any matching pf anchors)"
+                else
+                    # Clean up pf anchors
+                    for anchor in $(pfctl -s Anchors 2>/dev/null | grep "CLAUDE_CAGE_"); do
+                        echo "Found firewall anchor: $anchor, cleanin' it up..."
+                        delete_firewall_chain "$anchor" "$user_uid"
+                        echo "  Done. $anchor is gone."
+                    done
+                fi
             fi
         fi
-    fi
-
-    # Docker mode doesn't need --cleanup (no system-level changes)
-    if [ "$cfg_isolationMode" = "docker" ]; then
+    else
+        # Docker mode doesn't need --cleanup (no system-level changes)
         echo ""
         echo "Docker mode doesn't leave system-level mess to clean up."
         echo "To delete a container, use: claude-cage --delete-docker-container"
@@ -2476,12 +2498,12 @@ homeConfigSync_copy() {
                             # Directory: recursive sync with trailing slashes, follow symlinks
                             run rsync -rL "$source_path/" "$dest_path/"
                             [ "$needs_chown" = true ] && run chown -R "$cfg_user:$cfg_user" "$dest_path"
-                            echo "Synced $sync_source/ -> $sync_dest/ (mode=$sync_mode)"
+                            [ "$verbose" = true ] && echo "Synced $sync_source/ -> $sync_dest/ (mode=$sync_mode)"
                         elif [ -f "$source_path" ]; then
                             # File: follow symlinks (-L)
                             run rsync -L "$source_path" "$dest_path"
                             [ "$needs_chown" = true ] && run chown "$cfg_user:$cfg_user" "$dest_path"
-                            echo "Synced $sync_source -> $sync_dest (mode=$sync_mode)"
+                            [ "$verbose" = true ] && echo "Synced $sync_source -> $sync_dest (mode=$sync_mode)"
                         fi
                     fi
                 fi
@@ -2541,7 +2563,7 @@ homeConfigSync_setup_unison() {
     local target_home="$1"
     local original_home="/home/${original_user}"
 
-    section_header "Starting homeConfigSync unison for bidirectional sync..."
+    [ "$verbose" = true ] && section_header "Starting homeConfigSync unison for bidirectional sync..."
 
     # Determine directory structure and whether bindfs is needed
     local needs_bindfs=false
@@ -2566,15 +2588,26 @@ homeConfigSync_setup_unison() {
     fi
 
     # Build -path args for all entries (as array to avoid eval)
+    # For directories: add trailing slash to prevent prefix matching (.claude/ won't match .claude-backup/)
+    # For files: add -ignore pattern since trailing slash doesn't work for files
     local -a path_args=()
+    local -a exclude_args=()
     for entry_path in "${homesync_sync_sources[@]}"; do
-        path_args+=("-path" "$entry_path")
-        [ "$dry_run" = true ] && echo "[dry-run] homeConfigSync sync entry: $entry_path"
+        local src="${original_home}/${entry_path}"
+        if [ -d "$src" ]; then
+            # Directory: trailing slash prevents prefix matching
+            path_args+=("-path" "${entry_path}/")
+            [ "$dry_run" = true ] && echo "[dry-run] homeConfigSync sync dir: ${entry_path}/"
+        else
+            # File (or unknown in dry-run): use -ignore to prevent prefix matching
+            path_args+=("-path" "$entry_path")
+            exclude_args+=("-ignore" "Path ${entry_path}?*")
+            [ "$dry_run" = true ] && echo "[dry-run] homeConfigSync sync file: $entry_path (with auto-exclude: Path ${entry_path}?*)"
+        fi
     done
 
-    # Build exclude args as array (already prefixed with entry path by Lua parser)
+    # Add user-specified exclude args (already prefixed with entry path by Lua parser)
     # Each exclude is like '-ignore "Path .claude/settings.json"'
-    local -a exclude_args=()
     for excl in "${homesync_sync_excludes[@]}"; do
         # excl contains flag and value, e.g. '-ignore "Path foo"'
         # The Lua parser outputs '-ignore "Path x"' with double quotes
@@ -2603,9 +2636,9 @@ homeConfigSync_setup_unison() {
     # User mode: set up origin/ with mounts (dirs) or copies (files), bindfs to cage/, unison to home
     if [ "$needs_bindfs" = true ]; then
         if [ "$mounts_exist" = true ]; then
-            section_header "homeConfigSync mounts already exist (shared with other instances)"
+            [ "$verbose" = true ] && section_header "homeConfigSync mounts already exist (shared with other instances)"
         else
-            section_header "Setting up homeConfigSync..."
+            [ "$verbose" = true ] && section_header "Setting up homeConfigSync..."
             run mkdir -p "$homesync_origin_dest_dir" "$cage_dir"
             [ "$dry_run" != true ] && chown "$original_user:$original_user" "$homesync_origin_dest_dir"
 
@@ -2634,14 +2667,14 @@ homeConfigSync_setup_unison() {
                     run mkdir -p "$dst"
                     run chown "$original_user:$original_user" "$dst"
                     run bindfs "$src" "$dst"
-                    echo "  Mounted directory: $entry_path"
+                    [ "$verbose" = true ] && echo "  Mounted directory: $entry_path"
                 elif [ -f "$src" ]; then
                     # File: rsync copy (bindfs doesn't work for single files)
                     # Will use unison for ongoing bidirectional sync
                     run rsync -a "$src" "$dst"
                     run chown "$original_user:$original_user" "$dst"
                     file_entries+=("$entry_path")
-                    echo "  Copied file: $entry_path"
+                    [ "$verbose" = true ] && echo "  Copied file: $entry_path"
                 else
                     echo "  Warning: Source does not exist: $src"
                 fi
@@ -2653,9 +2686,7 @@ homeConfigSync_setup_unison() {
                 --chown-ignore --chgrp-ignore \
                 --create-for-user="$original_user" --create-for-group="$original_user" \
                 "$homesync_origin_dest_dir" "$cage_dir"
-            if [ "$dry_run" != true ]; then
-                echo "Created homeConfigSync bindfs mount: origin/ -> cage/"
-            fi
+            [ "$verbose" = true ] && [ "$dry_run" != true ] && echo "Created homeConfigSync bindfs mount: origin/ -> cage/"
         fi
     fi
 
@@ -2702,11 +2733,11 @@ homeConfigSync_setup_unison() {
     local -a unison_initial_args=("${unison_base_args[@]}" "-ignorearchives" "-force" "$unison_src")
 
     if [ "$unison_running" = true ]; then
-        echo "homeConfigSync unison already running (shared)"
+        [ "$verbose" = true ] && echo "homeConfigSync unison already running (shared)"
     else
         # Initial one-shot sync (force from source to populate destination)
         run_quiet unison "${unison_initial_args[@]}"
-        [ "$dry_run" != true ] && echo "homeConfigSync initial sync complete"
+        [ "$verbose" = true ] && [ "$dry_run" != true ] && echo "homeConfigSync initial sync complete"
 
         # Start watch mode (bidirectional)
         if [ -n "$homesync_pid_file" ]; then
@@ -2716,7 +2747,7 @@ homeConfigSync_setup_unison() {
             run_unison_bg "${unison_base_args[@]}" -repeat watch
             homesync_unison_pid="$unison_bg_pid"
         fi
-        echo "homeConfigSync unison watch started (PID: $unison_bg_pid)"
+        [ "$verbose" = true ] && echo "homeConfigSync unison watch started (PID: $unison_bg_pid)"
     fi
 
     # For files in user mode: run second unison to sync original_home <-> origin/
@@ -2726,6 +2757,8 @@ homeConfigSync_setup_unison() {
         local -a file_unison_args=("$original_home" "$homesync_origin_dest_dir" "-batch" "-confirmbigdel=false" "-owner" "-group")
         for entry in "${file_entries[@]}"; do
             file_unison_args+=("-path" "$entry")
+            # Exclude prefix matches (e.g., .claude.json.bak when syncing .claude.json)
+            file_unison_args+=("-ignore" "Path ${entry}?*")
         done
 
         # Start watch mode for files (bidirectional original <-> origin)
@@ -2735,7 +2768,13 @@ homeConfigSync_setup_unison() {
         else
             run_unison_bg "${file_unison_args[@]}" -repeat watch
         fi
-        echo "homeConfigSync file sync started (PID: $unison_bg_pid)"
+        [ "$verbose" = true ] && echo "homeConfigSync file sync started (PID: $unison_bg_pid)"
+    fi
+
+    # Simple summary for non-verbose mode
+    if [ "$verbose" != true ] && [ "$dry_run" != true ]; then
+        local sync_list="${homesync_sync_sources[*]}"
+        echo "homeConfigSync started: ${sync_list// /, }"
     fi
 }
 
@@ -3413,6 +3452,11 @@ if [ "$skip_setup" = false ]; then
 
                 # Create persistent home directory if it doesn't exist
                 run mkdir -p "$persistent_home"
+
+                # Pre-create the mount point directory so Docker doesn't create it as root
+                # docker_mount_dest is /home/claude/caged/... and persistent_home is mounted as /home/claude
+                mount_point_relative="${docker_mount_dest#/home/claude/}"
+                run mkdir -p "$persistent_home/$mount_point_relative"
 
                 docker_start_container "$docker_container_name_value" "$docker_image_to_use" \
                     "$docker_mount_source" "$docker_mount_dest" \

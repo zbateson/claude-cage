@@ -728,7 +728,7 @@ fi
 echo "  PASS: Does not mount entire home directory"
 
 echo "Test 36e: Should set up bindfs mounts for homeConfigSync"
-if ! echo "$modes_output" | grep -q 'Setting up homeConfigSync\|homeConfigSync.*root mounts\|homeConfigSync mount:'; then
+if ! echo "$modes_output" | grep -q 'homeConfigSync setup:\|bindfs.*homesync'; then
     echo "FAIL: Did not find homeConfigSync mount setup message"
     echo "Output was:"
     echo "$modes_output"
@@ -757,7 +757,7 @@ fi
 echo "  PASS: Origin dir uses bindfs mounts for entries"
 
 echo "Test 36h: Shared mounts should be checked before creation"
-if ! echo "$modes_output" | grep -q 'mounts already exist\|Setting up homeConfigSync\|root mounts'; then
+if ! echo "$modes_output" | grep -q 'mounts already exist\|homeConfigSync setup:\|bindfs.*homesync'; then
     echo "FAIL: Did not find mount existence check message"
     echo "Output was:"
     echo "$modes_output"
@@ -778,6 +778,23 @@ if ! echo "$modes_output" | grep -qE 'homesync/testuser/pids|already running.*sh
     fi
 fi
 echo "  PASS: Shared sync processes setup found"
+
+echo "Test 36j: Sync entries should prevent unison prefix matching"
+# Directories use trailing slash (.claude/) to prevent prefix matching
+# Files use -ignore pattern (Path .claude.json?*) to prevent prefix matching
+if ! echo "$modes_output" | grep -qE 'sync dir:.*\.claude/'; then
+    echo "FAIL: Did not find trailing slash for directory .claude"
+    echo "Output was:"
+    echo "$modes_output" | grep -i "sync"
+    exit 1
+fi
+if ! echo "$modes_output" | grep -qE 'sync file:.*\.claude\.json.*auto-exclude.*Path.*\.claude\.json\?\*'; then
+    echo "FAIL: Did not find auto-exclude for file .claude.json"
+    echo "Output was:"
+    echo "$modes_output" | grep -i "sync"
+    exit 1
+fi
+echo "  PASS: Directories use trailing slash, files use auto-exclude"
 
 echo "Test 37: mode=link should warn about files"
 # Create config with link mode on a file (which should warn)
@@ -985,7 +1002,7 @@ fi
 echo "  PASS: Docker mode uses rsync for homeConfigSync"
 
 echo "Test 43: Docker sync mode should set up unison"
-if ! echo "$docker_instance_output" | grep -q "homeConfigSync unison"; then
+if ! echo "$docker_instance_output" | grep -qE "unison.*-path.*\.claude|homeConfigSync unison"; then
     echo "FAIL: Did not find unison setup for Docker sync mode"
     echo "Output was:"
     echo "$docker_instance_output"

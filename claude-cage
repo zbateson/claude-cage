@@ -13,9 +13,10 @@ detect_os() {
 
 OS_TYPE=$(detect_os)
 
-# Parse --dry-run, --verbose, and --os early to allow OS simulation
+# Parse --dry-run, --verbose, --debug, and --os early to allow OS simulation
 dry_run=false
 verbose=false
+debug=false
 simulated_os=""
 next_is_os=false
 for arg in "$@"; do
@@ -26,10 +27,15 @@ for arg in "$@"; do
         dry_run=true
     elif [ "$arg" = "--verbose" ] || [ "$arg" = "-v" ]; then
         verbose=true
+    elif [ "$arg" = "--debug" ]; then
+        debug=true
     elif [ "$arg" = "--os" ]; then
         next_is_os=true
     fi
 done
+
+# --debug implies --verbose
+[ "$debug" = true ] && verbose=true
 
 # Handle --os flag (only valid with --dry-run)
 if [ -n "$simulated_os" ]; then
@@ -77,6 +83,7 @@ run() {
 
 # Wrapper for commands that should be silent in normal mode but shown in dry-run
 # In verbose mode, prints the command in yellow before executing
+# In debug mode, shows command output instead of suppressing it
 run_quiet() {
     if [ "$dry_run" = true ]; then
         echo "[dry-run] $*"
@@ -85,15 +92,20 @@ run_quiet() {
     if [ "$verbose" = true ]; then
         echo -e "${_yellow}[run] $*${_reset}" >&2
     fi
-    "$@" >/dev/null 2>&1
+    if [ "$debug" = true ]; then
+        "$@"
+    else
+        "$@" >/dev/null 2>&1
+    fi
 }
 
-# Run unison in background with proper PID tracking (output suppressed)
+# Run unison in background with proper PID tracking (output suppressed unless --debug)
 # Usage: run_unison_bg [--pid-file FILE --pid-label LABEL] [--as USER] [--cmd] unison_args_or_cmd...
 # Sets $unison_bg_pid to the PID of the backgrounded process
 # If --pid-file is provided, writes "LABEL|PID" to the file
-# If --as USER is provided, runs as that user via su
+# If --as USER is provided, runs as that user via su (requires --cmd)
 # If --cmd is provided, treats remaining arg as a command string for bash -c
+# Default (no --cmd): arguments are passed directly to unison, preserving array quoting
 run_unison_bg() {
     local pid_file=""
     local pid_label=""
@@ -125,37 +137,62 @@ run_unison_bg() {
         esac
     done
 
+    # Build display string (for dry-run/verbose output)
+    # Note: Default case uses $* for display but "$@" for execution to preserve quoting
     local cmd_display
-    if [ -n "$run_as_user" ]; then
-        cmd_display="su $run_as_user -c \"bash -c '$1'\" &"
-    elif [ "$is_cmd_string" = true ]; then
-        cmd_display="$1 &"
+    if [ "$is_cmd_string" = true ]; then
+        if [ -n "$run_as_user" ]; then
+            cmd_display="su $run_as_user -c \"bash -c '$1'\""
+        else
+            cmd_display="$1"
+        fi
     else
-        cmd_display="unison $* &"
+        cmd_display="unison $*"
     fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] $cmd_display"
+        echo "[dry-run] $cmd_display &"
         unison_bg_pid="<PID>"
         return 0
     fi
 
     if [ "$verbose" = true ]; then
-        echo -e "${_yellow}[run] $cmd_display${_reset}" >&2
+        echo -e "${_yellow}[run] $cmd_display &${_reset}" >&2
     fi
 
-    if [ -n "$run_as_user" ]; then
-        su "$run_as_user" -c "bash -c '$1'" >/dev/null 2>&1 &
-    elif [ "$is_cmd_string" = true ]; then
-        bash -c "$1" >/dev/null 2>&1 &
+    # Execute in background (output suppressed unless --debug)
+    if [ "$debug" = true ]; then
+        if [ "$is_cmd_string" = true ]; then
+            if [ -n "$run_as_user" ]; then
+                su "$run_as_user" -c "bash -c '$1'" &
+            else
+                bash -c "$1" &
+            fi
+        else
+            unison "$@" &
+        fi
     else
-        unison "$@" >/dev/null 2>&1 &
+        if [ "$is_cmd_string" = true ]; then
+            if [ -n "$run_as_user" ]; then
+                su "$run_as_user" -c "bash -c '$1'" >/dev/null 2>&1 &
+            else
+                bash -c "$1" >/dev/null 2>&1 &
+            fi
+        else
+            unison "$@" >/dev/null 2>&1 &
+        fi
     fi
     unison_bg_pid=$!
 
     if [ -n "$pid_file" ] && [ -n "$pid_label" ]; then
         echo "${pid_label}|${unison_bg_pid}" >> "$pid_file"
     fi
+}
+
+# Print a section header with a blank line before it
+section_header() {
+    echo ""
+    echo "$*"
 }
 
 # ============================================================================
@@ -961,7 +998,7 @@ for arg in "$@"; do
         skip_next=true
         continue
     fi
-    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ] && [ "$arg" != "--dry-run" ] && [ "$arg" != "--verbose" ] && [ "$arg" != "-v" ] && [ "$arg" != "--delete-docker-container" ]; then
+    if [ "$arg" != "--test" ] && [ "$arg" != "--no-banner" ] && [ "$arg" != "--cleanup" ] && [ "$arg" != "--continue" ] && [ "$arg" != "--resume" ] && [ "$arg" != "--dry-run" ] && [ "$arg" != "--verbose" ] && [ "$arg" != "-v" ] && [ "$arg" != "--debug" ] && [ "$arg" != "--delete-docker-container" ]; then
         cli_project_arg="$arg"
         break
     fi
@@ -1579,6 +1616,9 @@ for arg in "$@"; do
     elif [ "$arg" = "--verbose" ] || [ "$arg" = "-v" ]; then
         # Already parsed early, just skip here
         :
+    elif [ "$arg" = "--debug" ]; then
+        # Already parsed early, just skip here
+        :
     else
         # Non-flag argument is either project name or subdirectory (depending on mode)
         source_arg="$arg"
@@ -1757,8 +1797,7 @@ if [ "$cleanup_mode" = true ]; then
     fi
 
     echo "=== CLEANUP MODE ==="
-    echo "Alright, let's clean up this operation."
-    echo ""
+    section_header "Alright, let's clean up this operation."
 
     # Get user home directory
     if user_exists "$cfg_user"; then
@@ -1944,8 +1983,7 @@ if [ "$cleanup_mode" = true ]; then
         fi
     fi
 
-    echo ""
-    echo "Cleanup complete. All done."
+    section_header "Cleanup complete. All done."
     exit 0
 fi
 
@@ -2390,7 +2428,7 @@ homeConfigSync_setup_unison() {
     local target_home="$1"
     local original_home="/home/${original_user}"
 
-    echo "Starting homeConfigSync unison for bidirectional sync..."
+    section_header "Starting homeConfigSync unison for bidirectional sync..."
 
     # Determine directory structure and whether bindfs is needed
     local needs_bindfs=false
@@ -2422,17 +2460,17 @@ homeConfigSync_setup_unison() {
     done
 
     # Build exclude args as array (already prefixed with entry path by Lua parser)
-    # Each exclude is like "-ignore 'Path .claude/settings.json'"
+    # Each exclude is like '-ignore "Path .claude/settings.json"'
     local -a exclude_args=()
     for excl in "${homesync_sync_excludes[@]}"; do
-        # excl contains flag and value, e.g. "-ignore 'Path foo'"
-        # We need to parse this carefully - the Lua parser outputs "-ignore 'Path x'"
+        # excl contains flag and value, e.g. '-ignore "Path foo"'
+        # The Lua parser outputs '-ignore "Path x"' with double quotes
         # Extract the flag (-ignore) and the quoted value
         local flag="${excl%% *}"
         local value="${excl#* }"
-        # Remove surrounding quotes from value if present
-        value="${value#\'}"
-        value="${value%\'}"
+        # Remove surrounding double quotes from value if present
+        value="${value#\"}"
+        value="${value%\"}"
         exclude_args+=("$flag" "$value")
     done
 
@@ -2452,9 +2490,9 @@ homeConfigSync_setup_unison() {
     # User mode: set up origin/ with mounts (dirs) or copies (files), bindfs to cage/, unison to home
     if [ "$needs_bindfs" = true ]; then
         if [ "$mounts_exist" = true ]; then
-            echo "homeConfigSync mounts already exist (shared with other instances)"
+            section_header "homeConfigSync mounts already exist (shared with other instances)"
         else
-            echo "Setting up homeConfigSync..."
+            section_header "Setting up homeConfigSync..."
             run mkdir -p "$homesync_origin_dest_dir" "$cage_dir"
             [ "$dry_run" != true ] && chown "$original_user:$original_user" "$homesync_origin_dest_dir"
 
@@ -2630,7 +2668,7 @@ install_claude_code() {
         return 1
     fi
 
-    echo "Alright, runnin' the official installer..."
+    section_header "Alright, runnin' the official installer..."
     echo "This might take a minute. Sit tight."
 
     # Run the official Claude Code installer as the target user
@@ -2769,8 +2807,7 @@ cleanup() {
         return
     fi
 
-    echo ""
-    echo "Alright, shuttin' down operations..."
+    section_header "Alright, shuttin' down operations..."
 
     # Docker mode cleanup
     if [ "$cfg_isolationMode" = "docker" ]; then
@@ -2898,7 +2935,7 @@ cleanup() {
     fi
 
     # Only run full cleanup if this is the last instance
-    echo "Last instance shuttin' down. Cleanin' up everything..."
+    section_header "Last instance shuttin' down. Cleanin' up everything..."
 
     # Kill processes from PID file
     if [ -f "$pid_file" ]; then
@@ -3027,7 +3064,7 @@ setup_network_restrictions() {
     local chain_exists=false
     if firewall_chain_exists "$iptables_chain"; then
         chain_exists=true
-        echo "Addin' network restrictions to existing chain (shared in user mode)..."
+        section_header "Addin' network restrictions to existing chain (shared in user mode)..."
 
         # Remove the final catch-all rule (could be ACCEPT or REJECT depending on previous mode)
         # We need to remove it so we can add new rules, then re-add it at the end
@@ -3038,7 +3075,7 @@ setup_network_restrictions() {
             delete_firewall_rule_by_number "$iptables_chain" "$last_rule_num"
         fi
     else
-        echo "Settin' up network restrictions (mode: $mode)..."
+        section_header "Settin' up network restrictions (mode: $mode)..."
         # Create custom chain for claude-cage rules
         create_firewall_chain "$iptables_chain" "$user_uid" || {
             echo "Hold on. Couldn't create firewall chain. Network restrictions may not work right."
@@ -3273,7 +3310,7 @@ if [ "$skip_setup" = false ]; then
 
     if [ "$cfg_isolationMode" = "docker" ]; then
         # Docker mode setup
-        echo "Docker mode: settin' up container..."
+        section_header "Docker mode: settin' up container..."
         echo "Container name: $docker_container_name_value"
 
         # Display persistent home path (for managed containers)
@@ -3528,7 +3565,7 @@ PROFILE'
     if [ "$cfg_directMount" = "workspace" ]; then
         if [ "$skip_mount" = "false" ]; then
             # Workspace mode: mount entire source directory
-            echo "Workspace mode: mountin' $cfg_source directly..."
+            section_header "Workspace mode: mountin' $cfg_source directly..."
             # Quote paths properly to handle spaces
             if ! run bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source" "$mount_point"; then
                 if [ "$dry_run" != true ]; then
@@ -3553,7 +3590,7 @@ PROFILE'
         # Note: if skip_mount=true, instance was already registered earlier
     elif [ "$cfg_directMount" = "project" ]; then
         # Project mode: mount only the specific project subdirectory
-        echo "Project mode: mountin' $cfg_source/$start_subdir directly..."
+        section_header "Project mode: mountin' $cfg_source/$start_subdir directly..."
         # Quote paths properly to handle spaces
         if ! run bindfs -u "$cfg_user" -g "$cfg_user" --create-for-user="$original_user" --create-for-group="$original_user" "$cfg_source/$start_subdir" "$mount_point"; then
             if [ "$dry_run" != true ]; then

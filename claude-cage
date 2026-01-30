@@ -1693,6 +1693,57 @@ if [ "$cleanup_mode" = true ]; then
         echo "No mounted directory at $mount_point. Already clean."
     fi
 
+    # Find and unmount any homeConfigSync mounts (homesync-* directories)
+    homesync_base="/run/claude-cage/mounts"
+    if [ -d "$homesync_base" ] || [ "$dry_run" = true ]; then
+        echo "Checking for homeConfigSync mounts..."
+        found_homesync=false
+        for homesync_dir in "$homesync_base"/homesync-*/; do
+            [ -d "$homesync_dir" ] || continue
+            found_homesync=true
+            echo "Found homeConfigSync mount directory: $homesync_dir"
+
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] kill <PIDs from ${homesync_dir}pids>"
+                echo "[dry-run] umount -l ${homesync_dir}files-bindfs"
+                echo "[dry-run] umount -l ${homesync_dir}cage"
+                echo "[dry-run] umount -l ${homesync_dir}original"
+                echo "[dry-run] rm -rf $homesync_dir"
+            else
+                # Kill shared processes from the homesync PID file
+                if [ -f "${homesync_dir}pids" ]; then
+                    echo "  Stopping shared homeConfigSync processes..."
+                    while IFS='|' read -r entry_name entry_pid; do
+                        if [ -n "$entry_pid" ] && kill -0 "$entry_pid" 2>/dev/null; then
+                            kill "$entry_pid" 2>/dev/null
+                        fi
+                    done < "${homesync_dir}pids"
+                    rm -f "${homesync_dir}pids"
+                fi
+                # Unmount files-bindfs first
+                if mountpoint -q "${homesync_dir}files-bindfs" 2>/dev/null; then
+                    umount -l "${homesync_dir}files-bindfs" 2>/dev/null
+                    echo "  Unmounted files-bindfs"
+                fi
+                # Unmount cage and original root mounts
+                if mountpoint -q "${homesync_dir}cage" 2>/dev/null; then
+                    umount -l "${homesync_dir}cage" 2>/dev/null
+                    echo "  Unmounted cage"
+                fi
+                if mountpoint -q "${homesync_dir}original" 2>/dev/null; then
+                    umount -l "${homesync_dir}original" 2>/dev/null
+                    echo "  Unmounted original"
+                fi
+                # Remove the directory
+                rm -rf "$homesync_dir" 2>/dev/null
+                echo "  Cleaned up $homesync_dir"
+            fi
+        done
+        if [ "$found_homesync" = false ]; then
+            echo "  No homeConfigSync mounts found."
+        fi
+    fi
+
     # Clean up iptables rules for this user
     if user_exists "$cfg_user" || [ "$dry_run" = true ]; then
         user_uid=$(get_user_uid "$cfg_user")
@@ -1888,6 +1939,20 @@ for line in "${cfg_display_lines[@]}"; do
     fi
 done
 
+# Display homeConfigSync entries if any
+if [ ${#cfg_homeConfigSync[@]} -gt 0 ]; then
+    echo ""
+    echo "Home config sync:"
+    for entry in "${cfg_homeConfigSync[@]}"; do
+        IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
+        if [ "$sync_source" = "$sync_dest" ]; then
+            printf "  %-6s %s\n" "[$sync_mode]" "$sync_source"
+        else
+            printf "  %-6s %s -> %s\n" "[$sync_mode]" "$sync_source" "$sync_dest"
+        fi
+    done
+fi
+
 # Display network rules by source if network mode is enabled
 if [ "$cfg_networkMode" != "disabled" ]; then
     echo ""
@@ -2064,6 +2129,406 @@ else
     user_uid=$(get_user_uid "$cfg_user")
 fi
 
+# Global arrays for homeConfigSync sync mode (populated by homeConfigSync_init)
+# Used later to set up unison monitoring
+declare -a homesync_sync_sources=()
+declare -a homesync_sync_excludes=()
+
+# Parse homeConfigSync entries and extract sync mode info for later unison setup
+# Call this early, before homeConfigSync_copy
+homeConfigSync_init() {
+    for entry in "${cfg_homeConfigSync[@]}"; do
+        IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
+        if [ "$sync_mode" = "sync" ]; then
+            homesync_sync_sources+=("$sync_source")
+            [ -n "$sync_excludes" ] && homesync_sync_excludes+=("$sync_excludes")
+        fi
+    done
+}
+
+# Do initial copies for all homeConfigSync entries
+# Call this before Claude installation check so .local/bin/claude is available
+# Args: target_home (destination home directory)
+# For user mode: target_home=$user_home, needs chown
+# For Docker mode: target_home=$persistent_home, no chown (same user)
+homeConfigSync_copy() {
+    local target_home="$1"
+    local original_home="/home/${original_user}"
+    local needs_chown=false
+    [ "$cfg_isolationMode" != "docker" ] && needs_chown=true
+
+    for entry in "${cfg_homeConfigSync[@]}"; do
+        IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
+        local source_path="${original_home}/${sync_source}"
+        local dest_path="${target_home}/${sync_dest}"
+        local dest_dir=$(dirname "$dest_path")
+
+        # Display mode info in dry-run
+        if [ "$dry_run" = true ]; then
+            echo "homeConfigSync: $sync_source -> $sync_dest (mode=$sync_mode)"
+        fi
+
+        case "$sync_mode" in
+            init)
+                # Copy only if destination doesn't exist
+                if [ -e "$dest_path" ] && [ "$dry_run" != true ]; then
+                    continue
+                fi
+                # Fall through to copy logic
+                ;&
+            copy)
+                # copy: Copy on startup, overwrites existing
+                if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+                    # Create destination parent directory if needed
+                    if [ ! -d "$dest_dir" ]; then
+                        run mkdir -p "$dest_dir"
+                        [ "$needs_chown" = true ] && run chown "$cfg_user:$cfg_user" "$dest_dir"
+                    fi
+
+                    # Sync file or directory
+                    if [ "$dry_run" = true ]; then
+                        if [ -d "$source_path" ]; then
+                            echo "[dry-run] rsync -rL $source_path/ $dest_path/"
+                            [ "$needs_chown" = true ] && echo "[dry-run] chown -R $cfg_user:$cfg_user $dest_path"
+                        else
+                            echo "[dry-run] rsync -L $source_path $dest_path"
+                            [ "$needs_chown" = true ] && echo "[dry-run] chown $cfg_user:$cfg_user $dest_path"
+                        fi
+                    else
+                        if [ -d "$source_path" ]; then
+                            # Directory: recursive sync with trailing slashes, follow symlinks
+                            rsync -rL "$source_path/" "$dest_path/"
+                            [ "$needs_chown" = true ] && chown -R "$cfg_user:$cfg_user" "$dest_path"
+                            echo "Synced $sync_source/ -> $sync_dest/ (mode=$sync_mode)"
+                        elif [ -f "$source_path" ]; then
+                            # File: follow symlinks (-L)
+                            rsync -L "$source_path" "$dest_path"
+                            [ "$needs_chown" = true ] && chown "$cfg_user:$cfg_user" "$dest_path"
+                            echo "Synced $sync_source -> $sync_dest (mode=$sync_mode)"
+                        fi
+                    fi
+                fi
+                ;;
+            sync)
+                # sync: Just create empty destination, unison will do the initial copy
+                if [ -d "$source_path" ] || [ "$dry_run" = true ]; then
+                    if [ ! -d "$dest_path" ] || [ "$dry_run" = true ]; then
+                        run mkdir -p "$dest_path"
+                        [ "$needs_chown" = true ] && run chown "$cfg_user:$cfg_user" "$dest_path"
+                    fi
+                fi
+                ;;
+            link)
+                # Symlink from cage home to host path (user mode only)
+                if [ "$cfg_isolationMode" = "docker" ]; then
+                    echo "Warning: mode=link not supported for Docker containers, skipping $sync_source"
+                    continue
+                fi
+                if [ "$dry_run" = true ]; then
+                    echo "[dry-run] ln -s $source_path $dest_path"
+                else
+                    # Create parent directory if needed
+                    if [ ! -d "$dest_dir" ]; then
+                        mkdir -p "$dest_dir"
+                        chown "$cfg_user:$cfg_user" "$dest_dir"
+                    fi
+                    # Remove existing file/link if present
+                    if [ -e "$dest_path" ] || [ -L "$dest_path" ]; then
+                        rm -rf "$dest_path"
+                    fi
+                    ln -s "$source_path" "$dest_path"
+                    chown -h "$cfg_user:$cfg_user" "$dest_path"
+                    echo "Linked $sync_dest -> $source_path (mode=link)"
+                    # Warn if source is a file (atomic writes will break symlink)
+                    if [ -f "$source_path" ]; then
+                        echo "  Warning: $sync_source is a file. Atomic writes may break the symlink."
+                    fi
+                fi
+                ;;
+        esac
+    done
+}
+
+# Set up unison monitoring for sync mode entries (bidirectional sync)
+# Call this after mounts are ready; uses homesync_sync_sources populated by homeConfigSync_init
+# Args: target_home (destination home directory)
+# For user mode: per-directory bindfs mounts (shared across instances), symlinks for files
+# For Docker mode: no bindfs needed (same user), direct unison
+homeConfigSync_setup_unison() {
+    [ ${#homesync_sync_sources[@]} -eq 0 ] && return
+
+    local target_home="$1"
+    local original_home="/home/${original_user}"
+
+    echo "Starting homeConfigSync unison for bidirectional sync..."
+
+    if [ "$cfg_isolationMode" = "docker" ]; then
+        # Docker mode: no bindfs needed, same user owns both directories
+        # Can sync all entries with a single unison process using -path arguments
+
+        local path_args=""
+        for entry_path in "${homesync_sync_sources[@]}"; do
+            path_args="$path_args -path \"$entry_path\""
+        done
+
+        local exclude_args=""
+        for excl in "${homesync_sync_excludes[@]}"; do
+            exclude_args="$exclude_args $excl"
+        done
+
+        local homesync_unison_base="unison \"$original_home\" \"$target_home\" -batch $path_args $exclude_args"
+
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] $homesync_unison_base"
+            echo "[dry-run] $homesync_unison_base -repeat watch &"
+        else
+            # Initial one-shot sync
+            eval "$homesync_unison_base"
+            echo "homeConfigSync initial sync complete"
+            # Start watch mode
+            eval "$homesync_unison_base -repeat watch" &
+            homesync_unison_pid=$!
+            echo "homeConfigSync unison watch started (PID: $homesync_unison_pid)"
+        fi
+        return
+    fi
+
+    # User mode: per-entry mounts shared across all instances for this user
+    # Mounts are only created if they don't exist, unmounted when last instance exits
+    homesync_mount_base="/run/claude-cage/mounts/homesync-${cfg_user}"
+
+    # Check if mounts already exist (another instance set them up)
+    local mounts_exist=false
+    if [ -d "$homesync_mount_base" ] && [ "$dry_run" != true ]; then
+        # Check if any mount points are active
+        for mount_dir in "$homesync_mount_base"/original "$homesync_mount_base"/files-bindfs; do
+            if mountpoint -q "$mount_dir" 2>/dev/null; then
+                mounts_exist=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$mounts_exist" = true ]; then
+        echo "homeConfigSync mounts already exist (shared with other instances)"
+    else
+        echo "Setting up homeConfigSync bindfs mounts..."
+        run mkdir -p "$homesync_mount_base"
+    fi
+
+    # Separate directories and files
+    local -a sync_dirs=()
+    local -a sync_files=()
+
+    for entry_path in "${homesync_sync_sources[@]}"; do
+        local original_path="${original_home}/${entry_path}"
+        if [ -d "$original_path" ] || [ "$dry_run" = true ]; then
+            # Treat as directory (in dry-run, assume it's a directory if path doesn't end with common file extensions)
+            if [ "$dry_run" = true ] && [[ "$entry_path" =~ \.(json|yml|yaml|conf|config|rc|txt)$ ]]; then
+                sync_files+=("$entry_path")
+            else
+                sync_dirs+=("$entry_path")
+            fi
+        elif [ -f "$original_path" ]; then
+            sync_files+=("$entry_path")
+        fi
+    done
+
+    # Shared PID file for homesync processes (shared across all instances for this user)
+    local homesync_pid_file="${homesync_mount_base}/pids"
+
+    # Handle directories: single bindfs mount pair + single unison with -path args
+    if [ ${#sync_dirs[@]} -gt 0 ]; then
+        local original_mount="${homesync_mount_base}/original"
+        local cage_mount="${homesync_mount_base}/cage"
+
+        # Create root mounts if they don't exist
+        # Use --chown-ignore so unison can't change ownership, --create-for-user sets owner for new files
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] homeConfigSync: creating root mounts for directories"
+            run mkdir -p "$original_mount" "$cage_mount"
+            run bindfs --chown-ignore --chgrp-ignore \
+                --create-for-user="$original_user" --create-for-group="$original_user" \
+                "$original_home" "$original_mount"
+            run bindfs --chown-ignore --chgrp-ignore \
+                --create-for-user="$cfg_user" --create-for-group="$cfg_user" \
+                "$target_home" "$cage_mount"
+        elif ! mountpoint -q "$original_mount" 2>/dev/null; then
+            mkdir -p "$original_mount" "$cage_mount"
+
+            # Mount original home dir - new files owned by original user
+            bindfs --chown-ignore --chgrp-ignore \
+                --create-for-user="$original_user" --create-for-group="$original_user" \
+                "$original_home" "$original_mount"
+
+            # Mount cage home dir - new files owned by cage user
+            bindfs --chown-ignore --chgrp-ignore \
+                --create-for-user="$cfg_user" --create-for-group="$cfg_user" \
+                "$target_home" "$cage_mount"
+
+            echo "Created homeConfigSync root mounts"
+        fi
+
+        # Build -path args for each directory entry
+        local path_args=""
+        for dir_entry in "${sync_dirs[@]}"; do
+            path_args="$path_args -path \"$dir_entry\""
+            [ "$dry_run" = true ] && echo "[dry-run] homeConfigSync sync entry: $dir_entry"
+        done
+
+        # Build exclude args (already prefixed with entry path by Lua parser)
+        local exclude_args=""
+        for excl in "${homesync_sync_excludes[@]}"; do
+            exclude_args="$exclude_args $excl"
+        done
+
+        # Check if unison is already running (shared across instances)
+        local unison_running=false
+        if [ -f "$homesync_pid_file" ] && [ "$dry_run" != true ]; then
+            while IFS='|' read -r entry_name entry_pid; do
+                if [ "$entry_name" = "dirs" ] && kill -0 "$entry_pid" 2>/dev/null; then
+                    unison_running=true
+                    break
+                fi
+            done < "$homesync_pid_file"
+        fi
+
+        # Single unison with -path for each entry
+        local unison_base="unison \"$original_mount\" \"$cage_mount\" -batch $path_args $exclude_args"
+
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] $unison_base"
+            echo "[dry-run] $unison_base -repeat watch &"
+        elif [ "$unison_running" = true ]; then
+            echo "homeConfigSync unison already running (shared)"
+        else
+            # Initial one-shot sync
+            eval "$unison_base"
+            echo "homeConfigSync initial sync complete"
+            # Start watch mode
+            eval "$unison_base -repeat watch" &
+            local unison_pid=$!
+            echo "dirs|${unison_pid}" >> "$homesync_pid_file"
+            echo "homeConfigSync unison watch started (PID: $unison_pid)"
+        fi
+    fi
+
+    # Handle files: staging copy + bindfs mount + symlink from cage home
+    if [ ${#sync_files[@]} -gt 0 ]; then
+        local files_staging="${homesync_mount_base}/files-staging"
+        local files_bindfs="${homesync_mount_base}/files-bindfs"
+
+        # Only create mounts if they don't exist
+        local files_mount_exists=false
+        if mountpoint -q "$files_bindfs" 2>/dev/null && [ "$dry_run" != true ]; then
+            files_mount_exists=true
+        fi
+
+        if [ "$files_mount_exists" = false ]; then
+            run mkdir -p "$files_staging" "$files_bindfs"
+        fi
+
+        for file_entry in "${sync_files[@]}"; do
+            local original_path="${original_home}/${file_entry}"
+            local cage_path="${target_home}/${file_entry}"
+            local file_dir=$(dirname "$file_entry")
+
+            # Create parent directory structure in staging if needed
+            if [ "$file_dir" != "." ] && [ "$files_mount_exists" = false ]; then
+                run mkdir -p "${files_staging}/${file_dir}"
+            fi
+
+            # Copy file to staging (only if mount doesn't exist yet)
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] homeConfigSync mount: $file_entry (file -> symlink)"
+                echo "[dry-run] cp $original_path ${files_staging}/${file_entry}"
+            elif [ "$files_mount_exists" = false ]; then
+                cp "$original_path" "${files_staging}/${file_entry}" 2>/dev/null || true
+            fi
+        done
+
+        # Mount staging directory with bindfs for cage user access (only if not already mounted)
+        # Files appear owned by cage user but are created as original user in staging
+        if [ "$files_mount_exists" = false ]; then
+            run bindfs -u "$cfg_user" -g "$cfg_user" \
+                --chown-ignore --chgrp-ignore \
+                --create-for-user="$original_user" --create-for-group="$original_user" \
+                "$files_staging" "$files_bindfs"
+        fi
+
+        # Create symlinks from cage home to mounted files and set up bidirectional sync
+        for file_entry in "${sync_files[@]}"; do
+            local original_path="${original_home}/${file_entry}"
+            local cage_path="${target_home}/${file_entry}"
+            local staged_path="${files_staging}/${file_entry}"
+            local mounted_path="${files_bindfs}/${file_entry}"
+            local cage_dir=$(dirname "$cage_path")
+
+            # Ensure parent directory exists in cage home
+            if [ "$cage_dir" != "$target_home" ]; then
+                run mkdir -p "$cage_dir"
+                [ "$cfg_isolationMode" != "docker" ] && run chown "$cfg_user:$cfg_user" "$cage_dir"
+            fi
+
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] rm -f $cage_path && ln -s $mounted_path $cage_path"
+            else
+                # Remove existing file (was copied in homeConfigSync_copy) and symlink to mounted location
+                # Only if not already a symlink to the right place
+                if [ ! -L "$cage_path" ] || [ "$(readlink "$cage_path")" != "$mounted_path" ]; then
+                    rm -f "$cage_path"
+                    ln -s "$mounted_path" "$cage_path"
+                fi
+            fi
+        done
+
+        # Set up bidirectional file sync using inotifywait (shared across instances)
+        for file_entry in "${sync_files[@]}"; do
+            local original_path="${original_home}/${file_entry}"
+            local staged_path="${files_staging}/${file_entry}"
+            local safe_file_name="${file_entry//\//_}"
+            safe_file_name="${safe_file_name#.}"
+
+            # Check if inotify watchers are already running for this file
+            local inotify_running=false
+            if [ -f "$homesync_pid_file" ] && [ "$dry_run" != true ]; then
+                while IFS='|' read -r entry_name entry_pid; do
+                    if [ "$entry_name" = "file-${safe_file_name}" ] && kill -0 "$entry_pid" 2>/dev/null; then
+                        inotify_running=true
+                        break
+                    fi
+                done < "$homesync_pid_file"
+            fi
+
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] (inotify watching $file_entry for bidirectional sync)"
+            elif [ "$inotify_running" = true ]; then
+                echo "homeConfigSync inotify for $file_entry already running (shared)"
+            else
+                # Watch staging file and sync to original
+                (
+                    while inotifywait -q -e close_write,modify "$staged_path" >/dev/null 2>&1; do
+                        cp "$staged_path" "$original_path" 2>/dev/null
+                    done
+                ) &
+                local staged_pid=$!
+                echo "file-${safe_file_name}|${staged_pid}" >> "$homesync_pid_file"
+
+                # Watch original file and sync to staging
+                (
+                    while inotifywait -q -e close_write,modify "$original_path" >/dev/null 2>&1; do
+                        cp "$original_path" "$staged_path" 2>/dev/null
+                    done
+                ) &
+                local orig_pid=$!
+                echo "file-${safe_file_name}-orig|${orig_pid}" >> "$homesync_pid_file"
+
+                echo "homeConfigSync inotify for $file_entry started (PIDs: $staged_pid, $orig_pid)"
+            fi
+        done
+    fi
+}
+
 # Check if Claude Code is installed for the user
 check_claude_installed() {
     local username="$1"
@@ -2122,17 +2587,30 @@ install_claude_code() {
     fi
 }
 
+# Parse homeConfigSync entries (extracts sync mode info for later unison setup)
+homeConfigSync_init
+
 # Check if Claude Code is available for the user (skip in dry-run and Docker mode)
 # In Docker mode, Claude Code is checked/installed inside the container, not on the host
 if [ "$dry_run" = true ]; then
     echo "[dry-run] Would check if Claude Code is installed for user '$cfg_user'"
+    # For dry-run, show what would be copied (Docker handles this in its branch)
+    if [ "$cfg_isolationMode" != "docker" ]; then
+        homeConfigSync_copy "$user_home"
+    fi
 elif [ "$cfg_isolationMode" = "docker" ]; then
-    # Docker mode: will check inside container later
+    # Docker mode: homeConfigSync handled in Docker setup branch
     :
-elif ! check_claude_installed "$cfg_user" "$user_home"; then
-    if ! install_claude_code "$cfg_user" "$user_home"; then
-        echo "Can't proceed without Claude Code installed. We're done here."
-        exit 1
+else
+    # User mode: Run homeConfigSync copy before installation check
+    # This allows .local/bin/claude from homeConfigSync to be used
+    homeConfigSync_copy "$user_home"
+
+    if ! check_claude_installed "$cfg_user" "$user_home"; then
+        if ! install_claude_code "$cfg_user" "$user_home"; then
+            echo "Can't proceed without Claude Code installed. We're done here."
+            exit 1
+        fi
     fi
 fi
 
@@ -2159,10 +2637,21 @@ fi
 
 # For workspace direct mount mode, track instances by mount point instead of project
 # This allows multiple subdirectories under the same mount to share it
+# Instance tracking directory
+# User mode: /run/claude-cage/instances (requires sudo)
+# Docker mode: /run/user/<uid>/claude-cage/instances (no sudo)
+if [ "$cfg_isolationMode" = "docker" ]; then
+    instance_dir="/run/user/$(id -u)/claude-cage/instances"
+else
+    instance_dir="/run/claude-cage/instances"
+fi
+
+# Create instance directory (will be created later during setup, define path here)
+
 if [ "$cfg_directMount" = "workspace" ]; then
     # Create a safe filename from mount point path
     mount_point_hash=$(echo "$mount_point" | md5sum | cut -d' ' -f1)
-    mount_instance_file="$user_home/.claude-cage-mount-$mount_point_hash"
+    mount_instance_file="$instance_dir/mount-$mount_point_hash"
 else
     mount_instance_file=""
 fi
@@ -2171,11 +2660,10 @@ fi
 iptables_chain="CLAUDE_CAGE_${cfg_user}"
 
 # Global instance file (tracks all projects for this user)
-# Only used in user mode - Docker mode doesn't have a host user home
 if [ "$cfg_isolationMode" = "docker" ]; then
-    global_instance_file=""
+    global_instance_file="$instance_dir/global-instances"
 else
-    global_instance_file="$user_home/.claude-cage-instances"
+    global_instance_file="$instance_dir/$cfg_user-instances"
 fi
 
 # Pre-compute Docker container name and mount destination
@@ -2332,12 +2820,15 @@ cleanup() {
                 rm -f "$pid_file"
             fi
 
+            # Note: homeConfigSync mounts are shared across all instances for this user
+            # They will be unmounted when the last instance for the user exits
+
             if [ "$should_unmount" = "true" ] && mountpoint -q "$mount_point" 2>/dev/null; then
                 echo "Unmountin' $mount_point..."
                 umount -l "$mount_point" 2>/dev/null
             fi
 
-            echo "This project's done. Other projects still flyin'. Stay safe out there."
+            echo "This project's done. Other projects still flyin'. homeConfigSync mounts stay for other instances."
             return
         else
             # No more instances for this user, remove the global instance file
@@ -2357,6 +2848,37 @@ cleanup() {
             fi
         done < "$pid_file"
         rm -f "$pid_file"
+    fi
+
+    # Clean up homeConfigSync (user mode only) - shared across all instances for this user
+    if [ -n "$homesync_mount_base" ] && [ -d "$homesync_mount_base" ]; then
+        echo "Cleanin' up homeConfigSync (last instance for user $cfg_user)..."
+
+        # Kill shared unison/inotify processes from the homesync PID file
+        local homesync_pid_file="${homesync_mount_base}/pids"
+        if [ -f "$homesync_pid_file" ]; then
+            echo "Stoppin' shared homeConfigSync processes..."
+            while IFS='|' read -r entry_name entry_pid; do
+                if [ -n "$entry_pid" ] && kill -0 "$entry_pid" 2>/dev/null; then
+                    kill "$entry_pid" 2>/dev/null
+                fi
+            done < "$homesync_pid_file"
+            rm -f "$homesync_pid_file"
+        fi
+
+        # Unmount files-bindfs first (it's a single mount for all files)
+        if mountpoint -q "${homesync_mount_base}/files-bindfs" 2>/dev/null; then
+            umount -l "${homesync_mount_base}/files-bindfs" 2>/dev/null
+        fi
+        # Unmount cage and original root mounts
+        if mountpoint -q "${homesync_mount_base}/cage" 2>/dev/null; then
+            umount -l "${homesync_mount_base}/cage" 2>/dev/null
+        fi
+        if mountpoint -q "${homesync_mount_base}/original" 2>/dev/null; then
+            umount -l "${homesync_mount_base}/original" 2>/dev/null
+        fi
+        # Clean up the mount base directory
+        rm -rf "$homesync_mount_base" 2>/dev/null
     fi
 
     # Unmount the bindfs mount (only if we should)
@@ -2681,6 +3203,9 @@ if [ "$skip_setup" = false ]; then
         run chown -R "$original_user:$original_user" "$cfg_config_root/.caged"
     fi
 
+    # Create instance tracking directory
+    run mkdir -p "$instance_dir"
+
     if [ "$cfg_isolationMode" = "docker" ]; then
         # Docker mode setup
         echo "Docker mode: settin' up container..."
@@ -2847,7 +3372,12 @@ export PATH="$HOME/.local/bin:$PATH"
 PROFILE'
             fi
 
-            # Check if Claude Code is installed in container
+            # Copy homeConfigSync files to persistent home BEFORE checking Claude installation
+            # This allows .local/bin/claude from homeConfigSync to be used
+            # The persistent home is mounted as /home/claude in the container
+            homeConfigSync_copy "$persistent_home"
+
+            # Check if Claude Code is installed in container (after homeConfigSync)
             # Check explicit path since the UID may not exist in /etc/passwd (no profile to set PATH)
             if ! docker exec "$docker_container_name_value" test -x /home/claude/.local/bin/claude 2>/dev/null; then
                 echo "Claude Code ain't installed in the container. Installin' it now..."
@@ -2883,59 +3413,8 @@ PROFILE'
                 echo "Claude Code already installed in container."
             fi
 
-            # Copy homeConfigSync files into container
-            # Format: path|dest|mode|exclude_args
-            # For Docker: init/copy modes supported, sync/link not applicable
-            original_home="/home/${original_user}"
-            for entry in "${cfg_homeConfigSync[@]}"; do
-                IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
-                source_path="${original_home}/${sync_source}"
-                # In container, home is /home/claude (matching the user ID mapping)
-                container_dest="/home/claude/${sync_dest}"
-
-                # Display mode info in dry-run
-                if [ "$dry_run" = true ]; then
-                    echo "homeConfigSync: $sync_source -> $sync_dest (mode=$sync_mode)"
-                fi
-
-                case "$sync_mode" in
-                    init)
-                        # Check if destination exists in container
-                        if [ "$dry_run" != true ]; then
-                            if docker exec "$docker_container_name_value" test -e "$container_dest" 2>/dev/null; then
-                                echo "Skipping $sync_source (already exists, mode=init)"
-                                continue
-                            fi
-                        fi
-                        ;&  # Fall through to copy
-                    copy)
-                        if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
-                            # Create parent directory in container first
-                            container_dir=$(dirname "$container_dest")
-                            docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
-
-                            # Copy file/directory
-                            docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
-                            if [ "$dry_run" != true ]; then
-                                echo "Synced $sync_source -> $sync_dest (mode=$sync_mode, in container)"
-                            fi
-                        fi
-                        ;;
-                    sync)
-                        # Sync mode not yet supported for Docker
-                        echo "Warning: mode=sync not supported for Docker containers, using copy instead"
-                        if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
-                            container_dir=$(dirname "$container_dest")
-                            docker_exec_quiet "$docker_container_name_value" mkdir -p "$container_dir"
-                            docker_copy_to_container "$docker_container_name_value" "$source_path" "$container_dest"
-                        fi
-                        ;;
-                    link)
-                        # Link mode not applicable for Docker (can't symlink across container boundary)
-                        echo "Warning: mode=link not supported for Docker containers, skipping $sync_source"
-                        ;;
-                esac
-            done
+            # Set up unison for sync mode entries (bidirectional sync)
+            homeConfigSync_setup_unison "$persistent_home"
         fi
 
     else
@@ -3113,165 +3592,17 @@ fi
 # Register this instance
 run bash -c "echo '$instance_id' >> '$local_instance_file'"
 
-# In user mode, also register globally
-if [ "$cfg_isolationMode" != "docker" ] && [ -n "$global_instance_file" ]; then
+# Also register globally
+if [ -n "$global_instance_file" ]; then
     run bash -c "echo '$instance_id' >> '$global_instance_file'"
 fi
 
-# Sync home config files from original user's home to cage user's home
-# Configured via homeConfigSync in config file
-# Format: path|dest|mode|exclude_args
-# Modes: init (copy if missing), copy (overwrite), sync (bidirectional unison), link (symlink)
-# Skip for Docker mode - handled in Docker setup branch
+# Set up unison monitoring for homeConfigSync sync mode entries
+# User mode: set up here after mounts are ready
+# Docker mode: set up in Docker branch after container is ready
 if [ "$cfg_isolationMode" != "docker" ]; then
-    original_home="/home/${original_user}"
-
-    # Collect sync mode entries for combined unison process
-    declare -a sync_mode_entries=()
-    declare -a sync_mode_excludes=()
-
-    for entry in "${cfg_homeConfigSync[@]}"; do
-        IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
-        source_path="${original_home}/${sync_source}"
-        dest_path="${user_home}/${sync_dest}"
-        dest_dir=$(dirname "$dest_path")
-
-        # Display mode info in dry-run
-        if [ "$dry_run" = true ]; then
-            echo "homeConfigSync: $sync_source -> $sync_dest (mode=$sync_mode)"
-        fi
-
-        case "$sync_mode" in
-            init)
-                # Copy only if destination doesn't exist
-                if [ -e "$dest_path" ] && [ "$dry_run" != true ]; then
-                    echo "Skipping $sync_source (already exists, mode=init)"
-                    continue
-                fi
-                # Fall through to copy logic
-                ;&
-            copy)
-                # Copy on startup, overwrites existing
-                if [ -f "$source_path" ] || [ -d "$source_path" ] || [ "$dry_run" = true ]; then
-                    # Create destination parent directory if needed
-                    if [ ! -d "$dest_dir" ]; then
-                        run mkdir -p "$dest_dir"
-                        run chown "$cfg_user:$cfg_user" "$dest_dir"
-                    fi
-
-                    # Sync file or directory
-                    if [ "$dry_run" = true ]; then
-                        if [ -d "$source_path" ]; then
-                            echo "[dry-run] rsync -rL $source_path/ $dest_path/"
-                            echo "[dry-run] chown -R $cfg_user:$cfg_user $dest_path"
-                        else
-                            echo "[dry-run] rsync $source_path $dest_path"
-                            echo "[dry-run] chown $cfg_user:$cfg_user $dest_path"
-                        fi
-                    else
-                        if [ -d "$source_path" ]; then
-                            # Directory: recursive sync with trailing slashes, follow symlinks
-                            rsync -rL "$source_path/" "$dest_path/"
-                            chown -R "$cfg_user:$cfg_user" "$dest_path"
-                            echo "Synced $sync_source/ -> $sync_dest/ (mode=$sync_mode)"
-                        elif [ -f "$source_path" ]; then
-                            rsync "$source_path" "$dest_path"
-                            chown "$cfg_user:$cfg_user" "$dest_path"
-                            echo "Synced $sync_source -> $sync_dest (mode=$sync_mode)"
-                        fi
-                    fi
-                fi
-                ;;
-            sync)
-                # Bidirectional sync via unison - collect for combined process
-                sync_mode_entries+=("$sync_source")
-                if [ -n "$sync_excludes" ]; then
-                    sync_mode_excludes+=("$sync_excludes")
-                fi
-                echo "Will sync $sync_source bidirectionally (mode=sync, unison)"
-                ;;
-            link)
-                # Symlink from cage home to host path
-                if [ "$dry_run" = true ]; then
-                    echo "[dry-run] ln -s $source_path $dest_path"
-                else
-                    # Create parent directory if needed
-                    if [ ! -d "$dest_dir" ]; then
-                        mkdir -p "$dest_dir"
-                        chown "$cfg_user:$cfg_user" "$dest_dir"
-                    fi
-                    # Remove existing file/link if present
-                    if [ -e "$dest_path" ] || [ -L "$dest_path" ]; then
-                        rm -rf "$dest_path"
-                    fi
-                    ln -s "$source_path" "$dest_path"
-                    chown -h "$cfg_user:$cfg_user" "$dest_path"
-                    echo "Linked $sync_dest -> $source_path (mode=link)"
-                    # Warn if source is a file (atomic writes will break symlink)
-                    if [ -f "$source_path" ]; then
-                        echo "  Warning: $sync_source is a file. Atomic writes may break the symlink."
-                    fi
-                fi
-                ;;
-        esac
-    done
-
-    # Start combined unison process for all sync mode entries
-    if [ ${#sync_mode_entries[@]} -gt 0 ]; then
-        echo "Starting homeConfigSync unison for bidirectional sync..."
-
-        # Build path arguments
-        path_args=""
-        for entry_path in "${sync_mode_entries[@]}"; do
-            path_args="$path_args -path \"$entry_path\""
-        done
-
-        # Build exclude arguments
-        exclude_args=""
-        for excl in "${sync_mode_excludes[@]}"; do
-            exclude_args="$exclude_args $excl"
-        done
-
-        # Create per-path bindfs mounts for sync mode
-        # This mounts ONLY the specific paths, not the entire home directory (security)
-        echo "Creating per-path bindfs mounts for homeConfigSync sync mode..."
-
-        # Use /run for secure mount points (not accessible to cage user)
-        homesync_mount_base="/run/claude-cage/mounts/homesync-$$"
-
-        # Mount each individual path with bindfs (not entire home)
-        for entry_path in "${sync_mode_entries[@]}"; do
-            src_path="${original_home}/${entry_path}"
-            dest_path="${user_home}/${entry_path}"
-            orig_mount="${homesync_mount_base}/original/${entry_path}"
-            cage_mount="${homesync_mount_base}/cage/${entry_path}"
-
-            run mkdir -p "$orig_mount"
-            run mkdir -p "$cage_mount"
-
-            # Mount individual path from original home with permission mapping
-            run bindfs --map=$(id -u):${cage_uid}:@$(id -g):@${cage_gid} \
-                --create-for-user=$(id -u) --create-for-group=$(id -g) \
-                "$src_path" "$orig_mount"
-
-            # Mount individual path from cage home with reverse permission mapping
-            run bindfs -u "$cfg_user" -g "$cfg_user" \
-                --create-for-user=$(id -u) --create-for-group=$(id -g) \
-                "$dest_path" "$cage_mount"
-        done
-
-        # Build and start unison command
-        homesync_unison_cmd="unison \"${homesync_mount_base}/original\" \"${homesync_mount_base}/cage\" -batch -repeat watch $path_args $exclude_args"
-
-        if [ "$dry_run" = true ]; then
-            echo "[dry-run] $homesync_unison_cmd &"
-        else
-            eval "$homesync_unison_cmd" &
-            homesync_unison_pid=$!
-            echo "homeConfigSync unison started (PID: $homesync_unison_pid)"
-        fi
-    fi
-fi  # End of homeConfigSync for user mode
+    homeConfigSync_setup_unison "$user_home"
+fi
 
 if [ "$dry_run" = true ]; then
     echo ""

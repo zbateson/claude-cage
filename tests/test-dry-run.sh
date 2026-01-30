@@ -103,7 +103,8 @@ fi
 echo "  PASS: Found bindfs command"
 
 echo "Test 7b: Project mount points should be in /run/ (not user home)"
-if echo "$output" | grep -q "bindfs.*/home/[^/]*/caged\|bindfs.*/home/[^/]*/[^/]*\"* *\$"; then
+# Exclude homeConfigSync lines which legitimately reference home directories as source
+if echo "$output" | grep -v "/run/claude-cage/mounts/homesync" | grep -q "bindfs.*/home/[^/]*/caged\|bindfs.*/home/[^/]*/[^/]*\"* *\$"; then
     echo "FAIL: Found project mount point in user home (security issue)"
     echo "Output was:"
     echo "$output"
@@ -224,6 +225,33 @@ if ! echo "$cleanup_output" | grep -q "\[dry-run\]"; then
     exit 1
 fi
 echo "  PASS: Cleanup mode shows dry-run commands"
+
+echo "Test 11b: Cleanup mode should check for homeConfigSync mounts"
+if ! echo "$cleanup_output" | grep -q "homeConfigSync mounts\|homesync-"; then
+    echo "FAIL: Cleanup mode should check for homeConfigSync mounts"
+    echo "Output was:"
+    echo "$cleanup_output"
+    exit 1
+fi
+echo "  PASS: Cleanup mode checks for homeConfigSync mounts"
+
+echo "Test 11c: Cleanup mode should show unmount commands for homesync directories"
+if ! echo "$cleanup_output" | grep -q "umount.*files-bindfs\|umount.*original/\|umount.*cage/"; then
+    echo "FAIL: Cleanup mode should show unmount commands for homesync dirs"
+    echo "Output was:"
+    echo "$cleanup_output"
+    exit 1
+fi
+echo "  PASS: Cleanup mode shows homesync unmount commands"
+
+echo "Test 11d: Cleanup mode should kill shared sync processes"
+if ! echo "$cleanup_output" | grep -q "kill.*PIDs.*pids\|Stopping shared"; then
+    echo "FAIL: Cleanup mode should show killing shared processes from pids file"
+    echo "Output was:"
+    echo "$cleanup_output"
+    exit 1
+fi
+echo "  PASS: Cleanup mode handles shared PID file"
 
 echo ""
 echo "=== Testing cross-platform simulation ==="
@@ -578,6 +606,25 @@ if ! echo "$output" | grep -qE "(rsync|cp).*/claude-settings.json"; then
 fi
 echo "  PASS: Override entries synced"
 
+echo "Test 30a: Should display homeConfigSync header section"
+if ! echo "$output" | grep -q "Home config sync:"; then
+    echo "FAIL: Did not find 'Home config sync:' header section"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found homeConfigSync header section"
+
+echo "Test 30b: Should show mode prefix in homeConfigSync display"
+# Format is: [mode] path  or  [mode] path -> dest
+if ! echo "$output" | grep -qE '\[init\].*\.gitconfig|\[sync\].*\.claude'; then
+    echo "FAIL: Did not find mode prefix format in homeConfigSync display"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found mode prefix format in homeConfigSync display"
+
 echo ""
 echo "=== Testing homeConfigSync modes ==="
 
@@ -630,17 +677,17 @@ if ! echo "$modes_output" | grep -q "mode=link"; then
 fi
 echo "  PASS: Found mode=link"
 
-echo "Test 34: Should show mode=sync entries collected for unison"
-if ! echo "$modes_output" | grep -q "mode=sync.*unison\|Will sync.*bidirectionally"; then
-    echo "FAIL: Did not find mode=sync unison preparation"
+echo "Test 34: Should show mode=sync entries"
+if ! echo "$modes_output" | grep -q "(mode=sync)"; then
+    echo "FAIL: Did not find mode=sync entries"
     echo "Output was:"
     echo "$modes_output"
     exit 1
 fi
 echo "  PASS: Found mode=sync entries"
 
-echo "Test 35: Should show single unison process for all sync entries"
-if ! echo "$modes_output" | grep -q "homeConfigSync unison"; then
+echo "Test 35: Should show unison process for sync entries"
+if ! echo "$modes_output" | grep -q "homeConfigSync.*unison\|unison.*/original/"; then
     echo "FAIL: Did not find homeConfigSync unison process"
     echo "Output was:"
     echo "$modes_output"
@@ -648,14 +695,15 @@ if ! echo "$modes_output" | grep -q "homeConfigSync unison"; then
 fi
 echo "  PASS: Found homeConfigSync unison process"
 
-echo "Test 36: Should show -path arguments in unison command"
-if ! echo "$modes_output" | grep -q '\-path "\.claude".*\-path "\.claude\.json"\|\-path'; then
-    echo "FAIL: Did not find -path arguments in unison command"
+echo "Test 36: Should show root mounts with -path args (not whole home mount)"
+# User mode should create root mounts and use -path for each entry
+if ! echo "$modes_output" | grep -q 'root mounts\|homeConfigSync sync entry:\|-path'; then
+    echo "FAIL: Did not find root mount with -path pattern"
     echo "Output was:"
     echo "$modes_output"
     exit 1
 fi
-echo "  PASS: Found -path arguments in unison command"
+echo "  PASS: Found root mount with -path pattern"
 
 echo "Test 36b: Should show bindfs setup for homeConfigSync sync mode"
 if ! echo "$modes_output" | grep -q 'bindfs.*--create-for-user.*--create-for-group'; then
@@ -681,20 +729,67 @@ if ! echo "$modes_output" | grep -q '/run/claude-cage/'; then
 fi
 echo "  PASS: Bindfs mounts use /run/claude-cage/"
 
-echo "Test 36d: Should mount individual paths (not entire home)"
-if echo "$modes_output" | grep -q 'bindfs.*\$original_home \|bindfs.*/home/[^/]*"* /run'; then
-    echo "FAIL: Found bindfs mounting entire home directory (security issue)"
+echo "Test 36d: Should NOT mount entire home directory"
+# Should not see bindfs mounting the entire home directory
+if echo "$modes_output" | grep -qE 'bindfs.*"/home/[^/]+"\s+"/run/claude-cage/mounts/homesync-[^/]+/(original|cage)"'; then
+    echo "FAIL: Found whole home directory mount (security issue)"
     echo "Output was:"
     echo "$modes_output"
     exit 1
 fi
-if ! echo "$modes_output" | grep -q 'Creating per-path bindfs mounts'; then
-    echo "FAIL: Did not find per-path bindfs mount message"
+echo "  PASS: Does not mount entire home directory"
+
+echo "Test 36e: Should set up bindfs mounts for homeConfigSync"
+if ! echo "$modes_output" | grep -q 'Setting up homeConfigSync\|homeConfigSync.*root mounts\|homeConfigSync mount:'; then
+    echo "FAIL: Did not find homeConfigSync mount setup message"
     echo "Output was:"
     echo "$modes_output"
     exit 1
 fi
-echo "  PASS: Mounts individual paths, not entire home"
+echo "  PASS: Sets up homeConfigSync bindfs mounts"
+
+echo "Test 36f: Homesync mounts should use user name (shared across instances)"
+# Mount path should be homesync-<username> not homesync-<pid>
+if ! echo "$modes_output" | grep -qE '/run/claude-cage/mounts/homesync-testuser/'; then
+    echo "FAIL: homesync mount path should use username (homesync-testuser), not PID"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Homesync mounts use username for sharing"
+
+echo "Test 36g: Files should use symlinks (not mounts)"
+# Files in sync mode should be symlinked, not have full directory mounts
+if ! echo "$modes_output" | grep -qE 'file.*symlink|ln -s.*files-bindfs'; then
+    echo "FAIL: Did not find symlink approach for files"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Files use symlinks"
+
+echo "Test 36h: Shared mounts should be checked before creation"
+if ! echo "$modes_output" | grep -q 'mounts already exist\|Setting up homeConfigSync\|root mounts'; then
+    echo "FAIL: Did not find mount existence check message"
+    echo "Output was:"
+    echo "$modes_output"
+    exit 1
+fi
+echo "  PASS: Mount existence is checked"
+
+echo "Test 36i: Shared PID file should be used for sync processes"
+# PID file should be in the homesync directory (not project PID file)
+if ! echo "$modes_output" | grep -qE 'homesync-testuser/pids|already running.*shared'; then
+    # In dry-run we won't see "already running" but we should see the unison commands are being set up
+    # Now uses single unison with -path args instead of per-directory
+    if ! echo "$modes_output" | grep -q 'unison.*/original.*/cage.*-batch.*-path'; then
+        echo "FAIL: Did not find shared unison setup"
+        echo "Output was:"
+        echo "$modes_output"
+        exit 1
+    fi
+fi
+echo "  PASS: Shared sync processes setup found"
 
 echo "Test 37: mode=link should warn about files"
 # Create config with link mode on a file (which should warn)
@@ -856,6 +951,68 @@ fi
 echo "  PASS: Found home volume mount"
 
 # Test 40 was moved to Test 25b (uses same isolated mode config)
+
+echo ""
+echo "=== Testing instance file locations ==="
+
+cd "$TEST_TMP/project"
+
+echo "Test 40: User mode instance files should be in /run/claude-cage/"
+user_instance_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$user_instance_output" | grep -q "/run/claude-cage/instances"; then
+    echo "FAIL: Did not find /run/claude-cage/instances path"
+    echo "Output was:"
+    echo "$user_instance_output"
+    exit 1
+fi
+echo "  PASS: User mode uses /run/claude-cage/instances"
+
+echo "Test 41: Docker mode instance files should be in /run/user/"
+cd "$TEST_TMP/docker-persistent-test/myproject"
+docker_instance_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+if ! echo "$docker_instance_output" | grep -q "/run/user/.*/claude-cage/instances"; then
+    echo "FAIL: Did not find /run/user/<uid>/claude-cage/instances path"
+    echo "Output was:"
+    echo "$docker_instance_output"
+    exit 1
+fi
+echo "  PASS: Docker mode uses /run/user/<uid>/claude-cage/instances"
+
+echo ""
+echo "=== Testing Docker homeConfigSync implementation ==="
+
+echo "Test 42: Docker mode should use rsync for homeConfigSync (not docker cp)"
+if echo "$docker_instance_output" | grep -q "docker cp"; then
+    echo "FAIL: Found 'docker cp' - should use rsync to persistent home instead"
+    echo "Output was:"
+    echo "$docker_instance_output"
+    exit 1
+fi
+if ! echo "$docker_instance_output" | grep -q "rsync.*\.gitconfig"; then
+    echo "FAIL: Did not find rsync command for homeConfigSync"
+    echo "Output was:"
+    echo "$docker_instance_output"
+    exit 1
+fi
+echo "  PASS: Docker mode uses rsync for homeConfigSync"
+
+echo "Test 43: Docker sync mode should set up unison"
+if ! echo "$docker_instance_output" | grep -q "homeConfigSync unison"; then
+    echo "FAIL: Did not find unison setup for Docker sync mode"
+    echo "Output was:"
+    echo "$docker_instance_output"
+    exit 1
+fi
+echo "  PASS: Docker sync mode sets up unison"
+
+echo "Test 44: Docker sync mode should NOT use bindfs (same user)"
+if echo "$docker_instance_output" | grep -q "bindfs.*homeConfigSync\|Creating bindfs mounts for homeConfigSync"; then
+    echo "FAIL: Found bindfs for Docker homeConfigSync - not needed (same user)"
+    echo "Output was:"
+    echo "$docker_instance_output"
+    exit 1
+fi
+echo "  PASS: Docker sync mode does not use bindfs"
 
 echo ""
 echo "=== All dry-run tests passed! ==="

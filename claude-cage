@@ -2051,63 +2051,95 @@ get_source_display() {
     esac
 }
 
-# Collect and display excludes by source
-echo ""
-echo "Excludes:"
-has_excludes=false
-current_source=""
-for line in "${cfg_display_lines[@]}"; do
-    IFS='|' read -r category source type items <<< "$line"
-    if [ "$category" = "EXCLUDE" ]; then
-        has_excludes=true
-        if [ "$source" != "$current_source" ]; then
-            current_source="$source"
-            echo "  $(get_source_display "$source"):"
-        fi
-        # Capitalize first letter of type
-        type_display=$(echo "$type" | sed 's/\b\(.\)/\u\1/')
-        [ "$type" = "belowPath" ] && type_display="BelowPath"
-        printf "    %-10s %s\n" "$type_display:" "$items"
-    fi
-done
-if [ "$has_excludes" = false ]; then
-    echo "  (none)"
-fi
+# Display a pattern-based config section (Excludes, Cage-local, Block, Allow)
+# Usage: display_config_section CATEGORY "Header text" [show_if_empty]
+display_config_section() {
+    local filter_category="$1"
+    local header="$2"
+    local show_if_empty="${3:-false}"
+    local has_items=false
+    local current_source=""
 
-# Display cageLocal patterns if any
-has_cageLocal=false
-for line in "${cfg_display_lines[@]}"; do
-    IFS='|' read -r category source type items <<< "$line"
-    if [ "$category" = "CAGELOCAL" ]; then
-        if [ "$has_cageLocal" = false ]; then
-            echo ""
-            echo "Cage-local files (new creations blocked on source):"
-            has_cageLocal=true
-            current_source=""
+    for line in "${cfg_display_lines[@]}"; do
+        IFS='|' read -r category source type items <<< "$line"
+        if [ "$category" = "$filter_category" ]; then
+            if [ "$has_items" = false ]; then
+                echo ""
+                echo "$header"
+                has_items=true
+            fi
+            if [ "$source" != "$current_source" ]; then
+                current_source="$source"
+                echo "  $(get_source_display "$source"):"
+            fi
+            # Capitalize first letter of type, preserve camelCase for belowPath
+            local type_display
+            type_display=$(echo "$type" | sed 's/\b\(.\)/\u\1/')
+            [ "$type" = "belowPath" ] && type_display="BelowPath"
+            printf "    %-10s %s\n" "$type_display:" "$items"
         fi
-        if [ "$source" != "$current_source" ]; then
-            current_source="$source"
-            echo "  $(get_source_display "$source"):"
-        fi
-        # Capitalize first letter of type
-        type_display=$(echo "$type" | sed 's/\b\(.\)/\u\1/')
-        [ "$type" = "belowPath" ] && type_display="BelowPath"
-        printf "    %-10s %s\n" "$type_display:" "$items"
-    fi
-done
+    done
 
-# Display homeConfigSync entries if any
+    if [ "$has_items" = false ] && [ "$show_if_empty" = true ]; then
+        echo ""
+        echo "$header"
+        echo "  (none)"
+    fi
+}
+
+# Display Excludes (always show, even if empty)
+display_config_section "EXCLUDE" "Excludes:" true
+
+# Display Cage-local (only if present)
+display_config_section "CAGELOCAL" "Cage-local files (new creations blocked on source):"
+
+# Display homeConfigSync entries if any (group consecutive non-sync entries by mode)
 if [ ${#cfg_homeConfigSync[@]} -gt 0 ]; then
     echo ""
     echo "Home config sync:"
+
+    hcs_prev_mode=""
+    hcs_pending_entries=""
+
     for entry in "${cfg_homeConfigSync[@]}"; do
         IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
-        if [ "$sync_source" = "$sync_dest" ]; then
-            printf "  %-6s %s\n" "[$sync_mode]" "$sync_source"
+
+        # Format entry (show -> dest if different)
+        hcs_entry_display="$sync_source"
+        [ "$sync_source" != "$sync_dest" ] && hcs_entry_display="$sync_source -> $sync_dest"
+
+        if [ "$sync_mode" = "sync" ]; then
+            # Flush any pending entries first
+            if [ -n "$hcs_pending_entries" ]; then
+                printf "  %-6s %s\n" "[$hcs_prev_mode]" "$hcs_pending_entries"
+                hcs_pending_entries=""
+            fi
+            # Sync mode: show on its own line with excludes
+            hcs_sync_display="$hcs_entry_display"
+            if [ -n "$sync_excludes" ]; then
+                # Extract just the paths from -ignore "Path x" -ignore "BelowPath y" format
+                hcs_exclude_paths=$(echo "$sync_excludes" | sed 's/-ignore "//g; s/" /,/g; s/"$//; s/Path //g; s/BelowPath //g; s/Name //g')
+                hcs_sync_display="$hcs_sync_display (excludes: $hcs_exclude_paths)"
+            fi
+            printf "  %-6s %s\n" "[sync]" "$hcs_sync_display"
+            hcs_prev_mode=""
+        elif [ "$sync_mode" = "$hcs_prev_mode" ]; then
+            # Same mode as previous, append
+            hcs_pending_entries="$hcs_pending_entries, $hcs_entry_display"
         else
-            printf "  %-6s %s -> %s\n" "[$sync_mode]" "$sync_source" "$sync_dest"
+            # Different mode, flush previous and start new group
+            if [ -n "$hcs_pending_entries" ]; then
+                printf "  %-6s %s\n" "[$hcs_prev_mode]" "$hcs_pending_entries"
+            fi
+            hcs_pending_entries="$hcs_entry_display"
+            hcs_prev_mode="$sync_mode"
         fi
     done
+
+    # Flush any remaining entries
+    if [ -n "$hcs_pending_entries" ]; then
+        printf "  %-6s %s\n" "[$hcs_prev_mode]" "$hcs_pending_entries"
+    fi
 fi
 
 # Display network rules by source if network mode is enabled
@@ -2592,7 +2624,7 @@ homeConfigSync_setup_unison() {
         echo "homeConfigSync unison already running (shared)"
     else
         # Initial one-shot sync (force from source to populate destination)
-        run unison "${unison_initial_args[@]}"
+        run_quiet unison "${unison_initial_args[@]}"
         [ "$dry_run" != true ] && echo "homeConfigSync initial sync complete"
 
         # Start watch mode (bidirectional)

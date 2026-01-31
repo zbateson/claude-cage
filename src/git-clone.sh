@@ -27,22 +27,22 @@ create_intermediary_clone() {
     # Clean up existing .caged directory if it exists
     if [ -d "$caged_dir" ]; then
         echo "  Removing existing .caged directory..."
-        rm -rf "$caged_dir"
+        run rm -rf "$caged_dir"
     fi
 
-    mkdir -p "$caged_dir"
+    run mkdir -p "$caged_dir"
 
     # Enable filter support in the source repo
     echo "  Enabling uploadpack.allowFilter..."
-    git -C "$source_dir" config uploadpack.allowFilter true
+    run git -C "$source_dir" config uploadpack.allowFilter true
 
     # Create shallow sparse clone
     echo "  Creating shallow sparse clone..."
-    git clone --depth 1 --sparse --filter=blob:none "file://$source_dir" "$intermediary_dir"
+    run git clone --depth 1 --sparse --filter=blob:none "file://$source_dir" "$intermediary_dir"
 
     # Initialize sparse-checkout in no-cone mode (allows gitignore-style patterns)
     echo "  Initializing sparse-checkout (no-cone mode)..."
-    git -C "$intermediary_dir" sparse-checkout init --no-cone
+    run git -C "$intermediary_dir" sparse-checkout init --no-cone
 
     # Build sparse-checkout patterns: start with /* to include all, then add excludes
     local sparse_patterns=("/*")
@@ -72,7 +72,7 @@ create_intermediary_clone() {
             fi
         done
     fi
-    git -C "$intermediary_dir" sparse-checkout set "${sparse_patterns[@]}"
+    run git -C "$intermediary_dir" sparse-checkout set "${sparse_patterns[@]}"
 
     echo ""
     echo "Intermediary clone created at: $intermediary_dir"
@@ -80,23 +80,25 @@ create_intermediary_clone() {
     # Create work directory from intermediary
     echo ""
     echo "Creating work directory..."
-    git clone "$intermediary_dir" "$work_dir"
+    run git clone "$intermediary_dir" "$work_dir"
 
     # Create claude branch for work
     echo "  Creating branch: claude/$source_branch"
-    git -C "$work_dir" checkout -b "claude/$source_branch"
+    run git -C "$work_dir" checkout -b "claude/$source_branch"
 
     echo ""
     echo "Work directory created at: $work_dir"
     echo "  Branch: claude/$source_branch"
 
-    # Show what files are in work
-    echo ""
-    echo "Files in work directory:"
-    local file_count
-    file_count=$(cd "$work_dir" && find . -type f -not -path './.git/*' | wc -l)
-    (cd "$work_dir" && find . -type f -not -path './.git/*' | head -20)
-    if [ "$file_count" -gt 20 ]; then
-        echo "  ... and $((file_count - 20)) more files"
+    # Show what files are in work (skip in dry-run)
+    if [ "$dry_run" != true ]; then
+        echo ""
+        echo "Files in work directory:"
+        local file_count
+        file_count=$(cd "$work_dir" && find . -type f -not -path './.git/*' | wc -l)
+        (cd "$work_dir" && find . -type f -not -path './.git/*' | head -20)
+        if [ "$file_count" -gt 20 ]; then
+            echo "  ... and $((file_count - 20)) more files"
+        fi
     fi
 }

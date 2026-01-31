@@ -1,5 +1,6 @@
 SOURCES = \
 	src/header.sh \
+	src/helpers.sh \
 	src/banner.sh \
 	src/config.sh \
 	src/git-clone.sh \

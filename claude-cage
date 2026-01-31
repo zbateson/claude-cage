@@ -1150,12 +1150,13 @@ _docker_exec_impl() {
     fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker exec ${it_display}-e HOME=/home/claude ${user_opt[*]} $container_name $*"
+        echo "[dry-run] docker exec ${it_display}-e HOME=/home/claude -e PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin ${user_opt[*]} $container_name $*"
         return 0
     fi
 
-    # Set HOME explicitly since the UID may not exist in container's /etc/passwd
-    run docker exec "${it_flag[@]}" -e HOME=/home/claude "${user_opt[@]}" "$container_name" "$@"
+    # Set HOME and PATH explicitly since the UID may not exist in container's /etc/passwd
+    # PATH includes ~/.local/bin where Claude Code is installed
+    run docker exec "${it_flag[@]}" -e HOME=/home/claude -e "PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin" "${user_opt[@]}" "$container_name" "$@"
 }
 
 # Execute command in running container (interactive)

@@ -26,11 +26,12 @@ claude_cage {
     -- Isolation mode (default: "user")
     -- Options: "user" or "docker"
     --
-    -- User mode (default): Uses a separate Unix user for isolation
-    --   - Requires sudo to run (creates/uses system user)
+    -- bwrap mode (default): Uses bwrap namespace isolation
+    --   - Requires sudo to run (creates system user for iptables UID)
+    --   - Uses bwrap for namespace isolation
     --   - Uses bindfs for permission mapping
     --   - Uses iptables/pf for network restrictions
-    --   - Claude Code login persists in user's home directory
+    --   - Claude Code login persists in ~/.local/share/claude-cage/bwrap/
     --
     -- Docker mode: Uses a Docker container for isolation
     --   - No sudo required (just Docker group membership)
@@ -38,7 +39,7 @@ claude_cage {
     --   - Uses Docker networking (--network=none or bridge)
     --   - Claude Code login persists in container between runs
     --
-    -- isolationMode = "user",
+    -- isolationMode = "bwrap",
 
     -- ============================================================================
     -- DOCKER MODE SETTINGS (only used when isolationMode = "docker")

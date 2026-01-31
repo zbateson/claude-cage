@@ -103,8 +103,8 @@ fi
 echo "  PASS: Found bindfs command"
 
 echo "Test 7b: Project mapping should use /run staging area"
-# With bwrap architecture, bindfs mounts to /run/claude-cage/<user>/project/
-if ! echo "$output" | grep -q "bindfs.*/run/claude-cage/[^/]*/project/"; then
+# With bwrap architecture, bindfs mounts to /run/claude-cage/<user>/bwrap/projects/
+if ! echo "$output" | grep -q "bindfs.*/run/claude-cage/[^/]*/bwrap/projects/"; then
     echo "FAIL: Did not find project mapping in /run staging area"
     echo "Output was:"
     echo "$output"
@@ -231,7 +231,7 @@ fi
 echo "  PASS: Cleanup mode shows dry-run commands"
 
 echo "Test 11b: Cleanup mode should check for homeConfigSync directories"
-if ! echo "$cleanup_output" | grep -q "homeConfigSync directories\|/homesync/"; then
+if ! echo "$cleanup_output" | grep -q "homeConfigSync directories\|/home-config/"; then
     echo "FAIL: Cleanup mode should check for homeConfigSync directories"
     echo "Output was:"
     echo "$cleanup_output"
@@ -240,9 +240,9 @@ fi
 echo "  PASS: Cleanup mode checks for homeConfigSync directories"
 
 echo "Test 11c: Cleanup mode should report homesync status"
-# In dry-run without actual mounts, should report "No homeConfigSync mounts found"
+# In dry-run without actual mounts, should report "No homeConfigSync directories found"
 # With mounts, would show unmount commands
-if ! echo "$cleanup_output" | grep -q "No homeConfigSync mounts found\|umount.*homesync"; then
+if ! echo "$cleanup_output" | grep -q "No homeConfigSync directories found\|umount.*home-config"; then
     echo "FAIL: Cleanup mode should report homeConfigSync status"
     echo "Output was:"
     echo "$cleanup_output"
@@ -747,7 +747,7 @@ echo "  PASS: Bindfs mounts use /run/claude-cage/"
 
 echo "Test 36d: Should NOT mount entire home directory"
 # Should not see bindfs mounting the entire home directory
-if echo "$modes_output" | grep -qE 'bindfs.*"/home/[^/]+"\s+"/run/claude-cage/[^/]+/homesync/(origin|cage-mount)"'; then
+if echo "$modes_output" | grep -qE 'bindfs.*"/home/[^/]+"\s+"/run/claude-cage/[^/]+/home-config/(origin|cage-mount)"'; then
     echo "FAIL: Found whole home directory mount (security issue)"
     echo "Output was:"
     echo "$modes_output"
@@ -756,7 +756,7 @@ fi
 echo "  PASS: Does not mount entire home directory"
 
 echo "Test 36e: Should set up bindfs mounts for homeConfigSync"
-if ! echo "$modes_output" | grep -q 'homeConfigSync setup:\|bindfs.*homesync'; then
+if ! echo "$modes_output" | grep -q 'homeConfigSync setup:\|bindfs.*home-config'; then
     echo "FAIL: Did not find homeConfigSync mount setup message"
     echo "Output was:"
     echo "$modes_output"
@@ -764,15 +764,15 @@ if ! echo "$modes_output" | grep -q 'homeConfigSync setup:\|bindfs.*homesync'; t
 fi
 echo "  PASS: Sets up homeConfigSync bindfs mounts"
 
-echo "Test 36f: Homesync mounts should use user name (shared across instances)"
-# Mount path should be homesync-<username> not homesync-<pid>
-if ! echo "$modes_output" | grep -qE '/run/claude-cage/testuser/homesync/'; then
-    echo "FAIL: homesync path should use username (testuser), not PID"
+echo "Test 36f: Home-config mounts should use original user name (shared across instances)"
+# Mount path should be sync/<original_user>/home-config/
+if ! echo "$modes_output" | grep -qE '/run/claude-cage/testuser/sync/[^/]+/home-config/'; then
+    echo "FAIL: home-config path should be under sync/<original_user>/"
     echo "Output was:"
     echo "$modes_output"
     exit 1
 fi
-echo "  PASS: Homesync mounts use username for sharing"
+echo "  PASS: Home-config mounts use correct path structure"
 
 echo "Test 36g: Origin dir should use bindfs mounts for entries"
 # User mode: origin/ contains bindfs mounts for both directories and files
@@ -785,7 +785,7 @@ fi
 echo "  PASS: Origin dir uses bindfs mounts for entries"
 
 echo "Test 36h: Shared mounts should be checked before creation"
-if ! echo "$modes_output" | grep -q 'mounts already exist\|homeConfigSync setup:\|bindfs.*homesync'; then
+if ! echo "$modes_output" | grep -q 'mounts already exist\|homeConfigSync setup:\|bindfs.*home-config'; then
     echo "FAIL: Did not find mount existence check message"
     echo "Output was:"
     echo "$modes_output"
@@ -794,11 +794,11 @@ fi
 echo "  PASS: Mount existence is checked"
 
 echo "Test 36i: Shared PID file should be used for sync processes"
-# PID file should be in the homesync directory (not project PID file)
-if ! echo "$modes_output" | grep -qE 'homesync/testuser/pids|already running.*shared'; then
+# PID file should be in the home-config directory (not project PID file)
+if ! echo "$modes_output" | grep -qE 'home-config/pids|already running.*shared'; then
     # In dry-run we won't see "already running" but we should see the unison commands are being set up
     # User mode: unison syncs cage/ <-> target_home with -path args
-    if ! echo "$modes_output" | grep -qE 'unison .*/homesync/cage-mount.*-batch.*-path'; then
+    if ! echo "$modes_output" | grep -qE 'unison .*/home-config/cage-mount.*-batch.*-path'; then
         echo "FAIL: Did not find shared unison setup"
         echo "Output was:"
         echo "$modes_output"

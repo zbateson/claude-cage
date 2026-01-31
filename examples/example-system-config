@@ -10,10 +10,10 @@ claude_cage {
     -- ORGANIZATIONAL DEFAULTS
     -- ============================================================================
 
-    -- Default isolation mode (default: "user")
-    -- "user" - Unix user isolation, requires sudo
+    -- Default isolation mode (default: "bwrap")
+    -- "bwrap" - bwrap namespace isolation, requires sudo
     -- "docker" - Container isolation, no sudo required
-    -- isolationMode = "user",
+    -- isolationMode = "bwrap",
 
     -- ============================================================================
     -- ORGANIZATION-WIDE FILE EXCLUSIONS

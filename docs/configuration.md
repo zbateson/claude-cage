@@ -101,10 +101,11 @@ sudo claude-cage         # Loads frontend.claude-cage.config if exists
 
 ### user
 
-Base user account name to run Claude Code as (user isolation mode only).
+System user account name for iptables UID matching (user isolation mode only).
 
 - Default: `"claude"`
-- Only used when `isolationMode = "user"`
+- Only used when `isolationMode = "bwrap"`
+- User is created without home directory (persistent home is in `~/.local/share/claude-cage/`)
 
 ```lua
 user = "claude"
@@ -114,15 +115,15 @@ user = "claude"
 
 Isolation mode selection.
 
-- Default: `"user"`
-- Options: `"user"` or `"docker"`
+- Default: `"bwrap"`
+- Options: `"bwrap"` or `"docker"`
 
-**User mode (default):**
-- Uses a separate Unix user for isolation
+**bwrap mode (default):**
+- Uses bwrap (bubblewrap) to create isolated filesystem namespace
 - Requires sudo to run
-- Uses bindfs for permission mapping
-- Uses iptables/pf for network restrictions
-- Claude Code login persists in user's home directory
+- Uses bindfs for permission mapping to/from the bwrap sandbox
+- Uses iptables for network restrictions (Linux only)
+- Claude Code login persists in `~/.local/share/claude-cage/bwrap/<username>/home/`
 
 **Docker mode:**
 - Uses a Docker container for isolation
@@ -132,7 +133,7 @@ Isolation mode selection.
 - Claude Code login persists in container between runs
 
 ```lua
-isolationMode = "user"    -- Default: Unix user isolation
+isolationMode = "bwrap"   -- Default: bwrap namespace isolation
 isolationMode = "docker"  -- Container isolation
 ```
 
@@ -234,7 +235,7 @@ source = "my-directory"  -- Override to use a different subdirectory
 
 Sync directory path (ignored in direct mount mode).
 
-- Default: `/run/claude-cage/<user>/projects/<project>/sync` (user mode)
+- Default: `/run/claude-cage/<user>/projects/<project>/sync` (bwrap mode)
 - Default: `/run/user/<uid>/claude-cage/projects/<project>/sync` (docker mode)
 - Only used in sync mode
 - Stored in `/run/` so it's cleared on reboot and can't be accidentally deleted
@@ -248,11 +249,11 @@ sync = "/custom/path/sync"  -- Only override if you have a specific need
 Final directory name in the mount path.
 
 - Default: Project name
-- Mount points are in `/home/<user>/caged/<mounted>/`
+- Inside the bwrap sandbox, the project appears at `/home/<user>/caged/<mounted>/`
 - This is the actual working directory where Claude starts
 
 ```lua
-mounted = "my-app"  -- Results in /home/claude/caged/my-app/
+mounted = "my-app"  -- Project appears at /home/claude/caged/my-app/ inside sandbox
 ```
 
 ### showBanner

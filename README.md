@@ -275,12 +275,12 @@ allow = { ips = { "127.0.0.1:5432" } }        -- Exception for PostgreSQL
 
 ### Isolation Modes
 
-**User mode** (default) - Uses a separate Unix user for isolation. Requires sudo.
+**bwrap mode** (default) - Uses bwrap (bubblewrap) for namespace isolation. Requires sudo. Linux only.
 
 **Docker mode** - Uses a Docker container for isolation. No sudo required, just Docker group membership.
 
 ```lua
-isolationMode = "docker"   -- Default is "user"
+isolationMode = "docker"   -- Default is "bwrap"
 
 docker = {
     image = "node:lts-slim",       -- Base image (must have Node.js)

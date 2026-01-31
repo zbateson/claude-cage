@@ -195,7 +195,7 @@ section_header() {
     echo "$*"
 }
 
-# Run a command inside a bwrap sandbox as the specified user (Linux user mode only)
+# Run a command inside a bwrap sandbox as the specified user (Linux bwrap mode only)
 # Usage: run_in_bwrap <username> <mapped_home> <project_src> <project_dest> <workdir> [command...]
 #
 # Arguments:
@@ -270,6 +270,8 @@ run_in_bwrap() {
     # Environment variables
     bwrap_cmd+=" --setenv HOME '$user_home'"
     bwrap_cmd+=" --setenv USER '$username'"
+    bwrap_cmd+=" --setenv SHELL /bin/bash"
+    bwrap_cmd+=" --setenv LC_ALL '${LC_ALL}'"
     bwrap_cmd+=" --setenv PATH '/usr/local/bin:/usr/bin:/bin:$user_home/.local/bin'"
     bwrap_cmd+=" --setenv TERM '${TERM:-xterm-256color}'"
     bwrap_cmd+=" --setenv LANG '${LANG:-C.UTF-8}'"
@@ -413,17 +415,8 @@ get_user_gid() {
 }
 
 # Get user home directory
-get_user_home() {
-    local username="$1"
-    if [ "$OS_TYPE" = "linux" ]; then
-        getent passwd "$username" 2>/dev/null | cut -d: -f6
-    elif [ "$OS_TYPE" = "macos" ]; then
-        dscl . -read /Users/"$username" NFSHomeDirectory 2>/dev/null | awk '{print $2}'
-    fi
-}
-
 # Create user
-# For user mode with bwrap, we don't need a real home directory -
+# For bwrap mode, we don't need a real home directory -
 # the persistent home lives in ~/.local/share/claude-cage/ and is mounted via bwrap
 create_user() {
     local username="$1"
@@ -804,19 +797,19 @@ docker_compute_container_name() {
 
 # Compute persistent home path based on isolation mode
 # Docker: ~/.local/share/claude-cage/docker/<container-name>/home
-# User (bwrap): ~/.local/share/claude-cage/user/<username>/home
+# bwrap mode: ~/.local/share/claude-cage/bwrap/<username>/home
 #
-# For user mode, we use a single shared home per username (like Docker's non-isolated mode).
+# For bwrap mode, we use a single shared home per username (like Docker's non-isolated mode).
 # The persistent home is owned by the original user and mapped via bindfs for the cage user.
 persistent_home_path() {
     local mode="$1"  # "docker" or "user"
-    local identifier="$2"  # container name for docker, username for user mode
+    local identifier="$2"  # container name for docker, username for bwrap mode
     local owner_home="$3"  # home directory of the owner (original user)
 
     if [ "$mode" = "docker" ]; then
         echo "$owner_home/.local/share/claude-cage/docker/$identifier/home"
     else
-        echo "$owner_home/.local/share/claude-cage/user/$identifier/home"
+        echo "$owner_home/.local/share/claude-cage/bwrap/$identifier/home"
     fi
 }
 
@@ -1034,25 +1027,6 @@ docker_remove_container() {
 
 # Copy file/directory to container
 # For directories, removes destination first to avoid nesting (docker cp quirk)
-docker_copy_to_container() {
-    local container_name="$1"
-    local source_path="$2"
-    local dest_path="$3"
-
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker cp $source_path $container_name:$dest_path"
-        return 0
-    fi
-
-    # For directories, remove destination first to avoid docker cp nesting issue
-    # (docker cp copies INTO existing directories instead of replacing them)
-    if [ -d "$source_path" ]; then
-        run_quiet docker exec "$container_name" rm -rf "$dest_path" || true
-    fi
-
-    run docker cp "$source_path" "$container_name:$dest_path"
-}
-
 # Important things first
 print_banner() {
     local banner=$(cat << 'EOF'
@@ -1126,7 +1100,7 @@ if [ "$OS_TYPE" = "linux" ]; then
         echo "Install it: sudo apt install inotify-tools"
         exit 1
     fi
-    # Linux user mode uses bwrap for sandboxing
+    # Linux bwrap mode uses bubblewrap for sandboxing
     if ! command -v bwrap >/dev/null 2>&1; then
         echo "Hold on now. We got a problem here."
         echo "I need bubblewrap (bwrap) installed for sandboxing."
@@ -1471,7 +1445,7 @@ if project == "" then
     project = config.project or derived_project
 end
 local user = config.user or "claude-cage"
-local isolationMode = config.isolationMode or "user"  -- Options: "user" or "docker"
+local isolationMode = config.isolationMode or "bwrap"  -- Options: "bwrap" or "docker"
 local source = config.source or ""
 local sync = config.sync or ""
 local mounted = config.mounted or ""
@@ -1491,8 +1465,8 @@ local dockerUser = docker.user or ""             -- User to run as in existing c
 local dockerWorkdir = docker.workdir or ""       -- Working directory in existing container
 
 -- Validate isolationMode
-if isolationMode ~= "user" and isolationMode ~= "docker" then
-    error("Invalid isolationMode: must be 'user' or 'docker'")
+if isolationMode ~= "bwrap" and isolationMode ~= "docker" then
+    error("Invalid isolationMode: must be 'bwrap' or 'docker'")
 end
 
 -- Source defaults to the project directory (config_root/project)
@@ -1521,7 +1495,7 @@ if source == "" then
 end
 
 -- If sync is empty, set a placeholder (overridden in bash to use /run/)
--- Actual path: /run/claude-cage/<user>/projects/<project>/sync (user mode)
+-- Actual path: /run/claude-cage/<user>/sync/<original_user>/projects/<project> (bwrap mode)
 --              /run/user/<uid>/claude-cage/projects/<project>/sync (docker mode)
 if sync == "" then
     sync = "__default__"
@@ -1908,7 +1882,7 @@ fi
 if [ "$cfg_isolationMode" = "docker" ]; then
     if ! docker_available; then
         echo "Hold on now. You're tryin' to use Docker mode but docker ain't installed."
-        echo "Either install Docker or switch to user mode (isolationMode = \"user\")."
+        echo "Either install Docker or switch to bwrap mode (isolationMode = \"bwrap\")."
         exit 1
     fi
     if ! docker_accessible; then
@@ -1924,13 +1898,13 @@ if [ "$cfg_isolationMode" = "docker" ]; then
 fi
 
 # Set sync directory in /run/
-# User mode: /run/claude-cage/<user>/projects/<project>/sync
+# bwrap mode: /run/claude-cage/<user>/sync/<original_user>/projects/<project>
 # Docker mode: /run/user/<uid>/claude-cage/projects/<project>/sync
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
     if [ "$cfg_isolationMode" = "docker" ]; then
         cfg_sync="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/sync"
     else
-        cfg_sync="/run/claude-cage/${cfg_user}/projects/${cfg_project}/sync"
+        cfg_sync="/run/claude-cage/${cfg_user}/sync/${original_user}/projects/${cfg_project}"
     fi
 fi
 
@@ -1950,7 +1924,7 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ];
 fi
 
 # Define PID and instance file paths early (needed for cleanup mode)
-# User mode: /run/claude-cage/<user>/projects/<project>/
+# bwrap mode: /run/claude-cage/<user>/projects/<project>/
 # Docker mode: /run/user/<uid>/claude-cage/projects/<project>/
 if [ "$cfg_isolationMode" = "docker" ]; then
     pid_file="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/claude-cage.pid"
@@ -2067,10 +2041,10 @@ if [ "$cleanup_mode" = true ]; then
     section_header "Alright, let's clean up this operation."
 
     # Construct paths using same logic as main script
-    # In bwrap architecture, mounts are in /run/claude-cage/<user>/
-    mapped_home_base="/run/claude-cage/$cfg_user"
+    # In bwrap architecture, mounts are in /run/claude-cage/<user>/bwrap/
+    mapped_home_base="/run/claude-cage/$cfg_user/bwrap"
     mapped_home="$mapped_home_base/home"
-    mapped_project="$mapped_home_base/project/$cfg_mounted"
+    mapped_project="$mapped_home_base/projects/$cfg_mounted"
 
     # Find and unmount project bindfs mount
     echo "Checking for project mount..."
@@ -2102,75 +2076,118 @@ if [ "$cleanup_mode" = true ]; then
 
     # Clean up the /run directories if empty
     if [ "$dry_run" != true ]; then
-        rmdir "$mapped_home_base/project" 2>/dev/null
+        rmdir "$mapped_home_base/projects" 2>/dev/null
         rmdir "$mapped_home_base" 2>/dev/null
+        rmdir "/run/claude-cage/$cfg_user/bwrap" 2>/dev/null
     fi
 
-    # Find and unmount homeConfigSync mounts for this user (user mode only)
+    # Find and unmount homeConfigSync mounts for this user (bwrap mode only)
     # Docker mode uses different paths and doesn't have bindfs mounts
     if [ "$cfg_isolationMode" != "docker" ]; then
-        homesync_dir="/run/claude-cage/${cfg_user}/homesync/"
-        echo "Checking for homeConfigSync directory..."
-        if [ -d "$homesync_dir" ] || [ "$dry_run" = true ]; then
-            echo "Found homeConfigSync directory: $homesync_dir"
-
+        # Look for sync directories (structure: /run/claude-cage/<cage_user>/sync/<original_user>/home-config/)
+        sync_base="/run/claude-cage/${cfg_user}/sync"
+        echo "Checking for sync directories at $sync_base ..."
+        if [ -d "$sync_base" ] || [ "$dry_run" = true ]; then
             # Check if any instances are still running for this user
             global_inst_file="/run/claude-cage/${cfg_user}/instances/global"
-            skip_homesync_cleanup=false
+            skip_cleanup=false
             if [ -f "$global_inst_file" ] && [ "$dry_run" != true ]; then
                 filter_live_instances "$global_inst_file" running_instances
                 if [ ${#running_instances[@]} -gt 0 ]; then
                     echo "  WARNING: ${#running_instances[@]} instance(s) still running for user $cfg_user"
                     echo "           PIDs: ${running_instances[*]}"
                     echo "           Skipping cleanup. Stop instances first or use --cleanup again after they exit."
-                    skip_homesync_cleanup=true
+                    skip_cleanup=true
                 fi
             fi
 
-            if [ "$skip_homesync_cleanup" = false ]; then
-                if [ "$dry_run" = true ]; then
-                    echo "[dry-run] kill <PIDs from ${homesync_dir}pids>"
-                    echo "[dry-run] umount -l ${homesync_dir}cage-mount (bindfs mount)"
-                    echo "[dry-run] umount per-entry mounts under ${homesync_dir}origin/"
-                    echo "[dry-run] rm -rf $homesync_dir"
-                else
-                    # Kill shared processes from the homesync PID file
-                    if [ -f "${homesync_dir}pids" ]; then
-                        echo "  Stopping shared homeConfigSync processes..."
-                        kill_labeled_processes_from_file "${homesync_dir}pids" --remove
-                    fi
+            if [ "$skip_cleanup" = false ]; then
+                # Find all home-config directories under sync/<user>/
+                found_homesync=false
+                for homesync_dir in "$sync_base"/*/home-config/; do
+                    [ -d "$homesync_dir" ] || continue
+                    found_homesync=true
+                    echo "  Found homeConfigSync directory: $homesync_dir"
 
-                    # Unmount cage-mount/ bindfs mount first (it references origin/)
-                    if mountpoint -q "${homesync_dir}cage-mount" 2>/dev/null; then
-                        run_quiet umount -l "${homesync_dir}cage-mount"
-                        echo "  Unmounted ${homesync_dir}cage-mount"
-                    fi
+                    if [ "$dry_run" = true ]; then
+                        echo "[dry-run] kill <PIDs from ${homesync_dir}pids>"
+                        echo "[dry-run] umount -l ${homesync_dir}cage-mount (bindfs mount)"
+                        echo "[dry-run] umount per-entry mounts under ${homesync_dir}origin/"
+                        echo "[dry-run] rm -rf $homesync_dir"
+                    else
+                        # Kill shared processes from the homesync PID file
+                        if [ -f "${homesync_dir}pids" ]; then
+                            echo "    Stopping shared homeConfigSync processes..."
+                            kill_labeled_processes_from_file "${homesync_dir}pids" --remove
+                        fi
 
-                    # Unmount per-entry bindfs mounts in origin/ (both files and directories)
-                    homesync_origin_dest_dir="${homesync_dir}origin"
-                    if [ -d "$homesync_origin_dest_dir" ]; then
-                        echo "  Unmounting origin/ per-entry mounts..."
-                        # Safe to grep - we control this specific path
-                        for mount_path in $(mount | grep " ${homesync_origin_dest_dir}/" | awk '{print $3}'); do
-                            if mountpoint -q "$mount_path" 2>/dev/null; then
-                                run_quiet umount -l "$mount_path"
-                                echo "    Unmounted $mount_path"
-                            fi
-                        done
-                    fi
+                        # Unmount cage-mount/ bindfs mount first (it references origin/)
+                        if mountpoint -q "${homesync_dir}cage-mount" 2>/dev/null; then
+                            run_quiet umount -l "${homesync_dir}cage-mount"
+                            echo "    Unmounted ${homesync_dir}cage-mount"
+                        fi
 
-                    # Remove homesync directory and user directory if empty
-                    run_quiet rm -rf "$homesync_dir"
-                    rmdir "/run/claude-cage/${cfg_user}" 2>/dev/null  # only succeeds if empty
-                    echo "  Cleaned up $homesync_dir"
+                        # Unmount per-entry bindfs mounts in origin/ (both files and directories)
+                        homesync_origin_dest_dir="${homesync_dir}origin"
+                        if [ -d "$homesync_origin_dest_dir" ]; then
+                            echo "    Unmounting origin/ per-entry mounts..."
+                            for mount_path in $(mount | grep " ${homesync_origin_dest_dir}/" | awk '{print $3}'); do
+                                if mountpoint -q "$mount_path" 2>/dev/null; then
+                                    run_quiet umount -l "$mount_path"
+                                    echo "      Unmounted $mount_path"
+                                fi
+                            done
+                        fi
+
+                        # Remove homesync directory
+                        run_quiet rm -rf "$homesync_dir"
+                        echo "    Cleaned up $homesync_dir"
+                    fi
+                done
+
+                if [ "$found_homesync" = false ]; then
+                    echo "  No homeConfigSync directories found."
+                fi
+
+                # Clean up sync directory structure if empty
+                if [ "$dry_run" != true ]; then
+                    for user_sync_dir in "$sync_base"/*/; do
+                        [ -d "$user_sync_dir" ] || continue
+                        rmdir "$user_sync_dir" 2>/dev/null
+                    done
+                    rmdir "$sync_base" 2>/dev/null
                 fi
             fi
         else
-            echo "  No homeConfigSync directory found for user $cfg_user."
+            echo "  No sync directory found."
+        fi
+
+        # Check for persistent home directory
+        persistent_home_dir="$HOME/.local/share/claude-cage/bwrap/${cfg_user}"
+        echo "Checking for persistent home at $persistent_home_dir ..."
+        if [ -d "$persistent_home_dir" ] || [ "$dry_run" = true ]; then
+            echo "  Found persistent home directory."
+            if [ "$dry_run" = true ]; then
+                echo "[dry-run] Would prompt to delete persistent home"
+            else
+                echo -n "  Delete persistent home (contains Claude credentials)? (y/N): "
+                read -r response
+                if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+                    run rm -rf "$persistent_home_dir"
+                    # Clean up parent dirs if empty
+                    rmdir "$HOME/.local/share/claude-cage/bwrap" 2>/dev/null
+                    rmdir "$HOME/.local/share/claude-cage" 2>/dev/null
+                    echo "  Persistent home deleted."
+                else
+                    echo "  Leaving persistent home alone."
+                fi
+            fi
+        else
+            echo "  No persistent home found."
         fi
     fi
 
-    # Clean up iptables rules for this user (user mode only)
+    # Clean up iptables rules for this user (bwrap mode only)
     # Docker mode uses Docker networking, not iptables
     if [ "$cfg_isolationMode" != "docker" ]; then
         if user_exists "$cfg_user" || [ "$dry_run" = true ]; then
@@ -2239,12 +2256,12 @@ if [ "$cleanup_mode" = true ]; then
         echo "No PID file found at $pid_file"
     fi
 
-    # Ask about user deletion (only in user mode, not docker mode)
+    # Ask about user deletion (only in bwrap mode, not docker mode)
     # Docker mode doesn't create system users
     if [ "$cfg_isolationMode" != "docker" ]; then
         if user_exists "$cfg_user"; then
             echo ""
-            echo "User '$cfg_user' exists on this system."
+            echo "System user '$cfg_user' exists (used for iptables UID matching)."
 
             # Check if any instances are still running for this user
             global_inst_file="/run/claude-cage/${cfg_user}/instances/global"
@@ -2261,7 +2278,7 @@ if [ "$cleanup_mode" = true ]; then
             elif [ "$dry_run" = true ]; then
                 echo "[dry-run] Would prompt to delete user '$cfg_user'"
             else
-                echo -n "Want me to delete this user and their home directory? (y/N): "
+                echo -n "Want me to delete this system user? (y/N): "
                 read -r response
                 if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
                     echo "Alright, deletin' user '$cfg_user'..."
@@ -2272,7 +2289,7 @@ if [ "$cleanup_mode" = true ]; then
                 fi
             fi
         else
-            echo "User '$cfg_user' doesn't exist. Nothin' to delete."
+            echo "System user '$cfg_user' doesn't exist. Nothin' to delete."
         fi
     fi
 
@@ -2563,8 +2580,8 @@ run mkdir -p "$cage_home_base"
 user_was_prompted=false
 
 # Create user if it doesn't exist (or show what would be created in dry-run)
-# For user mode with bwrap: user is created without home directory (just for iptables UID)
-# The persistent home lives in ~/.local/share/claude-cage/user/<username>/home/
+# For bwrap mode with bwrap: user is created without home directory (just for iptables UID)
+# The persistent home lives in ~/.local/share/claude-cage/bwrap/<username>/home/
 if ! user_exists "$cfg_user" || [ "$dry_run" = true ]; then
     if [ "$dry_run" = true ]; then
         echo "Would create user '$cfg_user' without home dir (doesn't exist or dry-run mode)."
@@ -2598,8 +2615,8 @@ if [ "$user_was_prompted" = "false" ] && [ "$dry_run" != true ]; then
 fi
 
 # Set up persistent home and user info
-# Both Docker and user mode use ~/.local/share/claude-cage/{docker,user}/<name>/home/
-# This is owned by the original user; for user mode, bindfs maps it to appear owned by cage user
+# Both Docker and bwrap mode use ~/.local/share/claude-cage/{docker,bwrap}/<name>/home/
+# This is owned by the original user; for bwrap mode, bindfs maps it to appear owned by cage user
 original_home="/home/$original_user"
 if [ "$dry_run" = true ]; then
     user_uid="${user_uid:-<UID>}"
@@ -2612,19 +2629,21 @@ elif [ "$cfg_isolationMode" = "docker" ]; then
     user_uid="$(id -u)"  # Current user's UID for file ownership
     persistent_home=$(persistent_home_path "docker" "$docker_container_name_value" "$original_home")
 else
-    # User mode: get cage user's UID for iptables rules
+    # bwrap mode: get cage user's UID for iptables rules
     user_uid=$(get_user_uid "$cfg_user")
     persistent_home=$(persistent_home_path "user" "$cfg_user" "$original_home")
 fi
 
-# For user mode, we also need the mapped home path in /run (bindfs target)
+# For bwrap mode, we also need the mapped home path in /run (bindfs target)
 # This appears owned by the cage user and is what bwrap mounts as /home/<user>
 if [ "$cfg_isolationMode" != "docker" ]; then
-    mapped_home_base="/run/claude-cage/$cfg_user"
+    mapped_home_base="/run/claude-cage/$cfg_user/bwrap"
     mapped_home="$mapped_home_base/home"
-    mapped_project_base="$mapped_home_base/project"
+    mapped_project_base="$mapped_home_base/projects"
     # Create persistent home early so homeConfigSync_copy can use it
+    # Must be owned by original user (bindfs will map to cage user)
     run mkdir -p "$persistent_home"
+    [ "$dry_run" != true ] && chown -R "$original_user:$original_user" "$HOME/.local/share/claude-cage"
 fi
 
 # Global arrays for homeConfigSync sync mode (populated by homeConfigSync_init)
@@ -2716,7 +2735,7 @@ homeConfigSync_copy() {
                 # sync: Skip here - unison handles initial copy and ongoing sync
                 ;;
             link)
-                # Symlink from cage home to host path (user mode only)
+                # Symlink from cage home to host path (bwrap mode only)
                 if [ "$cfg_isolationMode" = "docker" ]; then
                     echo "Warning: mode=link not supported for Docker containers, skipping $sync_source"
                     continue
@@ -2757,10 +2776,10 @@ homeConfigSync_copy() {
 #
 # Unified approach for both modes:
 # 1. Unison syncs original home <-> synced directory with -path args
-# 2. User mode only: bindfs mount synced dir for cage user access, symlinks from cage home
+# 2. bwrap mode only: bindfs mount synced dir for cage user access, symlinks from cage home
 #
 # Docker mode: synced dir = target_home (persistent home), no bindfs needed
-# User mode: synced dir under /run, bindfs provides cage user permissions
+# bwrap mode: synced dir under /run, bindfs provides cage user permissions
 homeConfigSync_setup_unison() {
     [ ${#homesync_sync_sources[@]} -eq 0 ] && return
 
@@ -2779,12 +2798,12 @@ homeConfigSync_setup_unison() {
         # Docker: unison syncs original home directly to target home (no bindfs needed)
         :
     else
-        # User mode: new architecture
-        # All homesync files under /run/claude-cage/<user>/homesync/
+        # bwrap mode: home config sync architecture
+        # All files under /run/claude-cage/<user>/sync/<original_user>/home-config/
         # origin/     = bindfs mounts to original user's files (owned by original_user)
         # cage-mount/ = bindfs of origin/ with ownership mapped to cage_user
         # unison syncs cage-mount/ <-> target_home (cage user's actual home)
-        homesync_base_dir="/run/claude-cage/${cfg_user}/homesync"
+        homesync_base_dir="/run/claude-cage/${cfg_user}/sync/${original_user}/home-config"
         homesync_origin_dest_dir="${homesync_base_dir}/origin"
         cage_dir="${homesync_base_dir}/cage-mount"
         homesync_pid_file="${homesync_base_dir}/pids"
@@ -2837,7 +2856,7 @@ homeConfigSync_setup_unison() {
     # Track file entries separately (need different sync strategy than directories)
     local -a file_entries=()
 
-    # User mode: set up origin/ with mounts (dirs) or copies (files), bindfs to cage/, unison to home
+    # bwrap mode: set up origin/ with mounts (dirs) or copies (files), bindfs to cage/, unison to home
     if [ "$needs_bindfs" = true ]; then
         if [ "$mounts_exist" = true ]; then
             [ "$verbose" = true ] && section_header "homeConfigSync mounts already exist (shared with other instances)"
@@ -2899,7 +2918,7 @@ homeConfigSync_setup_unison() {
         return
     fi
 
-    # Check if unison is already running (user mode only, shared across instances)
+    # Check if unison is already running (bwrap mode only, shared across instances)
     local unison_running=false
     if [ -n "$homesync_pid_file" ] && [ -f "$homesync_pid_file" ] && [ "$dry_run" != true ]; then
         while IFS='|' read -r entry_name entry_pid; do
@@ -2911,7 +2930,7 @@ homeConfigSync_setup_unison() {
     fi
 
     # Build unison command
-    # User mode: sync cage/ <-> target_home (both owned by cage user via bindfs)
+    # bwrap mode: sync cage/ <-> target_home (both owned by cage user via bindfs)
     # Docker mode: sync original_home <-> target_home directly
     local unison_src unison_dst
     if [ "$needs_bindfs" = true ]; then
@@ -2927,7 +2946,7 @@ homeConfigSync_setup_unison() {
     unison_base_args+=("${path_args[@]}")
     unison_base_args+=("${exclude_args[@]}")
 
-    # In user mode, add -owner -group so unison preserves ownership from source
+    # In bwrap mode, add -owner -group so unison preserves ownership from source
     # (source files appear owned by cage user via bindfs mapping)
     if [ "$needs_bindfs" = true ]; then
         unison_base_args+=("-owner" "-group")
@@ -2954,7 +2973,7 @@ homeConfigSync_setup_unison() {
         [ "$verbose" = true ] && echo "homeConfigSync unison watch started (PID: $unison_bg_pid)"
     fi
 
-    # For files in user mode: run second unison to sync original_home <-> origin/
+    # For files in bwrap mode: run second unison to sync original_home <-> origin/
     # (Directories use bindfs so changes flow through automatically, but files are copies)
     if [ "$needs_bindfs" = true ] && [ ${#file_entries[@]} -gt 0 ] && [ "$unison_running" != true ]; then
         # Build file unison args as array
@@ -2983,7 +3002,7 @@ homeConfigSync_setup_unison() {
 }
 
 # Check if Claude Code is installed in the given home directory
-# For user mode: home_dir is persistent_home (owned by original user)
+# For bwrap mode: home_dir is persistent_home (owned by original user)
 # For Docker mode: checks inside container
 check_claude_installed() {
     local username="$1"
@@ -2998,7 +3017,7 @@ check_claude_installed() {
 }
 
 # Install Claude Code to the given home directory
-# For user mode: installs to persistent_home as original user
+# For bwrap mode: installs to persistent_home as original user
 # For Docker mode: handled separately in Docker branch
 install_claude_code() {
     local username="$1"
@@ -3056,7 +3075,7 @@ elif [ "$cfg_isolationMode" = "docker" ]; then
     # Docker mode: homeConfigSync handled in Docker setup branch
     :
 else
-    # User mode: Run homeConfigSync copy to persistent home before installation check
+    # bwrap mode: Run homeConfigSync copy to persistent home before installation check
     # This allows .local/bin/claude from homeConfigSync to be used
     homeConfigSync_copy "$persistent_home"
 
@@ -3071,7 +3090,7 @@ fi
 
 # Construct mount point (path inside sandbox where project files appear)
 # Both modes use /home/<user>/caged/ as the sandbox destination
-# User mode: bwrap constructs this from mapped paths in /run
+# bwrap mode: bwrap constructs this from mapped paths in /run
 # Docker mode: Docker mounts directly to this path
 if [ "$cfg_isolationMode" = "docker" ]; then
     mount_base="/home/claude/caged"
@@ -3098,7 +3117,7 @@ fi
 # For workspace direct mount mode, track instances by mount point instead of project
 # This allows multiple subdirectories under the same mount to share it
 # Instance tracking directory
-# User mode: /run/claude-cage/<user>/instances (requires sudo)
+# bwrap mode: /run/claude-cage/<user>/instances (requires sudo)
 # Docker mode: /run/user/<uid>/claude-cage/instances (no sudo)
 if [ "$cfg_isolationMode" = "docker" ]; then
     instance_dir="/run/user/$(id -u)/claude-cage/instances"
@@ -3120,7 +3139,7 @@ fi
 iptables_chain="CLAUDE_CAGE_${cfg_user}"
 
 # Global instance file (tracks all projects for this user)
-# User mode: /run/claude-cage/<user>/instances/global
+# bwrap mode: /run/claude-cage/<user>/instances/global
 # Docker mode: /run/user/<uid>/claude-cage/instances/global
 global_instance_file="$instance_dir/global"
 
@@ -3220,7 +3239,7 @@ cleanup() {
             # Update local instance file to remove dead instances
             printf "%s\n" "${remaining_local[@]}" > "$local_instance_file"
 
-            # Still need to remove from global in user mode
+            # Still need to remove from global in bwrap mode
             if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
                 sed -i "/^$instance_id$/d" "$global_instance_file"
             fi
@@ -3233,7 +3252,7 @@ cleanup() {
         fi
     fi
 
-    # Remove from global instance file (user mode)
+    # Remove from global instance file (bwrap mode)
     if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
         sed -i "/^$instance_id$/d" "$global_instance_file"
 
@@ -3302,11 +3321,11 @@ cleanup() {
 
         # Clean up the /run directories if empty
         if [ -n "$mapped_home_base" ]; then
-            rmdir "$mapped_home_base/project" 2>/dev/null
-            # Don't rmdir mapped_home_base yet - homesync might still be in there
+            rmdir "$mapped_home_base/projects" 2>/dev/null
+            rmdir "$mapped_home_base" 2>/dev/null
         fi
 
-        # Clean up homeConfigSync (user mode only) - shared across all instances for this user
+        # Clean up homeConfigSync (bwrap mode only) - shared across all instances for this user
         if [ -n "$homesync_base_dir" ] && [ -d "$homesync_base_dir" ]; then
             echo "Last instance for user $cfg_user, cleanin' up homeConfigSync..."
 
@@ -3337,6 +3356,9 @@ cleanup() {
 
             # Clean up directory
             run_quiet rm -rf "$homesync_base_dir"
+            # Clean up sync parent directories if empty
+            rmdir "/run/claude-cage/${cfg_user}/sync/${original_user}" 2>/dev/null
+            rmdir "/run/claude-cage/${cfg_user}/sync" 2>/dev/null
         fi
 
         # Clean up firewall rules
@@ -3346,12 +3368,11 @@ cleanup() {
         fi
 
         # Clean up the /run directories if empty
-        if [ -n "$mapped_home_base" ]; then
-            rmdir "$mapped_home_base" 2>/dev/null
-        fi
+        rmdir "/run/claude-cage/${cfg_user}/bwrap" 2>/dev/null
+        rmdir "/run/claude-cage/${cfg_user}" 2>/dev/null
     fi
 
-    # User mode always uses a shared user, so we don't delete it
+    # bwrap mode always uses a shared user, so we don't delete it
 
     echo "All done. Stay safe out there."
 }
@@ -3403,7 +3424,7 @@ setup_network_restrictions() {
     local chain_exists=false
     if firewall_chain_exists "$iptables_chain"; then
         chain_exists=true
-        section_header "Addin' network restrictions to existing chain (shared in user mode)..."
+        section_header "Addin' network restrictions to existing chain (shared in bwrap mode)..."
 
         # Remove the final catch-all rule (could be ACCEPT or REJECT depending on previous mode)
         # We need to remove it so we can add new rules, then re-add it at the end
@@ -3765,8 +3786,8 @@ PROFILE'
         fi
 
     else
-        # User mode setup - new bwrap architecture
-        # persistent_home is in ~/.local/share/claude-cage/user/<username>/home/ (owned by original user)
+        # bwrap mode setup - new bwrap architecture
+        # persistent_home is in ~/.local/share/claude-cage/bwrap/<username>/home/ (owned by original user)
         # mapped_home is in /run/claude-cage/<username>/home (bindfs, appears owned by cage user)
         # bwrap mounts mapped_home as /home/<user> and project as /home/<user>/caged/<project>
 
@@ -3778,6 +3799,8 @@ PROFILE'
         section_header "Settin' up persistent home..."
         mount_point_relative="${mount_point#/home/$cfg_user/}"
         run mkdir -p "$persistent_home/$mount_point_relative"
+        # Ensure persistent home is owned by original user
+        [ "$dry_run" != true ] && chown -R "$original_user:$original_user" "$persistent_home"
 
         echo "Persistent home: $persistent_home"
 
@@ -3906,9 +3929,9 @@ PROFILE'
         if [ -n "$unison_pid" ]; then
             run bash -c "echo '$unison_pid' > '$pid_file'"
         fi
-    fi  # End of user mode setup
+    fi  # End of bwrap mode setup
 else
-    # Verify mappings still exist (user mode only)
+    # Verify mappings still exist (bwrap mode only)
     if [ "$cfg_isolationMode" != "docker" ]; then
         if ! mountpoint -q "$mapped_home" 2>/dev/null || ! mountpoint -q "$mapped_project" 2>/dev/null; then
             echo "Wait a minute. The mappings ain't there anymore."
@@ -3928,7 +3951,7 @@ if [ -n "$global_instance_file" ]; then
 fi
 
 # Set up unison monitoring for homeConfigSync sync mode entries
-# User mode: use persistent_home (owned by original user)
+# bwrap mode: use persistent_home (owned by original user)
 # Docker mode: set up in Docker branch after container is ready
 if [ "$cfg_isolationMode" != "docker" ]; then
     homeConfigSync_setup_unison "$persistent_home"
@@ -4041,7 +4064,7 @@ else
         fi
         exit_code=$?
     else
-        # User mode: run Claude via bwrap with mapped home and project
+        # bwrap mode: run Claude via bwrap with mapped home and project
         if [ "$cfg_directMount" = "workspace" ]; then
             # Workspace mode: start in the specified subdirectory within the mount
             run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$mount_point/$start_subdir" "$claude_cmd"

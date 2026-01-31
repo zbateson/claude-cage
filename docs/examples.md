@@ -418,7 +418,7 @@ claude_cage {
 }
 ```
 
-Run `sudo claude-cage` in each directory. Project name derived from directory. Both share the `claude-cage` user in user mode (default).
+Run `sudo claude-cage` in each directory. Project name derived from directory. Both share the `claude-cage` user in bwrap mode (default).
 
 **Docker isolation:**
 
@@ -460,7 +460,7 @@ exit
 After running in test mode or normal mode, check what's in the sync directory:
 
 ```bash
-# User mode sync directory
+# bwrap mode sync directory
 ls -la /run/claude-cage/claude/projects/myproject/sync/
 
 # Should NOT contain excluded files

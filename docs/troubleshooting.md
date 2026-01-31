@@ -286,7 +286,7 @@ tail -f /tmp/unison.log  # If logging enabled
 
 **Diagnosis:**
 ```bash
-# Check what's in sync directory (user mode)
+# Check what's in sync directory (bwrap mode)
 ls -la /run/claude-cage/claude/projects/myproject/sync/
 
 # Verify exclude patterns in config
@@ -505,7 +505,7 @@ No space left on device
 1. **Check disk usage:**
    ```bash
    df -h
-   du -sh /run/claude-cage/*/projects/*/sync  # User mode
+   du -sh /run/claude-cage/*/projects/*/sync  # bwrap mode
    ```
 
 2. **Add more exclusions:**

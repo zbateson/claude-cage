@@ -121,9 +121,9 @@ Port restrictions apply to both TCP and UDP protocols.
 - `6379` - Redis
 - `3000-9000` - Common development server ports
 
-## Network Rules in User Mode
+## Network Rules in bwrap Mode
 
-When running multiple projects in user mode, network rules are cumulative:
+When running multiple projects in bwrap mode, network rules are cumulative:
 
 **How it works:**
 - All network rules from all running projects are combined into one shared chain
@@ -146,7 +146,7 @@ In Docker mode, network isolation is simpler:
 - `networkMode = "disabled"` or `"allowlist"`: Container runs with `--network=none` (no network access)
 - `networkMode = "blocklist"`: Container runs with `--network=bridge` (full network access)
 
-Docker doesn't support granular destination filtering without host iptables. If you need fine-grained network control, use user mode instead.
+Docker doesn't support granular destination filtering without host iptables. If you need fine-grained network control, use bwrap mode instead.
 
 ## When to Use Each Mode
 

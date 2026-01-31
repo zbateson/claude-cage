@@ -202,6 +202,137 @@ run_unison_bg() {
     fi
 }
 
+# Instance file locking helpers
+# These use flock to prevent race conditions when multiple instances
+# start/stop simultaneously. Lock file is created alongside instance files.
+
+# Get the lock file path for an instance directory
+# Usage: instance_lock_file <instance_file>
+instance_lock_file() {
+    local instance_file="$1"
+    echo "$(dirname "$instance_file")/.lock"
+}
+
+# Add an instance ID to a file atomically
+# Usage: instance_file_add <file> <instance_id>
+instance_file_add() {
+    local file="$1"
+    local id="$2"
+    local lock_file
+    lock_file=$(instance_lock_file "$file")
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] flock $lock_file; echo '$id' >> '$file'"
+        return 0
+    fi
+
+    (
+        flock -x 200
+        echo "$id" >> "$file"
+    ) 200>"$lock_file"
+}
+
+# Remove an instance ID from a file and return remaining live count
+# Sets instance_remaining_count variable
+# Usage: instance_file_remove <file> <instance_id>
+instance_file_remove() {
+    local file="$1"
+    local id="$2"
+    local lock_file
+    lock_file=$(instance_lock_file "$file")
+    instance_remaining_count=0
+    instance_remaining_ids=()
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] flock $lock_file; remove '$id' from '$file'"
+        return 0
+    fi
+
+    [ ! -f "$file" ] && return 0
+
+    (
+        flock -x 200
+
+        # Remove this instance
+        sed -i "/^$id$/d" "$file"
+
+        # Filter to only live instances and count
+        local -a remaining=()
+        while IFS= read -r pid; do
+            [ -z "$pid" ] && continue
+            if kill -0 "$pid" 2>/dev/null; then
+                remaining+=("$pid")
+            fi
+        done < "$file"
+
+        # Write back filtered list or remove file if empty
+        if [ ${#remaining[@]} -gt 0 ]; then
+            printf "%s\n" "${remaining[@]}" > "$file"
+            # Write count to temp file for parent to read
+            echo "${#remaining[@]}" > "${file}.count"
+            printf "%s\n" "${remaining[@]}" > "${file}.ids"
+        else
+            rm -f "$file" "${file}.count" "${file}.ids"
+            echo "0" > "${file}.count"
+        fi
+    ) 200>"$lock_file"
+
+    # Read results from temp files
+    if [ -f "${file}.count" ]; then
+        instance_remaining_count=$(cat "${file}.count")
+        rm -f "${file}.count"
+    fi
+    if [ -f "${file}.ids" ]; then
+        mapfile -t instance_remaining_ids < "${file}.ids"
+        rm -f "${file}.ids"
+    fi
+}
+
+# Check if any live instances remain in a file (read-only, still uses lock for consistency)
+# Sets instance_remaining_count and instance_remaining_ids
+# Usage: instance_file_check <file>
+instance_file_check() {
+    local file="$1"
+    local lock_file
+    lock_file=$(instance_lock_file "$file")
+    instance_remaining_count=0
+    instance_remaining_ids=()
+
+    [ ! -f "$file" ] && return 0
+
+    if [ "$dry_run" = true ]; then
+        return 0
+    fi
+
+    (
+        flock -s 200  # Shared lock for read
+
+        local -a remaining=()
+        while IFS= read -r pid; do
+            [ -z "$pid" ] && continue
+            if kill -0 "$pid" 2>/dev/null; then
+                remaining+=("$pid")
+            fi
+        done < "$file"
+
+        echo "${#remaining[@]}" > "${file}.count"
+        if [ ${#remaining[@]} -gt 0 ]; then
+            printf "%s\n" "${remaining[@]}" > "${file}.ids"
+        else
+            rm -f "${file}.ids"
+        fi
+    ) 200>"$lock_file"
+
+    if [ -f "${file}.count" ]; then
+        instance_remaining_count=$(cat "${file}.count")
+        rm -f "${file}.count"
+    fi
+    if [ -f "${file}.ids" ]; then
+        mapfile -t instance_remaining_ids < "${file}.ids"
+        rm -f "${file}.ids"
+    fi
+}
+
 # Print a section header with a blank line before it
 section_header() {
     echo ""
@@ -942,6 +1073,18 @@ docker_start_container() {
         home_vol_arg="-v \"$home_mount:/home/claude\""
     fi
 
+    # Validate extra args before proceeding (also in dry-run to catch issues early)
+    if [ -n "$extra_args" ]; then
+        if ! validate_docker_extra_args "$extra_args"; then
+            echo "Hold on. Those extra Docker args ain't safe, friend." >&2
+            echo "Blocked options that could escape isolation:" >&2
+            echo "  --privileged, --cap-add, --security-opt, --device" >&2
+            echo "  --pid/network/ipc/uts/userns/cgroupns=host" >&2
+            echo "  Volume mounts to /, /etc, /var, /root, /proc, /sys, /dev, /home/*" >&2
+            return 1
+        fi
+    fi
+
     if [ "$dry_run" = true ]; then
         echo "[dry-run] docker run -d --name $container_name --hostname $container_name --network=$network_mode -u ${host_uid}:${host_gid} -e HOME=/home/claude $home_vol_arg -v \"$mount_source:$mount_dest\" -w \"$mount_dest\" --init $extra_args $image tail -f /dev/null"
         return 0
@@ -971,6 +1114,7 @@ docker_start_container() {
     )
 
     # Add extra args if provided (these get word-split intentionally)
+    # Validation already done above, before dry-run check
     if [ -n "$extra_args" ]; then
         docker_args+=($extra_args)
     fi
@@ -1050,8 +1194,73 @@ docker_remove_container() {
     run_quiet docker rm "$container_name"
 }
 
-# Copy file/directory to container
-# For directories, removes destination first to avoid nesting (docker cp quirk)
+# Validate docker extra args against dangerous options that could escape isolation
+# Returns 0 if safe, 1 if dangerous option detected
+# Blocked options: --privileged, namespace sharing, capability additions, sensitive mounts
+validate_docker_extra_args() {
+    local args="$1"
+
+    # Empty args are safe
+    [ -z "$args" ] && return 0
+
+    # Dangerous options that could escape container isolation
+    # Each pattern is checked against the full args string
+    local -a blocked_patterns=(
+        # Full privilege escalation
+        '--privileged'
+
+        # Namespace sharing with host (breaks isolation)
+        '--pid[[:space:]]*=[[:space:]]*host'
+        '--network[[:space:]]*=[[:space:]]*host'
+        '--ipc[[:space:]]*=[[:space:]]*host'
+        '--uts[[:space:]]*=[[:space:]]*host'
+        '--userns[[:space:]]*=[[:space:]]*host'
+        '--cgroupns[[:space:]]*=[[:space:]]*host'
+
+        # Capability additions (could enable privilege escalation)
+        '--cap-add'
+
+        # Security option modifications
+        '--security-opt'
+
+        # Device access
+        '--device'
+
+        # Dangerous volume mounts - host root
+        '-v[[:space:]]+/:'
+        '--volume[[:space:]]+/:'
+        '-v[[:space:]]+/[[:space:]]*:'
+        '--volume[[:space:]]+/[[:space:]]*:'
+
+        # Dangerous volume mounts - sensitive system paths
+        '-v[[:space:]]+/etc'
+        '--volume[[:space:]]+/etc'
+        '-v[[:space:]]+/var'
+        '--volume[[:space:]]+/var'
+        '-v[[:space:]]+/root'
+        '--volume[[:space:]]+/root'
+        '-v[[:space:]]+/proc'
+        '--volume[[:space:]]+/proc'
+        '-v[[:space:]]+/sys'
+        '--volume[[:space:]]+/sys'
+        '-v[[:space:]]+/dev'
+        '--volume[[:space:]]+/dev'
+
+        # Mounting other users' home directories (not our persistent home)
+        # This is tricky - we allow /home/claude but block other /home/* mounts
+        '-v[[:space:]]+/home/[^c]'
+        '--volume[[:space:]]+/home/[^c]'
+    )
+
+    for pattern in "${blocked_patterns[@]}"; do
+        if [[ "$args" =~ $pattern ]]; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
 # Important things first
 print_banner() {
     local banner=$(cat << 'EOF'
@@ -1387,6 +1596,45 @@ local function track_items(source_entry, cfg)
     end
 end
 
+-- Safe config loader: executes config in a restricted sandbox
+-- Only allows table construction and the claude_cage() function
+-- Prevents arbitrary code execution (no os, io, require, loadfile, etc.)
+local function safe_load_config(filepath, config_handler)
+    local f = io.open(filepath, "r")
+    if not f then
+        return false, "Cannot open file"
+    end
+    local content = f:read("*all")
+    f:close()
+
+    -- Create restricted environment with only safe operations
+    local safe_env = {
+        claude_cage = config_handler,
+        -- Basic types needed for table construction
+        pairs = pairs,
+        ipairs = ipairs,
+        type = type,
+        tostring = tostring,
+        tonumber = tonumber,
+        -- Note: no os, io, require, dofile, loadfile, load, rawset, rawget,
+        -- setmetatable, getmetatable, debug, package, coroutine, etc.
+    }
+
+    -- Load with restricted environment ("t" = text chunks only, no bytecode)
+    local chunk, parse_err = load(content, "@" .. filepath, "t", safe_env)
+    if not chunk then
+        return false, "Parse error: " .. tostring(parse_err)
+    end
+
+    -- Execute in sandbox
+    local success, exec_err = pcall(chunk)
+    if not success then
+        return false, "Execution error: " .. tostring(exec_err)
+    end
+
+    return true, nil
+end
+
 -- Load configs in priority order (system -> user -> local)
 local config_files = {
     { idx = 1, path = "$system_config" },
@@ -1399,9 +1647,7 @@ for _, cf in ipairs(config_files) do
     if f then
         f:close()
         local before_count = #configs
-        local success, err = pcall(function()
-            dofile(cf.path)
-        end)
+        local success, err = safe_load_config(cf.path, claude_cage)
         if not success then
             io.stderr:write("Error loading config file: " .. cf.path .. "\n")
             io.stderr:write(tostring(err) .. "\n")
@@ -1430,20 +1676,13 @@ if project ~= "" then
     local f = io.open(project_config, "r")
     if f then
         f:close()
-        -- Reset configs table to reload just the project config
+        -- Create a separate handler for project configs
         local project_configs = {}
-        local old_claude_cage = claude_cage
-        function claude_cage(tbl)
+        local function project_claude_cage(tbl)
             table.insert(project_configs, tbl)
         end
 
-        local success, err = pcall(function()
-            dofile(project_config)
-        end)
-
-        -- Restore original function
-        claude_cage = old_claude_cage
-
+        local success, err = safe_load_config(project_config, project_claude_cage)
         if not success then
             io.stderr:write("Error loading project config file: " .. project_config .. "\n")
             io.stderr:write(tostring(err) .. "\n")
@@ -1539,6 +1778,36 @@ end
 local networkMode = config.networkMode or "disabled"
 
 -- ============================================================================
+-- Validate pattern string to prevent command injection
+-- Patterns are inserted into shell commands, so we must reject dangerous characters
+-- ============================================================================
+local function validate_pattern(pattern, pattern_type)
+    -- Check for shell-dangerous characters that could escape quoting or execute commands
+    -- These are inserted into double-quoted strings in shell commands
+    -- Note: Use find with plain=true (4th arg) to avoid Lua pattern matching
+    if pattern:find('"', 1, true) then
+        error("Invalid " .. pattern_type .. " pattern: contains double quote: " .. pattern)
+    end
+    -- Backtick could enable command substitution (char 96)
+    if pattern:find(string.char(96), 1, true) then
+        error("Invalid " .. pattern_type .. " pattern: contains backtick: " .. pattern)
+    end
+    -- Dollar sign could enable variable expansion (char 36)
+    if pattern:find(string.char(36), 1, true) then
+        error("Invalid " .. pattern_type .. " pattern: contains dollar sign: " .. pattern)
+    end
+    -- Backslash at end could escape the closing quote (char 92)
+    if pattern:sub(-1) == string.char(92) then
+        error("Invalid " .. pattern_type .. " pattern: ends with backslash: " .. pattern)
+    end
+    -- Newlines could break command structure (chars 10, 13)
+    if pattern:find(string.char(10), 1, true) or pattern:find(string.char(13), 1, true) then
+        error("Invalid " .. pattern_type .. " pattern: contains newline: " .. pattern)
+    end
+    return true
+end
+
+-- ============================================================================
 -- Reusable function to build unison pattern arguments
 -- Handles path, name, regex, belowPath arrays for both -ignore and -nocreationpartial
 -- ============================================================================
@@ -1556,6 +1825,7 @@ local function build_pattern_args(obj, arg_type, source_path, path_prefix)
     -- name: Match files/folders by name anywhere in tree
     if obj.name then
         for _, item in ipairs(obj.name) do
+            validate_pattern(item, "exclude.name")
             args = args .. '-' .. arg_type .. ' "Name ' .. item .. suffix .. '" '
         end
     end
@@ -1563,6 +1833,7 @@ local function build_pattern_args(obj, arg_type, source_path, path_prefix)
     -- path: Match exact paths relative to replica root
     if obj.path then
         for _, item in ipairs(obj.path) do
+            validate_pattern(item, "exclude.path")
             local full_path = path_prefix ~= "" and (path_prefix .. "/" .. item) or item
             args = args .. '-' .. arg_type .. ' "Path ' .. full_path .. suffix .. '" '
         end
@@ -1571,6 +1842,7 @@ local function build_pattern_args(obj, arg_type, source_path, path_prefix)
     -- regex: Match paths using regex patterns
     if obj.regex then
         for _, item in ipairs(obj.regex) do
+            validate_pattern(item, "exclude.regex")
             args = args .. '-' .. arg_type .. ' "Regex ' .. item .. suffix .. '" '
         end
     end
@@ -1578,6 +1850,7 @@ local function build_pattern_args(obj, arg_type, source_path, path_prefix)
     -- belowPath: Match path and everything below it
     if obj.belowPath then
         for _, item in ipairs(obj.belowPath) do
+            validate_pattern(item, "exclude.belowPath")
             local full_path = path_prefix ~= "" and (path_prefix .. "/" .. item) or item
             args = args .. '-' .. arg_type .. ' "BelowPath ' .. full_path .. suffix .. '" '
         end
@@ -2010,12 +2283,11 @@ if [ "$delete_docker_container" = true ]; then
 
     echo "Container: $container_name"
 
-    # Check for active instances before deleting
+    # Check for active instances before deleting (with locking)
     if [ -f "$local_instance_file" ]; then
-        live_instances=()
-        filter_live_instances "$local_instance_file" live_instances
-        if [ ${#live_instances[@]} -gt 0 ]; then
-            echo "Hold on there. Got ${#live_instances[@]} active instance(s) using this container."
+        instance_file_check "$local_instance_file"
+        if [ "$instance_remaining_count" -gt 0 ]; then
+            echo "Hold on there. Got $instance_remaining_count active instance(s) using this container."
             echo "Close 'em first, then try again."
             exit 1
         fi
@@ -2677,11 +2949,43 @@ fi
 declare -a homesync_sync_sources=()
 declare -a homesync_sync_excludes=()
 
+# Validate homeConfigSync path to prevent path traversal attacks
+# Returns 0 if valid, 1 if path contains traversal sequences
+# Usage: validate_homesync_path <path> <label>
+validate_homesync_path() {
+    local path="$1"
+    local label="$2"
+
+    # Check for absolute paths (must be relative to home)
+    if [[ "$path" == /* ]]; then
+        echo "Error: homeConfigSync $label cannot be an absolute path: $path" >&2
+        return 1
+    fi
+
+    # Check for path traversal sequences
+    if [[ "$path" == *".."* ]]; then
+        echo "Error: homeConfigSync $label cannot contain '..': $path" >&2
+        return 1
+    fi
+
+    return 0
+}
+
 # Parse homeConfigSync entries and extract sync mode info for later unison setup
 # Call this early, before homeConfigSync_copy
+# Also validates all paths to catch traversal attacks early
 homeConfigSync_init() {
     for entry in "${cfg_homeConfigSync[@]}"; do
         IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
+
+        # Validate paths to prevent traversal attacks (exit early if invalid)
+        if ! validate_homesync_path "$sync_source" "source"; then
+            exit 1
+        fi
+        if ! validate_homesync_path "$sync_dest" "destination"; then
+            exit 1
+        fi
+
         if [ "$sync_mode" = "sync" ]; then
             homesync_sync_sources+=("$sync_source")
             [ -n "$sync_excludes" ] && homesync_sync_excludes+=("$sync_excludes")
@@ -2700,6 +3004,15 @@ homeConfigSync_copy() {
 
     for entry in "${cfg_homeConfigSync[@]}"; do
         IFS='|' read -r sync_source sync_dest sync_mode sync_excludes <<< "$entry"
+
+        # Validate paths to prevent traversal attacks
+        if ! validate_homesync_path "$sync_source" "source"; then
+            exit 1
+        fi
+        if ! validate_homesync_path "$sync_dest" "destination"; then
+            exit 1
+        fi
+
         local source_path="${original_home}/${sync_source}"
         local dest_path="${target_home}/${sync_dest}"
         local dest_dir=$(dirname "$dest_path")
@@ -2888,7 +3201,7 @@ homeConfigSync_setup_unison() {
             [ "$verbose" = true ] && section_header "homeConfigSync mounts already exist (shared with other instances)"
         else
             [ "$verbose" = true ] && section_header "Setting up homeConfigSync..."
-            run mkdir -p "$homesync_origin_dest_dir" "$cage_dir"
+            run mkdir -p -m 700 "$homesync_origin_dest_dir" "$cage_dir"
             [ "$dry_run" != true ] && chown "$original_user:$original_user" "$homesync_origin_dest_dir"
 
             # Set up entries in origin/ (preserving home structure)
@@ -2913,7 +3226,7 @@ homeConfigSync_setup_unison() {
                     echo "[dry-run]   if file: rsync -a \"$src\" \"$dst\" (then unison for sync)"
                 elif [ -d "$src" ]; then
                     # Directory: bindfs mount
-                    run mkdir -p "$dst"
+                    run mkdir -p -m 700 "$dst"
                     run chown "$original_user:$original_user" "$dst"
                     run bindfs "$src" "$dst"
                     [ "$verbose" = true ] && echo "  Mounted directory: $entry_path"
@@ -3243,63 +3556,45 @@ cleanup() {
 
     # For workspace direct mount mode, track by mount point instead of project
     # This ensures we only unmount when the last instance using that mount exits
+    # All instance file operations are locked to prevent race conditions
     should_unmount=true
 
     if [ "$cfg_directMount" = "workspace" ] && [ -n "$mount_instance_file" ] && [ -f "$mount_instance_file" ]; then
-        # Remove this instance from mount point tracker
-        sed -i "/^$instance_id$/d" "$mount_instance_file"
+        # Remove this instance from mount point tracker (atomic with locking)
+        instance_file_remove "$mount_instance_file" "$instance_id"
 
-        # Check if other instances are still using this mount point
-        filter_live_instances "$mount_instance_file" remaining_mount
-
-        if [ ${#remaining_mount[@]} -gt 0 ]; then
-            echo "Other instances still usin' mount point (${remaining_mount[*]}). Leavin' it mounted."
-            # Update instance file to remove dead instances
-            printf "%s\n" "${remaining_mount[@]}" > "$mount_instance_file"
+        if [ "$instance_remaining_count" -gt 0 ]; then
+            echo "Other instances still usin' mount point (${instance_remaining_ids[*]}). Leavin' it mounted."
             should_unmount=false
-        else
-            # Last instance using this mount, clean up the instance file
-            run rm -f "$mount_instance_file"
         fi
+        # Note: instance_file_remove already cleaned up the file if empty
     fi
 
     # Remove this instance from the local instance file (project tracking)
     if [ -f "$local_instance_file" ]; then
-        sed -i "/^$instance_id$/d" "$local_instance_file"
+        instance_file_remove "$local_instance_file" "$instance_id"
 
-        # Check if there are other instances of THIS project still running
-        filter_live_instances "$local_instance_file" remaining_local
-
-        if [ ${#remaining_local[@]} -gt 0 ]; then
-            echo "Other instances of this project still runnin' (${remaining_local[*]}). Leavin' processes alone."
-            # Update local instance file to remove dead instances
-            printf "%s\n" "${remaining_local[@]}" > "$local_instance_file"
+        if [ "$instance_remaining_count" -gt 0 ]; then
+            echo "Other instances of this project still runnin' (${instance_remaining_ids[*]}). Leavin' processes alone."
 
             # Still need to remove from global in bwrap mode
             if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
-                sed -i "/^$instance_id$/d" "$global_instance_file"
+                instance_file_remove "$global_instance_file" "$instance_id"
             fi
 
             echo "This session's done. Stay safe out there."
             return
-        else
-            # No more instances of this project, remove the local instance file
-            run rm -f "$local_instance_file"
         fi
+        # Note: instance_file_remove already cleaned up the file if empty
     fi
 
     # Remove from global instance file (bwrap mode)
     if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
-        sed -i "/^$instance_id$/d" "$global_instance_file"
+        instance_file_remove "$global_instance_file" "$instance_id"
 
-        # Check if there are other projects still running as this user
-        filter_live_instances "$global_instance_file" remaining_global
-
-        if [ ${#remaining_global[@]} -gt 0 ]; then
-            echo "Other projects still runnin' as user $cfg_user (${remaining_global[*]})."
+        if [ "$instance_remaining_count" -gt 0 ]; then
+            echo "Other projects still runnin' as user $cfg_user (${instance_remaining_ids[*]})."
             echo "Cleanin' up this project only. User and network rules stay in place."
-            # Update global instance file to remove dead instances
-            printf "%s\n" "${remaining_global[@]}" > "$global_instance_file"
 
             # Clean up local processes and mount (only if we should unmount)
             if [ -f "$pid_file" ]; then
@@ -3318,10 +3613,8 @@ cleanup() {
 
             echo "This project's done. Other projects still flyin'. Home mapping stays for other instances."
             return
-        else
-            # No more instances for this user, remove the global instance file
-            run rm -f "$global_instance_file"
         fi
+        # Note: instance_file_remove already cleaned up the file if empty
     fi
 
     # Only run full cleanup if this is the last instance
@@ -3339,12 +3632,11 @@ cleanup() {
         run_quiet umount -l "$mapped_project"
     fi
 
-    # Check for other instances before cleaning up shared resources
+    # Check for other instances before cleaning up shared resources (with locking)
     has_other_instances=false
     if [ -n "$global_instance_file" ] && [ -f "$global_instance_file" ]; then
-        local _check_instances=()
-        filter_live_instances "$global_instance_file" _check_instances
-        [ ${#_check_instances[@]} -gt 0 ] && has_other_instances=true
+        instance_file_check "$global_instance_file"
+        [ "$instance_remaining_count" -gt 0 ] && has_other_instances=true
     fi
 
     # Clean up shared resources only if this is the last instance
@@ -3617,8 +3909,9 @@ fi
 
 if [ "$skip_setup" = false ]; then
     # Create instance tracking directory and project directory (for PID/instance files)
-    run mkdir -p "$instance_dir"
-    run mkdir -p "$(dirname "$local_instance_file")"
+    # Use mode 700 to prevent other users from reading instance data
+    run mkdir -p -m 700 "$instance_dir"
+    run mkdir -p -m 700 "$(dirname "$local_instance_file")"
 
     if [ "$cfg_isolationMode" = "docker" ]; then
         # Docker mode setup
@@ -3840,9 +4133,9 @@ PROFILE'
 
         echo "Persistent home: $persistent_home"
 
-        # Create mapped directories in /run
-        run mkdir -p "$mapped_home"
-        run mkdir -p "$mapped_project_base"
+        # Create mapped directories in /run (mode 700 for security)
+        run mkdir -p -m 700 "$mapped_home"
+        run mkdir -p -m 700 "$mapped_project_base"
 
         # Set up bindfs mapping: persistent_home → mapped_home (appears owned by cage user)
         # Check if already mounted (shared across instances)
@@ -3882,14 +4175,14 @@ PROFILE'
 
         # Set up mapped project directory
         mapped_project="$mapped_project_base/$project_name"
-        run mkdir -p "$mapped_project"
+        run mkdir -p -m 700 "$mapped_project"
 
         # Set up project bindfs mapping
         skip_mount=false
         if [ "$dry_run" != true ] && mountpoint -q "$mapped_project" 2>/dev/null; then
             if [ "$cfg_directMount" = "workspace" ]; then
                 echo "Project mount already exists. Reusin' it."
-                run bash -c "echo '$instance_id' >> '$mount_instance_file'"
+                instance_file_add "$mount_instance_file" "$instance_id"
                 skip_mount=true
             else
                 echo "Hold on now. That project's already mounted."
@@ -3946,7 +4239,7 @@ PROFILE'
             echo "Project mapping ready."
 
             if [ "$cfg_directMount" = "workspace" ]; then
-                run bash -c "echo '$instance_id' >> '$mount_instance_file'"
+                instance_file_add "$mount_instance_file" "$instance_id"
             fi
         fi
 
@@ -3979,12 +4272,12 @@ else
     fi
 fi
 
-# Register this instance
-run bash -c "echo '$instance_id' >> '$local_instance_file'"
+# Register this instance (with locking to prevent race conditions)
+instance_file_add "$local_instance_file" "$instance_id"
 
 # Also register globally
 if [ -n "$global_instance_file" ]; then
-    run bash -c "echo '$instance_id' >> '$global_instance_file'"
+    instance_file_add "$global_instance_file" "$instance_id"
 fi
 
 # Set up unison monitoring for homeConfigSync sync mode entries

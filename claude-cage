@@ -2931,7 +2931,9 @@ homeConfigSync_setup_unison() {
 
             # bindfs mount origin/ -> cage/ with ownership mapping
             # Files appear owned by cage user, created as original user
+            # --perms=a+rX ensures original user (running unison) can read files with 600 mode
             run bindfs -u "$cfg_user" -g "$cfg_user" \
+                --perms=a+rX \
                 --chown-ignore --chgrp-ignore \
                 --create-for-user="$original_user" --create-for-group="$original_user" \
                 "$homesync_origin_dest_dir" "$cage_dir"

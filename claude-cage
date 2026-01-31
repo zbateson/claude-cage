@@ -142,12 +142,16 @@ run_unison_bg() {
     local cmd_display
     if [ "$is_cmd_string" = true ]; then
         if [ -n "$run_as_user" ]; then
-            cmd_display="su $run_as_user -c \"bash -c '$1'\""
+            cmd_display="sudo -u $run_as_user bash -c \"$1\""
         else
             cmd_display="$1"
         fi
     else
-        cmd_display="unison $*"
+        if [ -n "$run_as_user" ]; then
+            cmd_display="sudo -u $run_as_user unison $*"
+        else
+            cmd_display="unison $*"
+        fi
     fi
 
     if [ "$dry_run" = true ]; then
@@ -164,22 +168,31 @@ run_unison_bg() {
     if [ "$debug" = true ]; then
         if [ "$is_cmd_string" = true ]; then
             if [ -n "$run_as_user" ]; then
-                su "$run_as_user" -c "bash -c '$1'" &
+                sudo -u "$run_as_user" bash -c "$1" &
             else
                 bash -c "$1" &
             fi
         else
-            unison "$@" &
+            if [ -n "$run_as_user" ]; then
+                sudo -u "$run_as_user" unison "$@" &
+            else
+                unison "$@" &
+            fi
         fi
     else
+        # Fully detach from terminal: close stdin, redirect stdout/stderr, use setsid
         if [ "$is_cmd_string" = true ]; then
             if [ -n "$run_as_user" ]; then
-                su "$run_as_user" -c "bash -c '$1'" >/dev/null 2>&1 &
+                setsid sudo -u "$run_as_user" bash -c "$1" </dev/null >/dev/null 2>&1 &
             else
-                bash -c "$1" >/dev/null 2>&1 &
+                setsid bash -c "$1" </dev/null >/dev/null 2>&1 &
             fi
         else
-            unison "$@" >/dev/null 2>&1 &
+            if [ -n "$run_as_user" ]; then
+                setsid sudo -u "$run_as_user" unison "$@" </dev/null >/dev/null 2>&1 &
+            else
+                setsid unison "$@" </dev/null >/dev/null 2>&1 &
+            fi
         fi
     fi
     unison_bg_pid=$!
@@ -250,6 +263,13 @@ run_in_bwrap() {
     bwrap_cmd+=" --ro-bind-try /etc/localtime /etc/localtime"
     bwrap_cmd+=" --ro-bind-try /etc/timezone /etc/timezone"
     bwrap_cmd+=" --ro-bind-try /etc/alternatives /etc/alternatives"
+    # Shell/readline config (needed for proper terminal behavior)
+    bwrap_cmd+=" --ro-bind-try /etc/inputrc /etc/inputrc"
+    bwrap_cmd+=" --ro-bind-try /etc/bash.bashrc /etc/bash.bashrc"
+    bwrap_cmd+=" --ro-bind-try /etc/profile /etc/profile"
+    bwrap_cmd+=" --ro-bind-try /etc/profile.d /etc/profile.d"
+    bwrap_cmd+=" --ro-bind-try /etc/bash_completion /etc/bash_completion"
+    bwrap_cmd+=" --ro-bind-try /etc/bash_completion.d /etc/bash_completion.d"
 
     # Home directory from mapped persistent home
     # This contains .claude/, .local/bin/claude, etc.
@@ -266,12 +286,17 @@ run_in_bwrap() {
     bwrap_cmd+=" --proc /proc"
     bwrap_cmd+=" --dev /dev"
     bwrap_cmd+=" --dev-bind /dev/pts /dev/pts"
+    bwrap_cmd+=" --dev-bind /dev/ptmx /dev/ptmx"
+    bwrap_cmd+=" --dev-bind-try /dev/tty /dev/tty"
 
     # Environment variables
     bwrap_cmd+=" --setenv HOME '$user_home'"
     bwrap_cmd+=" --setenv USER '$username'"
     bwrap_cmd+=" --setenv SHELL /bin/bash"
-    bwrap_cmd+=" --setenv LC_ALL '${LC_ALL}'"
+    # Only set LC_ALL if it has a value (empty string causes issues)
+    if [ -n "${LC_ALL}" ]; then
+        bwrap_cmd+=" --setenv LC_ALL '${LC_ALL}'"
+    fi
     bwrap_cmd+=" --setenv PATH '/usr/local/bin:/usr/bin:/bin:$user_home/.local/bin'"
     bwrap_cmd+=" --setenv TERM '${TERM:-xterm-256color}'"
     bwrap_cmd+=" --setenv LANG '${LANG:-C.UTF-8}'"
@@ -1496,7 +1521,7 @@ end
 
 -- If sync is empty, set a placeholder (overridden in bash to use /run/)
 -- Actual path: /run/claude-cage/<user>/sync/<original_user>/projects/<project> (bwrap mode)
---              /run/user/<uid>/claude-cage/projects/<project>/sync (docker mode)
+--              /run/user/<uid>/claude-cage/sync/projects/<project> (docker mode)
 if sync == "" then
     sync = "__default__"
 end
@@ -1899,10 +1924,10 @@ fi
 
 # Set sync directory in /run/
 # bwrap mode: /run/claude-cage/<user>/sync/<original_user>/projects/<project>
-# Docker mode: /run/user/<uid>/claude-cage/projects/<project>/sync
+# Docker mode: /run/user/<uid>/claude-cage/sync/projects/<project>
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
     if [ "$cfg_isolationMode" = "docker" ]; then
-        cfg_sync="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/sync"
+        cfg_sync="/run/user/$(id -u)/claude-cage/sync/projects/${cfg_project}"
     else
         cfg_sync="/run/claude-cage/${cfg_user}/sync/${original_user}/projects/${cfg_project}"
     fi
@@ -1924,14 +1949,14 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ];
 fi
 
 # Define PID and instance file paths early (needed for cleanup mode)
-# bwrap mode: /run/claude-cage/<user>/projects/<project>/
-# Docker mode: /run/user/<uid>/claude-cage/projects/<project>/
+# bwrap mode: /run/claude-cage/<user>/instances/<project>/
+# Docker mode: /run/user/<uid>/claude-cage/instances/<project>/
 if [ "$cfg_isolationMode" = "docker" ]; then
-    pid_file="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/claude-cage.pid"
-    local_instance_file="/run/user/$(id -u)/claude-cage/projects/${cfg_project}/claude-cage.instances"
+    pid_file="/run/user/$(id -u)/claude-cage/instances/${cfg_project}/claude-cage.pid"
+    local_instance_file="/run/user/$(id -u)/claude-cage/instances/${cfg_project}/claude-cage.instances"
 else
-    pid_file="/run/claude-cage/${cfg_user}/projects/${cfg_project}/claude-cage.pid"
-    local_instance_file="/run/claude-cage/${cfg_user}/projects/${cfg_project}/claude-cage.instances"
+    pid_file="/run/claude-cage/${cfg_user}/instances/${cfg_project}/claude-cage.pid"
+    local_instance_file="/run/claude-cage/${cfg_user}/instances/${cfg_project}/claude-cage.instances"
 fi
 
 # For direct mount mode, we track instances by mount point (not project)
@@ -1996,8 +2021,8 @@ if [ "$delete_docker_container" = true ]; then
         fi
     fi
 
-    # Persistent home directory path
-    persistent_home_dir="$HOME/.local/share/claude-cage/docker/$container_name"
+    # Persistent home directory path (use original user's home, not $HOME which may be /root under sudo)
+    persistent_home_dir="/home/$original_user/.local/share/claude-cage/docker/$container_name"
 
     if ! docker_container_exists "$container_name"; then
         echo "Container don't exist. Nothin' to delete."
@@ -2162,8 +2187,9 @@ if [ "$cleanup_mode" = true ]; then
             echo "  No sync directory found."
         fi
 
-        # Check for persistent home directory
-        persistent_home_dir="$HOME/.local/share/claude-cage/bwrap/${cfg_user}"
+        # Check for persistent home directory (use original user's home, not $HOME which may be /root under sudo)
+        local original_home="/home/$original_user"
+        persistent_home_dir="$original_home/.local/share/claude-cage/bwrap/${cfg_user}"
         echo "Checking for persistent home at $persistent_home_dir ..."
         if [ -d "$persistent_home_dir" ] || [ "$dry_run" = true ]; then
             echo "  Found persistent home directory."
@@ -2175,8 +2201,8 @@ if [ "$cleanup_mode" = true ]; then
                 if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
                     run rm -rf "$persistent_home_dir"
                     # Clean up parent dirs if empty
-                    rmdir "$HOME/.local/share/claude-cage/bwrap" 2>/dev/null
-                    rmdir "$HOME/.local/share/claude-cage" 2>/dev/null
+                    rmdir "$original_home/.local/share/claude-cage/bwrap" 2>/dev/null
+                    rmdir "$original_home/.local/share/claude-cage" 2>/dev/null
                     echo "  Persistent home deleted."
                 else
                     echo "  Leaving persistent home alone."
@@ -2643,7 +2669,7 @@ if [ "$cfg_isolationMode" != "docker" ]; then
     # Create persistent home early so homeConfigSync_copy can use it
     # Must be owned by original user (bindfs will map to cage user)
     run mkdir -p "$persistent_home"
-    [ "$dry_run" != true ] && chown -R "$original_user:$original_user" "$HOME/.local/share/claude-cage"
+    [ "$dry_run" != true ] && chown -R "$original_user:$original_user" "$original_home/.local/share/claude-cage"
 fi
 
 # Global arrays for homeConfigSync sync mode (populated by homeConfigSync_init)
@@ -2942,15 +2968,12 @@ homeConfigSync_setup_unison() {
     fi
 
     # Build unison args as array (avoids eval)
+    # Note: Do NOT use -owner -group here. The cage-mount side shows cage user ownership
+    # via bindfs, but we want persistent_home files owned by original user. The bindfs
+    # --create-for-user handles new file ownership, and unison should not override it.
     local -a unison_base_args=("$unison_src" "$unison_dst" "-batch" "-confirmbigdel=false")
     unison_base_args+=("${path_args[@]}")
     unison_base_args+=("${exclude_args[@]}")
-
-    # In bwrap mode, add -owner -group so unison preserves ownership from source
-    # (source files appear owned by cage user via bindfs mapping)
-    if [ "$needs_bindfs" = true ]; then
-        unison_base_args+=("-owner" "-group")
-    fi
 
     # Initial sync args: ignore any stale archives and force from source
     local -a unison_initial_args=("${unison_base_args[@]}" "-ignorearchives" "-force" "$unison_src")
@@ -2958,16 +2981,27 @@ homeConfigSync_setup_unison() {
     if [ "$unison_running" = true ]; then
         [ "$verbose" = true ] && echo "homeConfigSync unison already running (shared)"
     else
+        # In bwrap mode, run unison as original user so files are created with correct ownership
+        # (unison runs as root by default, which would create files owned by root)
+        local as_user_arg=""
+        if [ "$needs_bindfs" = true ]; then
+            as_user_arg="--as $original_user"
+        fi
+
         # Initial one-shot sync (force from source to populate destination)
-        run_quiet unison "${unison_initial_args[@]}"
+        run_unison_bg $as_user_arg "${unison_initial_args[@]}"
+        # Wait for initial sync to complete
+        if [ "$dry_run" != true ]; then
+            wait "$unison_bg_pid" 2>/dev/null || true
+        fi
         [ "$verbose" = true ] && [ "$dry_run" != true ] && echo "homeConfigSync initial sync complete"
 
         # Start watch mode (bidirectional)
         if [ -n "$homesync_pid_file" ]; then
-            run_unison_bg --pid-file "$homesync_pid_file" --pid-label "unison" \
+            run_unison_bg $as_user_arg --pid-file "$homesync_pid_file" --pid-label "unison" \
                 "${unison_base_args[@]}" -repeat watch
         else
-            run_unison_bg "${unison_base_args[@]}" -repeat watch
+            run_unison_bg $as_user_arg "${unison_base_args[@]}" -repeat watch
             homesync_unison_pid="$unison_bg_pid"
         fi
         [ "$verbose" = true ] && echo "homeConfigSync unison watch started (PID: $unison_bg_pid)"
@@ -3825,9 +3859,10 @@ PROFILE'
             echo "Home mapping ready."
         fi
 
-        # In sync mode, create sync directory (owned by original user)
+        # In sync mode, create sync directory (owned by original user so unison can write)
         if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
             run mkdir -p "$cfg_sync"
+            [ "$dry_run" != true ] && chown "$original_user:$original_user" "$cfg_sync"
         fi
 
         # Determine project source based on mode

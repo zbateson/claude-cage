@@ -1,3 +1,9 @@
 # Legacy files (no longer generated, kept for backwards compatibility)
 claude-cage.pid
 claude-cage.instances
+
+# Build output
+dist/
+
+# Caged clone directory
+.caged/

@@ -2,13 +2,26 @@
 # Git clone with sparse checkout
 # ============================================================================
 
+# Get current branch from source project
+get_source_branch() {
+    local source_dir="$1"
+    git -C "$source_dir" branch --show-current
+}
+
 # Create the intermediary git clone with sparse checkout
 # Arguments: $1 = source directory (defaults to pwd)
 create_intermediary_clone() {
     local source_dir="${1:-$(pwd)}"
     local caged_dir="$source_dir/.caged"
     local intermediary_dir="$caged_dir/intermediary"
+    local work_dir="$caged_dir/work"
 
+    # Capture source branch before we start
+    local source_branch
+    source_branch=$(get_source_branch "$source_dir")
+    echo "Source branch: $source_branch"
+
+    echo ""
     echo "Creating intermediary clone..."
 
     # Clean up existing .caged directory if it exists
@@ -38,8 +51,6 @@ create_intermediary_clone() {
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
-            # Patterns should already have ! prefix if they're excludes
-            # If not, add it
             if [[ "$pattern" != "!"* ]]; then
                 sparse_patterns+=("!$pattern")
             else
@@ -66,12 +77,25 @@ create_intermediary_clone() {
     echo ""
     echo "Intermediary clone created at: $intermediary_dir"
 
-    # Show what files are checked out
+    # Create work directory from intermediary
     echo ""
-    echo "Files in sparse checkout:"
+    echo "Creating work directory..."
+    git clone "$intermediary_dir" "$work_dir"
+
+    # Create claude branch for work
+    echo "  Creating branch: claude/$source_branch"
+    git -C "$work_dir" checkout -b "claude/$source_branch"
+
+    echo ""
+    echo "Work directory created at: $work_dir"
+    echo "  Branch: claude/$source_branch"
+
+    # Show what files are in work
+    echo ""
+    echo "Files in work directory:"
     local file_count
-    file_count=$(cd "$intermediary_dir" && find . -type f -not -path './.git/*' | wc -l)
-    (cd "$intermediary_dir" && find . -type f -not -path './.git/*' | head -20)
+    file_count=$(cd "$work_dir" && find . -type f -not -path './.git/*' | wc -l)
+    (cd "$work_dir" && find . -type f -not -path './.git/*' | head -20)
     if [ "$file_count" -gt 20 ]; then
         echo "  ... and $((file_count - 20)) more files"
     fi

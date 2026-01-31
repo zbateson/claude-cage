@@ -4,6 +4,7 @@ SOURCES = \
 	src/banner.sh \
 	src/config.sh \
 	src/git-clone.sh \
+	src/bwrap.sh \
 	src/main.sh
 
 OUTPUT = dist/claude-cage-git

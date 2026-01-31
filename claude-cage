@@ -406,8 +406,11 @@ run_in_bwrap() {
     # This contains .claude/, .local/bin/claude, etc.
     bwrap_cmd+=" --bind '$mapped_home' '$user_home'"
 
-    # Project files overlaid into home
-    bwrap_cmd+=" --bind '$project_src' '$project_dest'"
+    # Project files overlaid into home (only if project_src is provided)
+    # When isolated=false, project is already nested inside home mount
+    if [ -n "$project_src" ]; then
+        bwrap_cmd+=" --bind '$project_src' '$project_dest'"
+    fi
 
     # Temp/runtime filesystems
     bwrap_cmd+=" --tmpfs /tmp"
@@ -909,74 +912,28 @@ docker_accessible() {
     docker ps >/dev/null 2>&1
 }
 
-# Generate container name for isolated mode (per-project)
-# Format: prefix-project-hash (hash from source path for uniqueness)
-docker_container_name_isolated() {
-    local prefix="$1"
-    local project="$2"
-    local source_path="$3"
-    local hash=$(echo "$source_path" | md5sum | cut -c1-8)
-    echo "${prefix}-${project}-${hash}"
-}
-
-# Generate container name for shared mode (all projects share one container)
-# Format: prefix-uid (unique per user on the system)
-docker_container_name_shared() {
-    local prefix="$1"
-    local uid="$2"
-    echo "${prefix}-${uid}"
-}
-
-# Compute container name based on mode (existing, isolated, or shared)
-# Consolidates the container name logic used in multiple places
+# Compute container name
+# With unified architecture, one container per cage user: prefix-username
+# For existing containers, use the user-specified name
 docker_compute_container_name() {
     local existing_container="$1"
-    local isolated="$2"
-    local name_prefix="$3"
-    local project="$4"
-    local source="$5"
-    local direct_mount="$6"
+    local name_prefix="$2"
+    local cage_username="$3"
 
     if [ -n "$existing_container" ]; then
         echo "$existing_container"
-    elif [ "$isolated" = "true" ]; then
-        if [ "$direct_mount" = "workspace" ]; then
-            local workspace_name=$(basename "$source")
-            docker_container_name_isolated "$name_prefix" "$workspace_name" "$source"
-        else
-            docker_container_name_isolated "$name_prefix" "$project" "$source"
-        fi
     else
-        docker_container_name_shared "$name_prefix" "$(id -u)"
+        echo "${name_prefix}-${cage_username}"
     fi
 }
 
-# Compute persistent home path based on isolation mode
-# Docker: ~/.local/share/claude-cage/docker/<container-name>/home
-# bwrap mode: ~/.local/share/claude-cage/bwrap/<username>/home
-#
-# For bwrap mode, we use a single shared home per username (like Docker's non-isolated mode).
+# Returns the persistent home path for the cage user
+# All modes use the same location: ~/.local/share/claude-cage/bwrap/<username>/home
 # The persistent home is owned by the original user and mapped via bindfs for the cage user.
 persistent_home_path() {
-    local mode="$1"  # "docker" or "user"
-    local identifier="$2"  # container name for docker, username for bwrap mode
-    local owner_home="$3"  # home directory of the owner (original user)
-
-    if [ "$mode" = "docker" ]; then
-        echo "$owner_home/.local/share/claude-cage/docker/$identifier/home"
-    else
-        echo "$owner_home/.local/share/claude-cage/bwrap/$identifier/home"
-    fi
-}
-
-# Backwards compat wrapper for docker mode
-docker_persistent_home_path() {
-    local isolated="$1"
-    local config_root="$2"
-    local project="$3"
-    local container_name="$4"
-    local owner_home="$5"
-    persistent_home_path "docker" "$container_name" "$owner_home"
+    local username="$1"
+    local owner_home="$2"  # home directory of the owner (original user)
+    echo "$owner_home/.local/share/claude-cage/bwrap/$username/home"
 }
 
 # Check if container exists (running or stopped)
@@ -1061,16 +1018,18 @@ docker_start_container() {
     local image="$2"
     local mount_source="$3"
     local mount_dest="$4"
-    local network_mode="$5"  # "none" or "bridge"
+    local network_mode="$5"  # "none", "bridge", or "host"
     local extra_args="$6"
-    local host_uid="$7"
-    local host_gid="$8"
+    local container_uid="$7"
+    local container_gid="$8"
     local home_mount="$9"    # Optional: host path for persistent home
+    local cage_username="${10:-claude}"  # Username inside container (defaults to claude for backwards compat)
 
     # Build home volume arg if provided
     local home_vol_arg=""
+    local container_home="/home/$cage_username"
     if [ -n "$home_mount" ]; then
-        home_vol_arg="-v \"$home_mount:/home/claude\""
+        home_vol_arg="-v \"$home_mount:$container_home\""
     fi
 
     # Validate extra args before proceeding (also in dry-run to catch issues early)
@@ -1085,8 +1044,19 @@ docker_start_container() {
         fi
     fi
 
+    # Build project volume arg if provided
+    local project_vol_arg=""
+    local workdir_arg=""
+    if [ -n "$mount_source" ] && [ -n "$mount_dest" ]; then
+        project_vol_arg="-v \"$mount_source:$mount_dest\""
+        workdir_arg="-w \"$mount_dest\""
+    else
+        # For isolated=false, workdir is the caged dir inside home
+        workdir_arg="-w \"$container_home/caged\""
+    fi
+
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker run -d --name $container_name --hostname $container_name --network=$network_mode -u ${host_uid}:${host_gid} -e HOME=/home/claude $home_vol_arg -v \"$mount_source:$mount_dest\" -w \"$mount_dest\" --init $extra_args $image tail -f /dev/null"
+        echo "[dry-run] docker run -d --name $container_name --hostname $container_name --network=$network_mode -u ${container_uid}:${container_gid} -e HOME=$container_home $home_vol_arg $project_vol_arg $workdir_arg --init $extra_args $image tail -f /dev/null"
         return 0
     fi
 
@@ -1098,20 +1068,25 @@ docker_start_container() {
         "--name" "$container_name"
         "--hostname" "$container_name"
         "--network=$network_mode"
-        "-u" "${host_uid}:${host_gid}"
-        "-e" "HOME=/home/claude"
+        "-u" "${container_uid}:${container_gid}"
+        "-e" "HOME=$container_home"
     )
 
     # Add home volume mount if provided
     if [ -n "$home_mount" ]; then
-        docker_args+=("-v" "$home_mount:/home/claude")
+        docker_args+=("-v" "$home_mount:$container_home")
     fi
 
-    docker_args+=(
-        "-v" "$mount_source:$mount_dest"
-        "-w" "$mount_dest"
-        "--init"
-    )
+    # Add project volume mount if provided (for isolated=true mode)
+    # For isolated=false, project is already nested inside home mount
+    if [ -n "$mount_source" ] && [ -n "$mount_dest" ]; then
+        docker_args+=("-v" "$mount_source:$mount_dest")
+        docker_args+=("-w" "$mount_dest")
+    else
+        docker_args+=("-w" "$container_home/caged")
+    fi
+
+    docker_args+=("--init")
 
     # Add extra args if provided (these get word-split intentionally)
     # Validation already done above, before dry-run check
@@ -1131,16 +1106,20 @@ docker_start_container() {
 }
 
 # Execute command in running container (internal implementation)
-# Usage: _docker_exec_impl <interactive> container_name [--user username] command...
+# Usage: _docker_exec_impl <interactive> container_name [--user username] [--home /path] command...
 _docker_exec_impl() {
     local interactive="$1"
     local container_name="$2"
     shift 2
     local -a user_opt=()
-    if [ "$1" = "--user" ]; then
-        user_opt=("-u" "$2")
-        shift 2
-    fi
+    local container_home="/home/claude"  # Default for backwards compatibility
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --user) user_opt=("-u" "$2"); shift 2 ;;
+            --home) container_home="$2"; shift 2 ;;
+            *) break ;;
+        esac
+    done
 
     local -a it_flag=()
     local it_display=""
@@ -1150,13 +1129,13 @@ _docker_exec_impl() {
     fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] docker exec ${it_display}-e HOME=/home/claude -e PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin ${user_opt[*]} $container_name $*"
+        echo "[dry-run] docker exec ${it_display}-e HOME=$container_home -e PATH=$container_home/.local/bin:/usr/local/bin:/usr/bin:/bin ${user_opt[*]} $container_name $*"
         return 0
     fi
 
     # Set HOME and PATH explicitly since the UID may not exist in container's /etc/passwd
     # PATH includes ~/.local/bin where Claude Code is installed
-    run docker exec "${it_flag[@]}" -e HOME=/home/claude -e "PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin" "${user_opt[@]}" "$container_name" "$@"
+    run docker exec "${it_flag[@]}" -e HOME="$container_home" -e "PATH=$container_home/.local/bin:/usr/local/bin:/usr/bin:/bin" "${user_opt[@]}" "$container_name" "$@"
 }
 
 # Execute command in running container (interactive)
@@ -1717,6 +1696,8 @@ local mounted = config.mounted or ""
 local directMount = config.directMount or false
 local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
+local isolated = config.isolated
+if isolated == nil then isolated = false end  -- Default: projects share home, can see each other
 
 -- Docker configuration defaults
 local docker = config.docker or {}
@@ -1724,10 +1705,14 @@ local dockerImage = docker.image or "node:lts-slim"
 local dockerPackages = docker.packages or {}
 local dockerNamePrefix = docker.namePrefix or "claude-cage"
 local dockerExtraArgs = docker.extraArgs or ""
-local dockerIsolated = docker.isolated or false  -- false: shared container, true: per-project
 local dockerContainer = docker.container or ""   -- Use existing container (user-managed)
 local dockerUser = docker.user or ""             -- User to run as in existing container
 local dockerWorkdir = docker.workdir or ""       -- Working directory in existing container
+
+-- Deprecated: docker.isolated (now ignored, one container per cage user)
+if docker.isolated ~= nil then
+    io.stderr:write("WARNING: docker.isolated is deprecated and ignored. All projects share one container per cage user.\n")
+end
 
 -- Validate isolationMode
 if isolationMode ~= "bwrap" and isolationMode ~= "docker" then
@@ -1760,8 +1745,7 @@ if source == "" then
 end
 
 -- If sync is empty, set a placeholder (overridden in bash to use /run/)
--- Actual path: /run/claude-cage/<user>/sync/<original_user>/projects/<project> (bwrap mode)
---              /run/user/<uid>/claude-cage/sync/projects/<project> (docker mode)
+-- Actual path: /run/claude-cage/<user>/sync/<original_user>/projects/<project>
 if sync == "" then
     sync = "__default__"
 end
@@ -2006,10 +1990,10 @@ print(dockerImage)
 print(array_to_string(dockerPackages))
 print(dockerNamePrefix)
 print(dockerExtraArgs)
-print(tostring(dockerIsolated))
 print(dockerContainer)
 print(dockerUser)
 print(dockerWorkdir)
+print(tostring(isolated))
 EOF
 )
 lua_exit_code=$?
@@ -2069,10 +2053,10 @@ fi
     read -r cfg_docker_packages
     read -r cfg_docker_namePrefix
     read -r cfg_docker_extraArgs
-    read -r cfg_docker_isolated
     read -r cfg_docker_container
     read -r cfg_docker_user
     read -r cfg_docker_workdir
+    read -r cfg_isolated
 } <<< "$lua_output"
 
 # Replace EMPTY placeholder with empty string for array values
@@ -2196,15 +2180,9 @@ if [ "$cfg_isolationMode" = "docker" ]; then
     fi
 fi
 
-# Set sync directory in /run/
-# bwrap mode: /run/claude-cage/<user>/sync/<original_user>/projects/<project>
-# Docker mode: /run/user/<uid>/claude-cage/sync/projects/<project>
+# Set sync directory in /run/claude-cage/<user>/sync/<original_user>/projects/<project>
 if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ]; then
-    if [ "$cfg_isolationMode" = "docker" ]; then
-        cfg_sync="/run/user/$(id -u)/claude-cage/sync/projects/${cfg_project}"
-    else
-        cfg_sync="/run/claude-cage/${cfg_user}/sync/${original_user}/projects/${cfg_project}"
-    fi
+    cfg_sync="/run/claude-cage/${cfg_user}/sync/${original_user}/projects/${cfg_project}"
 fi
 
 # In sync mode, validate we're not at the config root
@@ -2223,15 +2201,9 @@ if [ "$cfg_directMount" != "workspace" ] && [ "$cfg_directMount" != "project" ];
 fi
 
 # Define PID and instance file paths early (needed for cleanup mode)
-# bwrap mode: /run/claude-cage/<user>/instances/<project>/
-# Docker mode: /run/user/<uid>/claude-cage/instances/<project>/
-if [ "$cfg_isolationMode" = "docker" ]; then
-    pid_file="/run/user/$(id -u)/claude-cage/instances/${cfg_project}/claude-cage.pid"
-    local_instance_file="/run/user/$(id -u)/claude-cage/instances/${cfg_project}/claude-cage.instances"
-else
-    pid_file="/run/claude-cage/${cfg_user}/instances/${cfg_project}/claude-cage.pid"
-    local_instance_file="/run/claude-cage/${cfg_user}/instances/${cfg_project}/claude-cage.instances"
-fi
+# Path: /run/claude-cage/<user>/instances/<project>/
+pid_file="/run/claude-cage/${cfg_user}/instances/${cfg_project}/claude-cage.pid"
+local_instance_file="/run/claude-cage/${cfg_user}/instances/${cfg_project}/claude-cage.instances"
 
 # For direct mount mode, we track instances by mount point (not project)
 # This allows multiple projects under the same mount to share it
@@ -2279,8 +2251,7 @@ if [ "$delete_docker_container" = true ]; then
     fi
 
     # Compute container name using helper
-    container_name=$(docker_compute_container_name "$cfg_docker_container" "$cfg_docker_isolated" \
-        "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source" "$cfg_directMount")
+    container_name=$(docker_compute_container_name "$cfg_docker_container" "$cfg_docker_namePrefix" "$cfg_user")
 
     echo "Container: $container_name"
 
@@ -2295,7 +2266,8 @@ if [ "$delete_docker_container" = true ]; then
     fi
 
     # Persistent home directory path (use original user's home, not $HOME which may be /root under sudo)
-    persistent_home_dir="/home/$original_user/.local/share/claude-cage/docker/$container_name"
+    # With unified architecture, all modes use bwrap/<username>/home path
+    persistent_home_dir="/home/$original_user/.local/share/claude-cage/bwrap/$cfg_user"
 
     if ! docker_container_exists "$container_name"; then
         echo "Container don't exist. Nothin' to delete."
@@ -2329,8 +2301,8 @@ fi
 
 # Handle cleanup mode
 if [ "$cleanup_mode" = true ]; then
-    # Check for root (unless dry-run or docker mode)
-    if [ "$cfg_isolationMode" != "docker" ] && [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
+    # Check for root (unless dry-run)
+    if [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
         echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
         exit 1
     fi
@@ -2343,9 +2315,11 @@ if [ "$cleanup_mode" = true ]; then
     mapped_home_base="/run/claude-cage/$cfg_user/bwrap"
     mapped_home="$mapped_home_base/home"
     mapped_project="$mapped_home_base/projects/$cfg_mounted"
+    shared_mount="$mapped_home_base/shared"
+    shared_project="$shared_mount/caged/$cfg_mounted"
 
-    # Find and unmount project bindfs mount
-    echo "Checking for project mount..."
+    # Find and unmount project bindfs mount (isolated=true mode)
+    echo "Checking for project mount (isolated mode)..."
     if mountpoint -q "$mapped_project" 2>/dev/null || [ "$dry_run" = true ]; then
         echo "Found project mapping at $mapped_project, unmountin' it now..."
         run_quiet umount -l "$mapped_project"
@@ -2358,7 +2332,21 @@ if [ "$cleanup_mode" = true ]; then
         echo "  No project mapping at $mapped_project. Already clean."
     fi
 
-    # Find and unmount home bindfs mount
+    # Find and unmount project bindfs mount inside shared mount (isolated=false mode)
+    echo "Checking for project mount (shared mode)..."
+    if mountpoint -q "$shared_project" 2>/dev/null || [ "$dry_run" = true ]; then
+        echo "Found project mapping at $shared_project, unmountin' it now..."
+        run_quiet umount -l "$shared_project"
+        if [ $? -eq 0 ]; then
+            echo "  Unmounted project. All clear."
+        else
+            echo "  Had some trouble unmountin' project. May need to clean that up yourself."
+        fi
+    else
+        echo "  No project mapping at $shared_project. Already clean."
+    fi
+
+    # Find and unmount home bindfs mount (isolated=true mode)
     echo "Checking for home mount..."
     if mountpoint -q "$mapped_home" 2>/dev/null || [ "$dry_run" = true ]; then
         echo "Found home mapping at $mapped_home, unmountin' it now..."
@@ -2372,8 +2360,24 @@ if [ "$cleanup_mode" = true ]; then
         echo "  No home mapping at $mapped_home. Already clean."
     fi
 
+    # Find and unmount shared mount (isolated=false mode)
+    echo "Checking for shared mount..."
+    if mountpoint -q "$shared_mount" 2>/dev/null || [ "$dry_run" = true ]; then
+        echo "Found shared mapping at $shared_mount, unmountin' it now..."
+        run_quiet umount -l "$shared_mount"
+        if [ $? -eq 0 ]; then
+            echo "  Unmounted shared. All clear."
+        else
+            echo "  Had some trouble unmountin' shared. May need to clean that up yourself."
+        fi
+    else
+        echo "  No shared mapping at $shared_mount. Already clean."
+    fi
+
     # Clean up the /run directories if empty
     if [ "$dry_run" != true ]; then
+        rmdir "$shared_mount/caged" 2>/dev/null
+        rmdir "$shared_mount" 2>/dev/null
         rmdir "$mapped_home_base/projects" 2>/dev/null
         rmdir "$mapped_home_base" 2>/dev/null
         rmdir "/run/claude-cage/$cfg_user/bwrap" 2>/dev/null
@@ -2596,9 +2600,8 @@ if [ "$cleanup_mode" = true ]; then
     exit 0
 fi
 
-# Now check for root after validating config (unless dry-run or docker mode)
-# Docker mode doesn't need root - just Docker group membership
-if [ "$cfg_isolationMode" != "docker" ] && [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
+# Now check for root after validating config (unless dry-run)
+if [ "$EUID" -ne 0 ] && [ "$dry_run" != true ]; then
     echo "Gonna need you to run this as root. Use sudo, Bay-BEE!"
     exit 1
 fi
@@ -2914,36 +2917,28 @@ if [ "$user_was_prompted" = "false" ] && [ "$dry_run" != true ]; then
 fi
 
 # Set up persistent home and user info
-# Both Docker and bwrap mode use ~/.local/share/claude-cage/{docker,bwrap}/<name>/home/
-# This is owned by the original user; for bwrap mode, bindfs maps it to appear owned by cage user
+# Both Docker and bwrap modes use ~/.local/share/claude-cage/bwrap/<username>/home/
+# This is owned by the original user; bindfs maps it to appear owned by cage user
 original_home="/home/$original_user"
 if [ "$dry_run" = true ]; then
     user_uid="${user_uid:-<UID>}"
-    if [ "$cfg_isolationMode" = "docker" ]; then
-        persistent_home=$(persistent_home_path "docker" "$docker_container_name_value" "$original_home")
-    else
-        persistent_home=$(persistent_home_path "user" "$cfg_user" "$original_home")
-    fi
-elif [ "$cfg_isolationMode" = "docker" ]; then
-    user_uid="$(id -u)"  # Current user's UID for file ownership
-    persistent_home=$(persistent_home_path "docker" "$docker_container_name_value" "$original_home")
 else
-    # bwrap mode: get cage user's UID for iptables rules
+    # Get cage user's UID for iptables rules (both modes use same approach now)
     user_uid=$(get_user_uid "$cfg_user")
-    persistent_home=$(persistent_home_path "user" "$cfg_user" "$original_home")
 fi
+persistent_home=$(persistent_home_path "$cfg_user" "$original_home")
 
-# For bwrap mode, we also need the mapped home path in /run (bindfs target)
-# This appears owned by the cage user and is what bwrap mounts as /home/<user>
-if [ "$cfg_isolationMode" != "docker" ]; then
-    mapped_home_base="/run/claude-cage/$cfg_user/bwrap"
-    mapped_home="$mapped_home_base/home"
-    mapped_project_base="$mapped_home_base/projects"
-    # Create persistent home early so homeConfigSync_copy can use it
-    # Must be owned by original user (bindfs will map to cage user)
-    run mkdir -p "$persistent_home"
-    [ "$dry_run" != true ] && chown -R "$original_user:$original_user" "$original_home/.local/share/claude-cage"
-fi
+# Set up mapped home path in /run (bindfs target)
+# This appears owned by the cage user and is what gets mounted as /home/<user>
+mapped_home_base="/run/claude-cage/$cfg_user/bwrap"
+mapped_home="$mapped_home_base/home"
+mapped_project_base="$mapped_home_base/projects"
+shared_mount="$mapped_home_base/shared"  # For isolated=false: single mount with projects nested inside
+
+# Create persistent home early so homeConfigSync_copy can use it
+# Must be owned by original user (bindfs will map to cage user)
+run mkdir -p "$persistent_home"
+[ "$dry_run" != true ] && chown -R "$original_user:$original_user" "$original_home/.local/share/claude-cage"
 
 # Global arrays for homeConfigSync sync mode (populated by homeConfigSync_init)
 # Used later to set up unison monitoring
@@ -3440,13 +3435,7 @@ fi
 
 # Construct mount point (path inside sandbox where project files appear)
 # Both modes use /home/<user>/caged/ as the sandbox destination
-# bwrap mode: bwrap constructs this from mapped paths in /run
-# Docker mode: Docker mounts directly to this path
-if [ "$cfg_isolationMode" = "docker" ]; then
-    mount_base="/home/claude/caged"
-else
-    mount_base="/home/$cfg_user/caged"
-fi
+mount_base="/home/$cfg_user/caged"
 
 if [ "$cfg_directMount" = "workspace" ]; then
     # Workspace mode: mounted name based on source directory
@@ -3466,14 +3455,8 @@ fi
 
 # For workspace direct mount mode, track instances by mount point instead of project
 # This allows multiple subdirectories under the same mount to share it
-# Instance tracking directory
-# bwrap mode: /run/claude-cage/<user>/instances (requires sudo)
-# Docker mode: /run/user/<uid>/claude-cage/instances (no sudo)
-if [ "$cfg_isolationMode" = "docker" ]; then
-    instance_dir="/run/user/$(id -u)/claude-cage/instances"
-else
-    instance_dir="/run/claude-cage/${cfg_user}/instances"
-fi
+# Instance tracking directory: /run/claude-cage/<user>/instances
+instance_dir="/run/claude-cage/${cfg_user}/instances"
 
 # Create instance directory (will be created later during setup, define path here)
 
@@ -3489,16 +3472,15 @@ fi
 iptables_chain="CLAUDE_CAGE_${cfg_user}"
 
 # Global instance file (tracks all projects for this user)
-# bwrap mode: /run/claude-cage/<user>/instances/global
-# Docker mode: /run/user/<uid>/claude-cage/instances/global
+# Path: /run/claude-cage/<user>/instances/global
 global_instance_file="$instance_dir/global"
 
 # Pre-compute Docker container name and mount destination
 # (needs to be available for cleanup and launch)
 if [ "$cfg_isolationMode" = "docker" ]; then
     # Determine container name using helper
-    docker_container_name_value=$(docker_compute_container_name "$cfg_docker_container" "$cfg_docker_isolated" \
-        "$cfg_docker_namePrefix" "$cfg_project" "$cfg_source" "$cfg_directMount")
+    # With unified architecture, one container per cage user
+    docker_container_name_value=$(docker_compute_container_name "$cfg_docker_container" "$cfg_docker_namePrefix" "$cfg_user")
 
     # Track whether we're using an existing container (affects homeConfigSync behavior)
     if [ -n "$cfg_docker_container" ]; then
@@ -3513,16 +3495,19 @@ if [ "$cfg_isolationMode" = "docker" ]; then
         docker_mount_dest="$cfg_docker_workdir"
     elif [ "$cfg_directMount" = "workspace" ]; then
         workspace_name=$(basename "$cfg_source")
-        docker_mount_dest="/home/claude/caged/$workspace_name"
+        docker_mount_dest="/home/$cfg_user/caged/$workspace_name"
     elif [ "$cfg_directMount" = "project" ]; then
-        docker_mount_dest="/home/claude/caged/$cfg_project"
+        docker_mount_dest="/home/$cfg_user/caged/$cfg_project"
     else
         # Sync mode
-        docker_mount_dest="/home/claude/caged/$cfg_project"
+        docker_mount_dest="/home/$cfg_user/caged/$cfg_project"
     fi
+    # Set docker_project_path for display and workdir (may be overridden for managed containers)
+    docker_project_path="$docker_mount_dest"
 else
     docker_container_name_value=""
     docker_mount_dest=""
+    docker_project_path=""
     docker_using_existing_container=false
 fi
 
@@ -3537,22 +3522,13 @@ cleanup() {
 
     section_header "Alright, shuttin' down operations..."
 
-    # Docker mode cleanup
+    # Stop Docker container if running (Docker mode only)
+    # Container stays around for --continue/--resume
     if [ "$cfg_isolationMode" = "docker" ]; then
-        # Kill unison if running (sync mode)
-        if [ -f "$pid_file" ]; then
-            echo "Stoppin' unison sync..."
-            kill_processes_from_file "$pid_file" --remove
-        fi
-
-        # Stop container (it stays around for --continue/--resume)
         if [ -n "$docker_container_name_value" ] && docker_container_running "$docker_container_name_value"; then
             echo "Stoppin' Docker container..."
             docker_stop_container "$docker_container_name_value"
         fi
-
-        echo "All done. Stay safe out there."
-        return
     fi
 
     # For workspace direct mount mode, track by mount point instead of project
@@ -3643,13 +3619,22 @@ cleanup() {
     # Clean up shared resources only if this is the last instance
     if [ "$has_other_instances" = "false" ]; then
         # Unmount home bindfs mapping (shared across all instances for this user)
-        if [ -n "$mapped_home" ] && mountpoint -q "$mapped_home" 2>/dev/null; then
-            echo "Unmountin' home mapping at $mapped_home..."
-            run_quiet umount -l "$mapped_home"
+        # For isolated=false, the mount is at shared_mount; for isolated=true, at mapped_home
+        if [ "$cfg_isolated" = "false" ]; then
+            if [ -n "$shared_mount" ] && mountpoint -q "$shared_mount" 2>/dev/null; then
+                echo "Unmountin' shared mount at $shared_mount..."
+                run_quiet umount -l "$shared_mount"
+            fi
+        else
+            if [ -n "$mapped_home" ] && mountpoint -q "$mapped_home" 2>/dev/null; then
+                echo "Unmountin' home mapping at $mapped_home..."
+                run_quiet umount -l "$mapped_home"
+            fi
         fi
 
         # Clean up the /run directories if empty
         if [ -n "$mapped_home_base" ]; then
+            rmdir "$mapped_home_base/shared" 2>/dev/null
             rmdir "$mapped_home_base/projects" 2>/dev/null
             rmdir "$mapped_home_base" 2>/dev/null
         fi
@@ -3921,7 +3906,6 @@ if [ "$skip_setup" = false ]; then
 
         # Display persistent home path (for managed containers)
         if [ "$docker_using_existing_container" != true ]; then
-            persistent_home=$(docker_persistent_home_path "$cfg_docker_isolated" "$cfg_config_root" "$cfg_project" "$docker_container_name_value" "$original_home")
             echo "Persistent home: $persistent_home"
         fi
 
@@ -3951,18 +3935,10 @@ if [ "$skip_setup" = false ]; then
 
         else
             # claude-cage manages the container
-            # Determine network mode for Docker
-            case "$cfg_networkMode" in
-                disabled|allowlist)
-                    docker_network="none"
-                    ;;
-                blocklist)
-                    docker_network="bridge"
-                    ;;
-                *)
-                    docker_network="none"
-                    ;;
-            esac
+            # Setup network restrictions via iptables (same as bwrap mode)
+            # Docker uses --network=host so iptables rules apply to container traffic
+            setup_network_restrictions "$cfg_networkMode"
+            docker_network="host"
 
             # Build/ensure image with packages
             docker_image_to_use=$(docker_ensure_image "$cfg_docker_image" "$cfg_docker_packages")
@@ -4010,9 +3986,88 @@ if [ "$skip_setup" = false ]; then
                 docker_mount_source="$cfg_sync"
             fi
 
-            # Get host UID/GID for file ownership mapping
-            host_uid=$(id -u)
-            host_gid=$(id -g)
+            # Get cage user UID/GID for container (same as bwrap mode)
+            cage_uid="$user_uid"
+            cage_gid=$(get_user_gid "$cfg_user")
+
+            # Set up bindfs mapping for home (same as bwrap mode)
+            # This maps persistent_home (owned by original_user) to appear owned by cage_user
+            if [ "$cfg_isolated" = "false" ]; then
+                # Shared mount mode: projects nested inside home mount
+                run mkdir -p -m 700 "$shared_mount"
+                home_mount_target="$shared_mount"
+            else
+                # Isolated mode (default): separate home and project mounts
+                run mkdir -p -m 700 "$mapped_home"
+                run mkdir -p -m 700 "$mapped_project_base"
+                home_mount_target="$mapped_home"
+            fi
+
+            if [ "$dry_run" != true ] && mountpoint -q "$home_mount_target" 2>/dev/null; then
+                echo "Mapped home already mounted. Reusin' it."
+            else
+                section_header "Settin' up home bindfs mapping..."
+                if ! run bindfs -u "$cfg_user" -g "$cfg_user" \
+                    --create-for-user="$original_user" --create-for-group="$original_user" \
+                    "$persistent_home" "$home_mount_target"; then
+                    if [ "$dry_run" != true ]; then
+                        echo "bindfs failed for home mapping."
+                        exit 1
+                    fi
+                fi
+                echo "Home mapping ready."
+            fi
+
+            # Set up bindfs mapping for project
+            if [ "$cfg_directMount" = "workspace" ]; then
+                project_name=$(basename "$cfg_source")
+            elif [ "$cfg_directMount" = "project" ]; then
+                project_name="$start_subdir"
+            else
+                project_name="$cfg_mounted"
+            fi
+
+            # For isolated=false, project is nested inside shared_mount
+            # For isolated=true (default), project is a separate mount
+            if [ "$cfg_isolated" = "false" ]; then
+                mapped_project="$shared_mount/caged/$project_name"
+                run mkdir -p "$shared_mount/caged"
+                run mkdir -p -m 700 "$mapped_project"
+            else
+                mapped_project="$mapped_project_base/$project_name"
+                run mkdir -p -m 700 "$mapped_project"
+            fi
+
+            if [ "$dry_run" != true ] && mountpoint -q "$mapped_project" 2>/dev/null; then
+                echo "Project mount already exists. Reusin' it."
+            else
+                section_header "Settin' up project bindfs mapping..."
+                if ! run bindfs -u "$cfg_user" -g "$cfg_user" \
+                    --create-for-user="$original_user" --create-for-group="$original_user" \
+                    --perms=a+rX \
+                    "$docker_mount_source" "$mapped_project"; then
+                    if [ "$dry_run" != true ]; then
+                        echo "bindfs failed for project mapping."
+                        exit 1
+                    fi
+                fi
+                echo "Project mapping ready."
+            fi
+
+            # Update docker mount paths to use bindfs-mapped locations
+            docker_home_mount="$home_mount_target"
+            if [ "$cfg_isolated" = "false" ]; then
+                # For shared mount mode, project is already nested inside home
+                docker_project_mount=""
+                docker_mount_dest=""
+            else
+                docker_project_mount="$mapped_project"
+                docker_mount_dest="/home/$cfg_user/caged/$project_name"
+            fi
+
+            # Project path inside container (used for test mode messages and workdir)
+            # Same for both isolated modes - the project is always at /home/<user>/caged/<project>
+            docker_project_path="/home/$cfg_user/caged/$project_name"
 
             # Check if container already exists
             if docker_container_exists "$docker_container_name_value"; then
@@ -4026,18 +4081,17 @@ if [ "$skip_setup" = false ]; then
                 # Start new container
                 echo "Creatin' new container..."
 
-                # Create persistent home directory if it doesn't exist
-                run mkdir -p "$persistent_home"
-
                 # Pre-create the mount point directory so Docker doesn't create it as root
-                # docker_mount_dest is /home/claude/caged/... and persistent_home is mounted as /home/claude
-                mount_point_relative="${docker_mount_dest#/home/claude/}"
-                run mkdir -p "$persistent_home/$mount_point_relative"
+                # Only needed for isolated=true mode (separate project volume mount)
+                if [ -n "$docker_mount_dest" ]; then
+                    mount_point_relative="${docker_mount_dest#/home/$cfg_user/}"
+                    run mkdir -p "$docker_home_mount/$mount_point_relative"
+                fi
 
                 docker_start_container "$docker_container_name_value" "$docker_image_to_use" \
-                    "$docker_mount_source" "$docker_mount_dest" \
+                    "$docker_project_mount" "$docker_mount_dest" \
                     "$docker_network" "$cfg_docker_extraArgs" \
-                    "$host_uid" "$host_gid" "$persistent_home"
+                    "$cage_uid" "$cage_gid" "$docker_home_mount" "$cfg_user"
 
                 if [ "$dry_run" != true ] && ! docker_container_running "$docker_container_name_value"; then
                     echo "Failed to start Docker container."
@@ -4046,38 +4100,40 @@ if [ "$skip_setup" = false ]; then
                 echo "Container started."
             fi
 
-            # Ensure home directory exists, create claude user, and set ownership
-            # Run as root to: create home dir, add claude user to /etc/passwd, chown
-            # Adding user entry ensures 'whoami' returns 'claude' not 'node' (which has same UID)
+            # Ensure home directory exists, create cage user entry, and set ownership
+            # Run as root to: create home dir, add user to /etc/passwd, chown
+            # Adding user entry ensures 'whoami' returns the cage username
             if [ "$dry_run" = true ]; then
-                echo "[dry-run] docker exec -u root ... setup claude user and home directory"
+                echo "[dry-run] docker exec -u root ... setup cage user and home directory"
             else
                 run docker exec -u root "$docker_container_name_value" bash -c "
-                    mkdir -p /home/claude
-                    # Add claude user entry if not exists (maps host UID to 'claude' username)
-                    if ! grep -q '^claude:' /etc/passwd; then
-                        echo 'claude:x:${host_uid}:${host_gid}::/home/claude:/bin/bash' >> /etc/passwd
+                    mkdir -p /home/$cfg_user
+                    # Add cage user entry if not exists
+                    if ! grep -q '^$cfg_user:' /etc/passwd; then
+                        echo '$cfg_user:x:${cage_uid}:${cage_gid}::/home/$cfg_user:/bin/bash' >> /etc/passwd
                     fi
-                    # Add claude group if not exists
-                    if ! grep -q '^claude:' /etc/group; then
-                        echo 'claude:x:${host_gid}:' >> /etc/group
+                    # Add cage group if not exists
+                    if ! grep -q '^$cfg_user:' /etc/group; then
+                        echo '$cfg_user:x:${cage_gid}:' >> /etc/group
                     fi
-                    chown ${host_uid}:${host_gid} /home/claude
+                    chown ${cage_uid}:${cage_gid} /home/$cfg_user
                 "
                 # Create .profile with PATH if it doesn't exist
-                run docker exec -e HOME=/home/claude "$docker_container_name_value" bash -c '[ -f ~/.profile ] || cat > ~/.profile << "PROFILE"
+                container_home="/home/$cfg_user"
+                run docker exec -e HOME="$container_home" "$docker_container_name_value" bash -c '[ -f ~/.profile ] || cat > ~/.profile << "PROFILE"
 export PATH="$HOME/.local/bin:$PATH"
 PROFILE'
             fi
 
             # Copy homeConfigSync files to persistent home BEFORE checking Claude installation
             # This allows .local/bin/claude from homeConfigSync to be used
-            # The persistent home is mounted as /home/claude in the container
+            # The persistent home is mounted in the container via bindfs
             homeConfigSync_copy "$persistent_home"
 
             # Check if Claude Code is installed in container (after homeConfigSync)
             # Check explicit path since the UID may not exist in /etc/passwd (no profile to set PATH)
-            if ! docker exec "$docker_container_name_value" test -x /home/claude/.local/bin/claude 2>/dev/null; then
+            container_home="/home/$cfg_user"
+            if ! docker exec "$docker_container_name_value" test -x "$container_home/.local/bin/claude" 2>/dev/null; then
                 echo "Claude Code ain't installed in the container. Installin' it now..."
                 if [ "$dry_run" = true ]; then
                     echo "[dry-run] Installing curl and Claude Code in container"
@@ -4095,14 +4151,14 @@ PROFILE'
                     # Install Claude Code (as the regular user for correct home dir)
                     # HOME and PATH must be set for the installer to work correctly and not warn
                     echo "Downloading and installing Claude Code..."
-                    run docker exec -e HOME=/home/claude -e PATH="/home/claude/.local/bin:\$PATH" "$docker_container_name_value" bash -c "set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"
+                    run docker exec -e HOME="$container_home" -e PATH="$container_home/.local/bin:\$PATH" "$docker_container_name_value" bash -c "set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash"
                     if [ $? -ne 0 ]; then
                         echo "Failed to install Claude Code in container."
                         exit 1
                     fi
                     # Verify installation by checking explicit path
-                    if ! docker exec "$docker_container_name_value" test -x /home/claude/.local/bin/claude 2>/dev/null; then
-                        echo "Claude Code installation failed - binary not found at /home/claude/.local/bin/claude"
+                    if ! docker exec "$docker_container_name_value" test -x "$container_home/.local/bin/claude" 2>/dev/null; then
+                        echo "Claude Code installation failed - binary not found at $container_home/.local/bin/claude"
                         exit 1
                     fi
                     echo "Claude Code installed."
@@ -4135,18 +4191,26 @@ PROFILE'
         echo "Persistent home: $persistent_home"
 
         # Create mapped directories in /run (mode 700 for security)
-        run mkdir -p -m 700 "$mapped_home"
-        run mkdir -p -m 700 "$mapped_project_base"
+        if [ "$cfg_isolated" = "false" ]; then
+            # Shared mount mode: projects nested inside home mount
+            run mkdir -p -m 700 "$shared_mount"
+            home_mount_target="$shared_mount"
+        else
+            # Isolated mode (default): separate home and project mounts
+            run mkdir -p -m 700 "$mapped_home"
+            run mkdir -p -m 700 "$mapped_project_base"
+            home_mount_target="$mapped_home"
+        fi
 
-        # Set up bindfs mapping: persistent_home → mapped_home (appears owned by cage user)
+        # Set up bindfs mapping: persistent_home → home_mount_target (appears owned by cage user)
         # Check if already mounted (shared across instances)
-        if [ "$dry_run" != true ] && mountpoint -q "$mapped_home" 2>/dev/null; then
+        if [ "$dry_run" != true ] && mountpoint -q "$home_mount_target" 2>/dev/null; then
             echo "Mapped home already mounted. Reusin' it."
         else
             section_header "Settin' up home bindfs mapping..."
             if ! run bindfs -u "$cfg_user" -g "$cfg_user" \
                 --create-for-user="$original_user" --create-for-group="$original_user" \
-                "$persistent_home" "$mapped_home"; then
+                "$persistent_home" "$home_mount_target"; then
                 if [ "$dry_run" != true ]; then
                     echo "bindfs failed for home mapping."
                     exit 1
@@ -4175,15 +4239,27 @@ PROFILE'
         fi
 
         # Set up mapped project directory
-        mapped_project="$mapped_project_base/$project_name"
-        run mkdir -p -m 700 "$mapped_project"
+        # For isolated=false, project is nested inside shared_mount
+        # For isolated=true (default), project is a separate mount
+        if [ "$cfg_isolated" = "false" ]; then
+            # Project is nested inside shared_mount at caged/<project>/
+            mapped_project="$shared_mount/caged/$project_name"
+            # Create caged directory inside the mounted shared_mount
+            run mkdir -p "$shared_mount/caged"
+            run mkdir -p -m 700 "$mapped_project"
+        else
+            mapped_project="$mapped_project_base/$project_name"
+            run mkdir -p -m 700 "$mapped_project"
+        fi
 
         # Set up project bindfs mapping
         skip_mount=false
         if [ "$dry_run" != true ] && mountpoint -q "$mapped_project" 2>/dev/null; then
-            if [ "$cfg_directMount" = "workspace" ]; then
+            if [ "$cfg_directMount" = "workspace" ] || [ "$cfg_isolated" = "false" ]; then
                 echo "Project mount already exists. Reusin' it."
-                instance_file_add "$mount_instance_file" "$instance_id"
+                if [ "$cfg_directMount" = "workspace" ]; then
+                    instance_file_add "$mount_instance_file" "$instance_id"
+                fi
                 skip_mount=true
             else
                 echo "Hold on now. That project's already mounted."
@@ -4246,7 +4322,7 @@ PROFILE'
 
         # Verify mappings (skip in dry-run)
         if [ "$dry_run" != true ]; then
-            if ! mountpoint -q "$mapped_home" 2>/dev/null; then
+            if ! mountpoint -q "$home_mount_target" 2>/dev/null; then
                 echo "Home mapping failed."
                 exit 1
             fi
@@ -4264,13 +4340,32 @@ PROFILE'
 else
     # Verify mappings still exist (bwrap mode only)
     if [ "$cfg_isolationMode" != "docker" ]; then
-        if ! mountpoint -q "$mapped_home" 2>/dev/null || ! mountpoint -q "$mapped_project" 2>/dev/null; then
+        # Determine home mount target for verification (same logic as setup)
+        if [ "$cfg_isolated" = "false" ]; then
+            home_mount_target="$shared_mount"
+        else
+            home_mount_target="$mapped_home"
+        fi
+        if ! mountpoint -q "$home_mount_target" 2>/dev/null || ! mountpoint -q "$mapped_project" 2>/dev/null; then
             echo "Wait a minute. The mappings ain't there anymore."
             echo "Somethin' went wrong. Run: sudo claude-cage --cleanup"
             exit 1
         fi
         echo "Mappings still there. We're good."
     fi
+fi
+
+# Set up bwrap mount arguments based on isolated mode
+# For isolated=false: home mount includes projects nested inside, no separate project overlay
+# For isolated=true (default): separate home and project overlay mounts
+if [ "$cfg_isolated" = "false" ]; then
+    bwrap_home_mount="$shared_mount"
+    bwrap_project_mount=""  # Project is already nested inside home
+    bwrap_project_dest=""
+else
+    bwrap_home_mount="$mapped_home"
+    bwrap_project_mount="$mapped_project"
+    bwrap_project_dest="$mount_point"
 fi
 
 # Register this instance (with locking to prevent race conditions)
@@ -4307,9 +4402,9 @@ if [ "$dry_run" = true ]; then
             fi
         fi
         if [ "$test_mode" = true ]; then
-            run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$preview_workdir"
+            run_in_bwrap "$cfg_user" "$bwrap_home_mount" "$bwrap_project_mount" "$bwrap_project_dest" "$preview_workdir"
         else
-            run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$preview_workdir" "claude"
+            run_in_bwrap "$cfg_user" "$bwrap_home_mount" "$bwrap_project_mount" "$bwrap_project_dest" "$preview_workdir" "claude"
         fi
     fi
     echo ""
@@ -4323,19 +4418,20 @@ elif [ "$test_mode" = true ]; then
 
     if [ "$cfg_isolationMode" = "docker" ]; then
         echo "Alright, everything's ready. Droppin' you into the Docker container."
-        echo "Your files are at: $docker_mount_dest"
+        echo "Your files are at: $docker_project_path"
         if [ -n "$start_subdir" ]; then
-            echo "Navigate to your project with: cd $docker_mount_dest/$start_subdir"
+            echo "Navigate to your project with: cd $docker_project_path/$start_subdir"
         fi
         echo ""
         echo "When you're done pokin' around, type 'exit' and we'll clean up."
         echo "================="
         echo ""
         # Use bash with PATH set up so 'claude' command works
+        container_home="/home/$cfg_user"
         if [ -n "$cfg_docker_user" ]; then
-            docker_exec "$docker_container_name_value" --user "$cfg_docker_user" bash -c "export PATH=\"/home/claude/.local/bin:\$PATH\" && exec bash"
+            docker_exec "$docker_container_name_value" --user "$cfg_docker_user" --home "$container_home" bash -c "export PATH=\"$container_home/.local/bin:\$PATH\" && exec bash"
         else
-            docker_exec "$docker_container_name_value" bash -c "export PATH=\"/home/claude/.local/bin:\$PATH\" && exec bash"
+            docker_exec "$docker_container_name_value" --home "$container_home" bash -c "export PATH=\"$container_home/.local/bin:\$PATH\" && exec bash"
         fi
         exit_code=$?
     else
@@ -4362,14 +4458,14 @@ elif [ "$test_mode" = true ]; then
         echo "When you're done pokin' around, type 'exit' and we'll clean up."
         echo "================="
         echo ""
-        run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$test_workdir"
+        run_in_bwrap "$cfg_user" "$bwrap_home_mount" "$bwrap_project_mount" "$bwrap_project_dest" "$test_workdir"
         exit_code=$?
     fi
 else
     # Build claude command with optional flags
     # Use full path in Docker mode since PATH isn't set up for non-existent users
     if [ "$cfg_isolationMode" = "docker" ]; then
-        claude_cmd="/home/claude/.local/bin/claude"
+        claude_cmd="/home/$cfg_user/.local/bin/claude"
     else
         claude_cmd="claude"
     fi
@@ -4383,31 +4479,32 @@ else
         # Docker mode: run claude inside container
         # Determine working directory inside container
         if [ -n "$start_subdir" ]; then
-            docker_workdir="$docker_mount_dest/$start_subdir"
+            docker_workdir="$docker_project_path/$start_subdir"
         else
-            docker_workdir="$docker_mount_dest"
+            docker_workdir="$docker_project_path"
         fi
 
+        container_home="/home/$cfg_user"
         if [ -n "$cfg_docker_user" ]; then
-            docker_exec "$docker_container_name_value" --user "$cfg_docker_user" bash -c "cd \"$docker_workdir\" && $claude_cmd"
+            docker_exec "$docker_container_name_value" --user "$cfg_docker_user" --home "$container_home" bash -c "cd \"$docker_workdir\" && $claude_cmd"
         else
-            docker_exec "$docker_container_name_value" bash -c "cd \"$docker_workdir\" && $claude_cmd"
+            docker_exec "$docker_container_name_value" --home "$container_home" bash -c "cd \"$docker_workdir\" && $claude_cmd"
         fi
         exit_code=$?
     else
         # bwrap mode: run Claude via bwrap with mapped home and project
         if [ "$cfg_directMount" = "workspace" ]; then
             # Workspace mode: start in the specified subdirectory within the mount
-            run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$mount_point/$start_subdir" "$claude_cmd"
+            run_in_bwrap "$cfg_user" "$bwrap_home_mount" "$bwrap_project_mount" "$bwrap_project_dest" "$mount_point/$start_subdir" "$claude_cmd"
         elif [ "$cfg_directMount" = "project" ]; then
             # Project mode: start at the mount point root (which is the project dir)
-            run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$mount_point" "$claude_cmd"
+            run_in_bwrap "$cfg_user" "$bwrap_home_mount" "$bwrap_project_mount" "$bwrap_project_dest" "$mount_point" "$claude_cmd"
         else
             # Sync mode: start in the subdirectory corresponding to CWD relative to config root
             if [ -n "$start_subdir" ]; then
-                run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$mount_point/$start_subdir" "$claude_cmd"
+                run_in_bwrap "$cfg_user" "$bwrap_home_mount" "$bwrap_project_mount" "$bwrap_project_dest" "$mount_point/$start_subdir" "$claude_cmd"
             else
-                run_in_bwrap "$cfg_user" "$mapped_home" "$mapped_project" "$mount_point" "$mount_point" "$claude_cmd"
+                run_in_bwrap "$cfg_user" "$bwrap_home_mount" "$bwrap_project_mount" "$bwrap_project_dest" "$mount_point" "$claude_cmd"
             fi
         fi
         exit_code=$?

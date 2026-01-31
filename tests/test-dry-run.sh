@@ -103,8 +103,10 @@ fi
 echo "  PASS: Found bindfs command"
 
 echo "Test 7b: Project mapping should use /run staging area"
-# With bwrap architecture, bindfs mounts to /run/claude-cage/<user>/bwrap/projects/
-if ! echo "$output" | grep -q "bindfs.*/run/claude-cage/[^/]*/bwrap/projects/"; then
+# With bwrap architecture, bindfs mounts to /run/claude-cage/<user>/bwrap/
+# Default (isolated=false): projects in /run/.../bwrap/shared/caged/
+# isolated=true: projects in /run/.../bwrap/projects/
+if ! echo "$output" | grep -qE "bindfs.*/run/claude-cage/[^/]*/bwrap/(projects|shared/caged)/"; then
     echo "FAIL: Did not find project mapping in /run staging area"
     echo "Output was:"
     echo "$output"
@@ -501,54 +503,52 @@ if ! echo "$docker_output" | grep -q "docker\|Docker"; then
 fi
 echo "  PASS: Docker mode shows docker commands"
 
-echo "Test 24: Docker mode should not require sudo message"
-if echo "$docker_output" | grep -q "Gonna need you to run this as root"; then
-    echo "FAIL: Docker mode should not require sudo"
+echo "Test 24: Docker mode should use unified paths (same as bwrap)"
+if echo "$docker_output" | grep -q "/run/user/"; then
+    echo "FAIL: Docker mode should use unified /run/claude-cage/ path (not /run/user/)"
     echo "Output was:"
     echo "$docker_output"
     exit 1
 fi
-echo "  PASS: Docker mode does not require sudo"
+echo "  PASS: Docker mode uses unified runtime paths"
 
 cd "$TEST_TMP/project"
 
 echo ""
-echo "=== Testing Docker isolated mode ==="
+echo "=== Testing Docker unified container naming ==="
 
-# Create a test config for Docker isolated mode (reused for multiple tests)
-mkdir -p "$TEST_TMP/docker-isolated-test/myproject"
-cat > "$TEST_TMP/docker-isolated-test/claude-cage.config" << 'EOF'
+# Create a test config for Docker mode with unified architecture
+mkdir -p "$TEST_TMP/docker-unified-test/myproject"
+cat > "$TEST_TMP/docker-unified-test/claude-cage.config" << 'EOF'
 claude_cage {
+    user = "testuser",
     isolationMode = "docker",
-    directMount = "workspace",
-    docker = {
-        isolated = true
-    }
+    directMount = "workspace"
 }
 EOF
-cd "$TEST_TMP/docker-isolated-test/myproject"
+cd "$TEST_TMP/docker-unified-test/myproject"
 
 # Run once and check multiple assertions
-isolated_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
+unified_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
 
-echo "Test 25: Docker isolated mode should show project-specific container name"
-if ! echo "$isolated_output" | grep -q "claude-cage-.*-"; then
-    echo "FAIL: Isolated mode should show project-specific container name with hash"
+echo "Test 25: Docker mode should show unified container name (prefix-username)"
+if ! echo "$unified_output" | grep -q "Container.*claude-cage-testuser"; then
+    echo "FAIL: Docker mode should show container name as prefix-username"
     echo "Output was:"
-    echo "$isolated_output"
+    echo "$unified_output"
     exit 1
 fi
-echo "  PASS: Docker isolated mode shows project-specific container name"
+echo "  PASS: Docker mode shows unified container name"
 
-# Test 25b - uses same isolated mode config
-echo "Test 25b: Docker isolated mode should use .local/share for persistent home"
-if ! echo "$isolated_output" | grep -q "Persistent home:.*\.local/share/claude-cage/docker/.*/home"; then
-    echo "FAIL: Isolated mode should use .local/share directory for persistent home"
+# Test 25b - verify persistent home uses bwrap path (unified with bwrap mode)
+echo "Test 25b: Docker mode should use bwrap path for persistent home (unified)"
+if ! echo "$unified_output" | grep -q "Persistent home:.*\.local/share/claude-cage/bwrap/"; then
+    echo "FAIL: Docker mode should use bwrap path for persistent home"
     echo "Output was:"
-    echo "$isolated_output"
+    echo "$unified_output"
     exit 1
 fi
-echo "  PASS: Isolated mode uses .local/share for persistent home"
+echo "  PASS: Docker mode uses unified bwrap path for persistent home"
 
 cd "$TEST_TMP/project"
 
@@ -1107,7 +1107,10 @@ fi
 echo "  PASS: Found persistent home message"
 
 echo "Test 39: Docker managed container should mount home directory"
-if ! echo "$docker_persist_output" | grep -q '\-v ".*home.*:/home/claude"'; then
+# Docker mounts to /home/<cage_user>
+# isolated=false (default): mounts /run/.../bwrap/shared:/home/<user>
+# isolated=true: mounts /run/.../bwrap/home:/home/<user>
+if ! echo "$docker_persist_output" | grep -qE '\-v ".*/bwrap/(shared|home):/home/claude-cage"'; then
     echo "FAIL: Did not find home volume mount in docker run command"
     echo "Output was:"
     echo "$docker_persist_output"
@@ -1132,16 +1135,16 @@ if ! echo "$user_instance_output" | grep -q "/run/claude-cage/.*/instances"; the
 fi
 echo "  PASS: User mode uses /run/claude-cage/<user>/instances"
 
-echo "Test 41: Docker mode instance files should be in /run/user/"
+echo "Test 41: Docker mode instance files should be in /run/claude-cage/ (unified)"
 cd "$TEST_TMP/docker-persistent-test/myproject"
 docker_instance_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1) || true
-if ! echo "$docker_instance_output" | grep -q "/run/user/.*/claude-cage/instances"; then
-    echo "FAIL: Did not find /run/user/<uid>/claude-cage/instances path"
+if ! echo "$docker_instance_output" | grep -q "/run/claude-cage/.*/instances"; then
+    echo "FAIL: Did not find /run/claude-cage/<user>/instances path"
     echo "Output was:"
     echo "$docker_instance_output"
     exit 1
 fi
-echo "  PASS: Docker mode uses /run/user/<uid>/claude-cage/instances"
+echo "  PASS: Docker mode uses unified /run/claude-cage/<user>/instances"
 
 echo ""
 echo "=== Testing Docker homeConfigSync implementation ==="
@@ -1178,6 +1181,102 @@ if echo "$docker_instance_output" | grep -q "bindfs.*homeConfigSync\|Creating bi
     exit 1
 fi
 echo "  PASS: Docker sync mode does not use bindfs"
+
+echo ""
+echo "=== Testing isolated config option ==="
+
+# Create isolated=false config
+mkdir -p "$TEST_TMP/isolated-config/project"
+cat > "$TEST_TMP/isolated-config/claude-cage.config" << 'EOF'
+claude_cage {
+    user = "testuser",
+    isolated = false
+}
+EOF
+
+cd "$TEST_TMP/isolated-config/project"
+
+echo "Test 45: isolated=false should use shared mount"
+isolated_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1)
+if ! echo "$isolated_output" | grep -q "bwrap/shared"; then
+    echo "FAIL: isolated=false should use shared mount path"
+    echo "Output was:"
+    echo "$isolated_output"
+    exit 1
+fi
+echo "  PASS: isolated=false uses shared mount"
+
+echo "Test 46: isolated=false should mount project inside shared mount"
+if ! echo "$isolated_output" | grep -q "bwrap/shared/caged"; then
+    echo "FAIL: isolated=false should mount project inside shared mount"
+    echo "Output was:"
+    echo "$isolated_output"
+    exit 1
+fi
+echo "  PASS: isolated=false mounts project inside shared mount"
+
+echo "Test 47: isolated=false bwrap should have single --bind for home"
+# Count the --bind arguments in the bwrap command
+bind_count=$(echo "$isolated_output" | grep -o "\-\-bind" | wc -l)
+if [ "$bind_count" -ne 1 ]; then
+    echo "FAIL: isolated=false bwrap should have exactly 1 --bind (got $bind_count)"
+    echo "Output was:"
+    echo "$isolated_output"
+    exit 1
+fi
+echo "  PASS: isolated=false has single --bind for home"
+
+# Test isolated=true (explicit)
+cat > "$TEST_TMP/isolated-config/claude-cage.config" << 'EOF'
+claude_cage {
+    user = "testuser",
+    isolated = true
+}
+EOF
+
+echo "Test 48: isolated=true should use separate home and project mounts"
+isolated_true_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1)
+# Should have both /bwrap/home and /bwrap/projects
+if ! echo "$isolated_true_output" | grep -q "bwrap/home" || ! echo "$isolated_true_output" | grep -q "bwrap/projects"; then
+    echo "FAIL: isolated=true should use separate home and project paths"
+    echo "Output was:"
+    echo "$isolated_true_output"
+    exit 1
+fi
+echo "  PASS: isolated=true uses separate home and project mounts"
+
+echo "Test 49: isolated=true bwrap should have two --bind arguments"
+bind_count=$(echo "$isolated_true_output" | grep -o "\-\-bind" | wc -l)
+if [ "$bind_count" -ne 2 ]; then
+    echo "FAIL: isolated=true bwrap should have exactly 2 --bind arguments (got $bind_count)"
+    echo "Output was:"
+    echo "$isolated_true_output"
+    exit 1
+fi
+echo "  PASS: isolated=true has two --bind arguments"
+
+# Test Docker with isolated=false
+cat > "$TEST_TMP/isolated-config/claude-cage.config" << 'EOF'
+claude_cage {
+    user = "testuser",
+    isolated = false,
+    isolationMode = "docker"
+}
+EOF
+
+echo "Test 50: Docker isolated=false should have single volume mount"
+docker_isolated_output=$("$CAGE_DIR/claude-cage" --dry-run --no-banner 2>&1)
+# Check docker run command has only one -v for home (look for -v followed by volume path)
+vol_count=$(echo "$docker_isolated_output" | grep "docker run" | grep -oE ' -v "[^"]+:[^"]+"' | wc -l)
+if [ "$vol_count" -ne 1 ]; then
+    echo "FAIL: Docker isolated=false should have exactly 1 volume mount (got $vol_count)"
+    echo "Output was:"
+    echo "$docker_isolated_output"
+    exit 1
+fi
+echo "  PASS: Docker isolated=false has single volume mount"
+
+cd "$TEST_TMP/project"
 
 echo ""
 echo "=== All dry-run tests passed! ==="

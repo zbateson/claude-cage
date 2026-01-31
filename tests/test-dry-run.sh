@@ -102,15 +102,25 @@ if ! echo "$output" | grep -q "\[dry-run\] bindfs"; then
 fi
 echo "  PASS: Found bindfs command"
 
-echo "Test 7b: Project mount points should be in cage user's home/caged/"
-# Mount point should be in /home/<user>/caged/ for user mode
-if ! echo "$output" | grep -q "bindfs.*/home/[^/]*/caged/"; then
-    echo "FAIL: Did not find mount point in cage user's home/caged/"
+echo "Test 7b: Project mapping should use /run staging area"
+# With bwrap architecture, bindfs mounts to /run/claude-cage/<user>/project/
+if ! echo "$output" | grep -q "bindfs.*/run/claude-cage/[^/]*/project/"; then
+    echo "FAIL: Did not find project mapping in /run staging area"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Project mounts use cage user's home/caged/"
+echo "  PASS: Project mapping uses /run staging area"
+
+echo "Test 7c: bwrap should mount project to /home/<user>/caged/"
+# bwrap mounts the staged project to the final location
+if ! echo "$output" | grep -q "bwrap.*--bind.*/home/[^/]*/caged/"; then
+    echo "FAIL: bwrap does not mount project to /home/<user>/caged/"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: bwrap mounts project to cage user's home/caged/"
 
 echo "Test 8: Should show mkdir commands"
 if ! echo "$output" | grep -q "\[dry-run\] mkdir"; then
@@ -239,6 +249,24 @@ if ! echo "$cleanup_output" | grep -q "No homeConfigSync mounts found\|umount.*h
     exit 1
 fi
 echo "  PASS: Cleanup mode reports homesync status"
+
+echo "Test 11d: Cleanup mode should check for project mount in /run"
+if ! echo "$cleanup_output" | grep -q "Checking for project mount\|/run/claude-cage/.*/project/"; then
+    echo "FAIL: Cleanup mode should check for project mount"
+    echo "Output was:"
+    echo "$cleanup_output"
+    exit 1
+fi
+echo "  PASS: Cleanup mode checks for project mount"
+
+echo "Test 11e: Cleanup mode should check for home mount in /run"
+if ! echo "$cleanup_output" | grep -q "Checking for home mount\|/run/claude-cage/.*/home"; then
+    echo "FAIL: Cleanup mode should check for home mount"
+    echo "Output was:"
+    echo "$cleanup_output"
+    exit 1
+fi
+echo "  PASS: Cleanup mode checks for home mount"
 
 echo ""
 echo "=== Testing cross-platform simulation ==="
@@ -514,7 +542,7 @@ echo "  PASS: Docker isolated mode shows project-specific container name"
 
 # Test 25b - uses same isolated mode config
 echo "Test 25b: Docker isolated mode should use .local/share for persistent home"
-if ! echo "$isolated_output" | grep -q "Persistent home:.*\.local/share/claude-cage/docker/.*docker-home"; then
+if ! echo "$isolated_output" | grep -q "Persistent home:.*\.local/share/claude-cage/docker/.*/home"; then
     echo "FAIL: Isolated mode should use .local/share directory for persistent home"
     echo "Output was:"
     echo "$isolated_output"

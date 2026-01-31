@@ -15,9 +15,9 @@ claude_cage {
     -- Example: backend.claude-cage.config, frontend.claude-cage.config
     -- These are loaded when you run from that project's subdirectory
 
-    -- Base user name (default: "claude")
+    -- Base user name (default: "claude-cage")
     -- Used in user isolation mode
-    -- user = "claude",
+    -- user = "claude-cage",
 
     -- ============================================================================
     -- ISOLATION MODE: Choose between user isolation or Docker isolation

@@ -381,7 +381,7 @@ sudo -u claude curl -I http://127.0.0.1:80
 
 **Diagnosis:**
 ```bash
-# Test as claude user in test mode
+# Test as cage user in test mode
 sudo ./claude-cage --test
 
 # Try connection

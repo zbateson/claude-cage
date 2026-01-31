@@ -418,7 +418,7 @@ claude_cage {
 }
 ```
 
-Run `sudo claude-cage` in each directory. Project name derived from directory. Both share the `claude` user in user mode (default).
+Run `sudo claude-cage` in each directory. Project name derived from directory. Both share the `claude-cage` user in user mode (default).
 
 **Docker isolation:**
 

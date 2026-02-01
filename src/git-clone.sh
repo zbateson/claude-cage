@@ -2,6 +2,28 @@
 # Git archive + fresh init (no history of excluded files)
 # ============================================================================
 
+# Verify and fix the work directory's origin URL
+# The origin should point to /run<source_dir> for the bwrap/docker mount
+# Arguments:
+#   $1 - work_dir: The work directory
+#   $2 - source_dir: The original source directory path
+verify_work_origin() {
+    local work_dir="$1"
+    local source_dir="$2"
+    local expected_origin="/run$source_dir"
+
+    [ ! -d "$work_dir/.git" ] && return 0
+
+    local current_origin
+    current_origin=$(git -C "$work_dir" remote get-url origin 2>/dev/null || echo "")
+
+    if [ "$current_origin" != "$expected_origin" ]; then
+        echo "Fixin' up the git origin (was: $current_origin)"
+        git -C "$work_dir" remote set-url origin "$expected_origin"
+        echo "  Now pointin' at: $expected_origin"
+    fi
+}
+
 # Base directories for cage data
 CLAUDE_CAGE_CACHE="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
 CLAUDE_CAGE_RUNTIME="${CLAUDE_CAGE_RUNTIME:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-cage}"

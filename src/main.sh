@@ -117,6 +117,8 @@ cage_state=$(check_cage_state "$cfg_source" "$work_dir" "$state_path")
 case "$cage_state" in
     "in_sync")
         echo "Cage is in sync with source. Pickin' up where we left off."
+        # Verify origin URL is correct (may have changed between versions)
+        verify_work_origin "$work_dir" "$cfg_source"
         ;;
     "ahead_clean")
         echo "Source moved ahead but cage is clean. Startin' fresh."
@@ -132,7 +134,10 @@ case "$cage_state" in
                 echo "Alright, we'll sort this out later."
                 exit 0
                 ;;
-            # "continue" - just proceed with existing cage
+            "continue")
+                # Verify origin URL is correct (may have changed between versions)
+                verify_work_origin "$work_dir" "$cfg_source"
+                ;;
         esac
         ;;
     "no_cage"|*)

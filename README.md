@@ -48,10 +48,10 @@ cd ~/myproject
 **This tool syncs changes back to your source repo.** When Claude commits and pushes, those changes come home. You understand what I'm tellin' you?
 
 **Before you run this:**
-- ✅ **Commit and push everything to git** - Every last change
-- ✅ **Make yourself a backup** - A real one
-- ✅ **Test on somethin' expendable first** - Learn how it works before you bet the farm
+- ✅ **Commit and push everything to git** - That's your backup right there
+- ✅ **Check out a new branch** - Keep Claude's work separate from yours
 - ✅ **Set up your exclude patterns right** - Protect what needs protectin'
+- ✅ **Test on somethin' expendable first** - Learn how it works before you bet the farm
 
 ### ⚠️ Use At Your Own Risk
 

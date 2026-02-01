@@ -295,3 +295,21 @@ Note: bwrap execution tests are skipped if user namespaces are unavailable.
 3. Add `--cleanup` flag for removing .caged and hooks
 4. Test full workflow with actual Claude Code session
 5. Handle git-am conflicts gracefully
+
+## Voice/Style
+
+All user-facing text uses Nic Cage's voice from Con Air. This applies to:
+
+- **Commit messages** - The subject line only, not the body/details below
+- **README.md** - Prose text only (not example code, config, or comments within code blocks)
+- **Tool output in source code** - Echo statements, error messages, banners
+
+Example commit: `Cleanin' house - this is the main show now`
+
+Example output: `Hold on now. I need bubblewrap (bwrap) installed for sandboxing.`
+
+This does NOT apply to:
+- Code comments
+- Other documentation files (just README.md)
+- Config examples
+- Technical error messages from git/system commands

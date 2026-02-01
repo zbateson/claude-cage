@@ -311,6 +311,68 @@ setup_namespace_iptables() {
     fi
 }
 
+# Check if host loopback (127.0.0.1 / 10.0.2.2) is accessible based on network rules
+# Arguments:
+#   $1 - mode: "allowlist" or "blocklist"
+#   $2 - allow_ips: pipe-separated allowed IPs (includes resolved domains like localhost)
+#   $3 - allow_networks: pipe-separated allowed networks
+#   $4 - block_ips: pipe-separated blocked IPs (includes resolved domains)
+#   $5 - resolved_allow_domains: pipe-separated IPs from resolved allowed domains
+#   $6 - resolved_block_domains: pipe-separated IPs from resolved blocked domains
+# Returns: 0 if accessible, 1 if blocked
+is_host_loopback_accessible() {
+    local mode="$1"
+    local allow_ips="$2"
+    local allow_networks="$3"
+    local block_ips="$4"
+    local resolved_allow="$5"
+    local resolved_block="$6"
+
+    # Check if an IP matches loopback (127.0.0.1 or 10.0.2.2)
+    local loopback_pattern='127\.0\.0\.1|10\.0\.2\.2'
+
+    # Combine IPs with resolved domains for checking
+    local all_allow_ips="${allow_ips}${allow_ips:+|}${resolved_allow}"
+    local all_block_ips="${block_ips}${block_ips:+|}${resolved_block}"
+
+    # Helper: check if loopback is in allow list (any port)
+    local in_allowlist=false
+    if echo "$all_allow_ips" | grep -qE "$loopback_pattern"; then
+        in_allowlist=true
+    fi
+    if echo "$allow_networks" | grep -qE '127\.|10\.0\.2\.|10\.0\.0\.0/8'; then
+        in_allowlist=true
+    fi
+
+    # Helper: check if loopback is fully blocked (no port restriction = all ports)
+    local fully_blocked=false
+    if echo "$all_block_ips" | grep -E "$loopback_pattern" | grep -qvE ':'; then
+        fully_blocked=true
+    fi
+
+    if [ "$mode" = "allowlist" ]; then
+        # In allowlist mode: accessible only if explicitly allowed
+        if [ "$in_allowlist" = true ]; then
+            return 0  # accessible
+        fi
+        return 1  # not accessible (not in allowlist)
+
+    elif [ "$mode" = "blocklist" ]; then
+        # In blocklist mode: allow rules take precedence (inserted first)
+        # So if loopback is in allowlist, it's accessible even if also blocked
+        if [ "$in_allowlist" = true ]; then
+            return 0  # accessible (allow takes precedence)
+        fi
+        # Not in allowlist - check if fully blocked
+        if [ "$fully_blocked" = true ]; then
+            return 1  # fully blocked
+        fi
+        return 0  # accessible (not blocked)
+    fi
+
+    return 0  # default: accessible
+}
+
 # Run command in network-isolated namespace with slirp4netns
 # This wraps the command in a user+net namespace, attaches slirp4netns,
 # configures iptables, then runs the command
@@ -430,6 +492,12 @@ run_with_network_namespace() {
     export CLAUDE_CAGE_SCRIPT
     CLAUDE_CAGE_SCRIPT="$(realpath "$0")"
 
+    # Check if host loopback is accessible and warn if so
+    if is_host_loopback_accessible "$mode" "$allow_ips" "$allow_networks" "$block_ips" \
+                                   "$resolved_allow_domains" "$resolved_block_domains"; then
+        echo -e "${YELLOW}Note:${NC} Host loopback (127.0.0.1) is accessible from the sandbox as 10.0.2.2" >&2
+    fi
+
     # Start slirp4netns handler in background
     # This subshell waits for the namespace, starts slirp, signals ready, then waits
     (
@@ -448,8 +516,12 @@ run_with_network_namespace() {
         local sandbox_pid
         sandbox_pid=$(cat "$sandbox_pid_file")
 
-        # Start slirp4netns
-        slirp4netns --configure "$sandbox_pid" tap0 &
+        # Start slirp4netns (suppress output unless verbose)
+        if [ "$NETWORK_VERBOSE" = true ]; then
+            slirp4netns --configure "$sandbox_pid" tap0 &
+        else
+            slirp4netns --configure "$sandbox_pid" tap0 >/dev/null 2>&1 &
+        fi
         local slirp_pid=$!
 
         # Give slirp4netns a moment to set up the interface

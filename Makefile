@@ -5,6 +5,7 @@ SOURCES = \
 	src/config.sh \
 	src/git-clone.sh \
 	src/git-hooks.sh \
+	src/git-patches.sh \
 	src/git-sync.sh \
 	src/network.sh \
 	src/bwrap.sh \

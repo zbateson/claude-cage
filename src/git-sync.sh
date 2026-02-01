@@ -228,33 +228,6 @@ handle_dirty_cage() {
     done
 }
 
-# Save a failed patch for later recovery
-# Arguments:
-#   $1 - source_dir: The source directory (where user will see the patch)
-#   $2 - patch content
-#   $3 - branch name
-#   $4 - commit subject (for filename)
-save_failed_patch() {
-    local source_dir="${1%/}"  # Strip trailing slash if present
-    local patch="$2"
-    local branch="$3"
-    local subject="$4"
-
-    local sanitized_branch
-    sanitized_branch=$(sanitize_branch_name "$branch")
-    local failed_dir="$source_dir/claude-cage-failed-patches/$sanitized_branch"
-    local timestamp
-    timestamp=$(date +%Y%m%d-%H%M%S)
-    local safe_subject
-    safe_subject=$(echo "$subject" | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
-
-    mkdir -p "$failed_dir"
-    local patch_file="$failed_dir/${timestamp}_${safe_subject}.patch"
-    echo "$patch" > "$patch_file"
-    echo "  Saved patch to: $patch_file"
-    echo "  (Shows up in git status - apply with: git apply $patch_file)"
-}
-
 # Apply changes from intermediary to source using format-patch/git-am
 # Arguments:
 #   $1 - source_dir: The original source directory

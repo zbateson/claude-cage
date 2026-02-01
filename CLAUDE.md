@@ -57,6 +57,7 @@ The intermediary repo serves as a buffer:
 | `src/config.sh` | Lua-based config parsing, finds claude-cage.config |
 | `src/git-clone.sh` | `create_intermediary_clone()` - archives source with excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
+| `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
 | `src/git-sync.sh` | `sync_to_source()`, pipe listener, manual merge |
 | `src/bwrap.sh` | `run_in_bwrap()` - bubblewrap sandbox |
 | `src/docker.sh` | `run_in_docker()` - Docker container sandbox |
@@ -101,6 +102,36 @@ If commit only contains excluded files, shows: "Only excluded files in this comm
 ### Commit Separation
 
 `pre-commit` hook on source prevents mixing excluded and included files in the same commit. This ensures patches can be cleanly created without sensitive data.
+
+### Failed Patch Recovery
+
+When patches fail to apply (conflicts, user switched branches, etc.):
+
+1. Patch is saved to `<source>/claude-cage-failed-patches/<branch>/`
+2. Filename includes timestamp and commit subject: `20250131-143022_Fix_bug.patch`
+3. At next startup, you get an interactive prompt:
+
+```
+Hold up. You've got failed patches waitin' to be applied:
+
+  main: 2 patch(es)
+  feature/login: 1 patch(es)
+
+What do you wanna do?
+  1) Apply patches one-by-one
+  2) Delete all pending patches
+  3) Continue without applyin'
+  q) Quit
+```
+
+**If your working directory is dirty**, option 1 changes to "I've cleaned up - check again" since you need to commit/stash/reset before applying patches.
+
+**When applying patches:**
+- Switches to target branch if needed (and back when done)
+- Uses `git am --3way` to apply with conflict detection
+- On conflict: shows the diff, offers shell access to resolve, skip, or abort
+- Successfully applied patches are deleted automatically
+- Empty patch directories are cleaned up
 
 ## Configuration
 
@@ -319,12 +350,13 @@ bash tests/run-all.sh
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 13 |
 | test-git-hooks.sh | git-hooks.sh | 12 |
+| test-git-patches.sh | git-patches.sh | 12 |
 | test-git-sync.sh | git-sync.sh | 14 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 11 |
 
-**Total: 120 tests**
+**Total: 132 tests**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

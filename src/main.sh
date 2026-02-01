@@ -92,6 +92,16 @@ fi
 CLAUDE_CAGE_BRANCH="$source_branch"
 export CLAUDE_CAGE_BRANCH
 
+# Check for pending patches from previous runs (interactive)
+pending_branches=$(list_pending_patch_branches "$cfg_source")
+if [ -n "$pending_branches" ]; then
+    handle_pending_patches "$cfg_source"
+    if [ "$PENDING_PATCHES_RESULT" = "quit" ]; then
+        echo "Catch you later."
+        exit 0
+    fi
+fi
+
 # Paths for bwrap/docker
 intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
 work_dir=$(get_cage_path "$cfg_source" "work")

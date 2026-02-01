@@ -43,7 +43,7 @@ echo "=== Testing docker command generation (--test --dry-run) ==="
 
 # Need --test to trigger docker command generation
 echo "Test 1: Should generate docker command with --test --dry-run"
-output=$("$CAGE_DIR/dist/claude-cage-git" --test --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
 
 if ! echo "$output" | grep -q "docker run"; then
     echo "FAIL: Should show docker run command"
@@ -112,7 +112,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --test --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
 if ! echo "$output" | grep -q "ubuntu:22.04"; then
     echo "FAIL: Should use custom image"
     echo "Output was:"
@@ -132,7 +132,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --test --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
 if ! echo "$output" | grep -q "my-test-container"; then
     echo "FAIL: Should use custom container name"
     echo "Output was:"
@@ -155,7 +155,7 @@ claude_cage {
 EOF
 
 echo "Test 9: Should include additional mounts"
-output=$("$CAGE_DIR/dist/claude-cage-git" --test --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
 
 if ! echo "$output" | grep -q "\-v.*\.gitconfig"; then
     echo "FAIL: Should include .gitconfig mount"

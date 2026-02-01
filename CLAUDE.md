@@ -1,16 +1,16 @@
-# CLAUDE-git.md
+# CLAUDE.md
 
-Documentation for `claude-cage-git` - a lightweight sandboxed git workflow for Claude Code.
+Documentation for `claude-cage` - a lightweight sandboxed git workflow for Claude Code.
 
 ## Overview
 
-`claude-cage-git` is a simplified variant of `claude-cage` that uses git-based isolation instead of unison sync. It creates a sanitized copy of your project (excluding sensitive files) and uses git to sync changes back.
+`claude-cage` creates an isolated sandbox for Claude Code using git-based file isolation. It creates a sanitized copy of your project (excluding sensitive files) and uses git to sync changes back.
 
-**Key differences from main claude-cage:**
-- No unison dependency - uses git archive + fresh init
+**Key features:**
 - No sudo required - runs as current user
-- Simpler architecture - just bwrap/docker sandbox with git repos
-- File exclusion happens at archive time (no history of excluded files)
+- Git-based sync - uses git archive + fresh init
+- File exclusion at archive time (no history of excluded files)
+- Network filtering via slirp4netns (optional)
 
 ## Architecture
 
@@ -61,7 +61,7 @@ The intermediary repo serves as a buffer:
 
 ### Build Output
 
-`dist/claude-cage-git` is the concatenated script (all src files in order).
+`dist/claude-cage` is the concatenated script (all src files in order).
 
 ## Sync Mechanism
 
@@ -136,20 +136,20 @@ claude_cage {
 
 ```bash
 # Basic usage - creates intermediary + work, shows sandbox info
-./claude-cage-git
+./claude-cage
 
 # Drop into sandbox shell for testing
-./claude-cage-git --test
+./claude-cage --test
 
 # Manual merge (fetch refs from intermediary)
-./claude-cage-git git-merge
+./claude-cage git-merge
 
 # Dry run (show commands without executing)
-./claude-cage-git --dry-run
+./claude-cage --dry-run
 
 # Verbose output
-./claude-cage-git --verbose
-./claude-cage-git -v
+./claude-cage --verbose
+./claude-cage -v
 ```
 
 ## Current State
@@ -183,18 +183,6 @@ claude_cage {
 - [ ] Conflict resolution when git-am fails
 - [ ] Instance tracking (multiple concurrent runs)
 - [ ] Network filtering for Docker mode (requires different approach)
-
-## How It Differs from Main claude-cage
-
-| Aspect | claude-cage | claude-cage-git |
-|--------|-------------|-----------------|
-| Sync method | unison (bidirectional) | git archive + patches |
-| Excludes | Real-time, bidirectional | At archive time only |
-| Dependencies | unison, bindfs, iptables | git, tar, bwrap/docker, slirp4netns |
-| Sudo required | Yes (user isolation) | No (current user) |
-| Live sync | Yes (inotify/fsmonitor) | On git push only |
-| History sanitization | No (excludes just hidden) | Yes (fresh init) |
-| Network isolation | iptables + UID filtering | slirp4netns + namespace iptables |
 
 ## Network Isolation (bwrap mode)
 
@@ -254,7 +242,7 @@ Destinations can include optional ports:
 ```
 project/
 ├── claude-cage.config      # Config file (required)
-├── .caged/                 # Created by claude-cage-git
+├── .caged/                 # Created by claude-cage
 │   ├── intermediary/       # Sanitized repo (git origin for work)
 │   │   └── .git/hooks/post-receive  # Triggers sync
 │   ├── work/               # Claude's working directory
@@ -268,20 +256,20 @@ project/
 
 ```bash
 # Verbose mode shows all commands
-./claude-cage-git --verbose --test
+./claude-cage --verbose --test
 
 # Debug mode shows command output (not just commands)
-./claude-cage-git --debug --test
+./claude-cage --debug --test
 
 # Check what would run without executing
-./claude-cage-git --dry-run
+./claude-cage --dry-run
 ```
 
 ## Testing
 
 Run the test suite:
 ```bash
-bash tests-git/run-all.sh
+bash tests/run-all.sh
 ```
 
 | Test File | Component | Tests |

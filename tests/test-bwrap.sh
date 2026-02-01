@@ -43,7 +43,7 @@ echo "=== Testing bwrap command generation (--test --dry-run) ==="
 
 # Need --test to trigger bwrap command generation
 echo "Test 1: Should generate bwrap command with --test --dry-run"
-output=$("$CAGE_DIR/dist/claude-cage-git" --test --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
 
 if ! echo "$output" | grep -q "bwrap"; then
     echo "FAIL: Should show bwrap command"
@@ -131,7 +131,7 @@ claude_cage {
 EOF
 
 echo "Test 9: Should include additional mounts in bwrap command"
-output=$("$CAGE_DIR/dist/claude-cage-git" --test --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
 
 if ! echo "$output" | grep -q "\-\-ro-bind.*\.gitconfig"; then
     echo "FAIL: Should include .gitconfig mount"
@@ -171,7 +171,7 @@ EOF
 
 echo "Test 11: --test mode should create cage and attempt to run shell"
 cd "$TEST_TMP/source"
-test_output=$("$CAGE_DIR/dist/claude-cage-git" --test <<< "echo 'INSIDE_CAGE'; exit" 2>&1) || true
+test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "echo 'INSIDE_CAGE'; exit" 2>&1) || true
 
 # Check if bwrap failed due to namespace restrictions
 if echo "$test_output" | grep -q "No permissions to create new namespace"; then
@@ -191,7 +191,7 @@ echo "  PASS: --test runs inside cage"
 
 echo "Test 12: Should be able to see files in work directory"
 rm -rf "$TEST_TMP/source/.caged"
-test_output=$("$CAGE_DIR/dist/claude-cage-git" --test <<< "ls -la; exit" 2>&1) || true
+test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "ls -la; exit" 2>&1) || true
 
 if ! echo "$test_output" | grep -q "file.txt"; then
     echo "FAIL: Should see file.txt in work directory"
@@ -203,7 +203,7 @@ echo "  PASS: Can see files in work directory"
 
 echo "Test 13: Should be able to run git commands inside cage"
 rm -rf "$TEST_TMP/source/.caged"
-test_output=$("$CAGE_DIR/dist/claude-cage-git" --test <<< "git status; exit" 2>&1) || true
+test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "git status; exit" 2>&1) || true
 
 if ! echo "$test_output" | grep -q "On branch claude"; then
     echo "FAIL: Should be on claude branch inside cage"

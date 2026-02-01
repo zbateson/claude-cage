@@ -11,7 +11,7 @@ SOURCES = \
 	src/docker.sh \
 	src/main.sh
 
-OUTPUT = dist/claude-cage-git
+OUTPUT = dist/claude-cage
 
 .PHONY: all clean
 

@@ -36,7 +36,7 @@ EOF
 
 echo "Setting up cage..."
 cd "$TEST_TMP/source"
-"$CAGE_DIR/dist/claude-cage-git" >/dev/null 2>&1
+"$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
 
 # Fix origin path for testing outside sandbox
 # (inside sandbox, .caged/ is mounted at source, so origin would be source/intermediary)
@@ -104,7 +104,7 @@ rm -f "$TEST_TMP/source/.git/hooks/post-commit"
 git -C "$TEST_TMP/source" remote remove intermediary 2>/dev/null || true
 
 cd "$TEST_TMP/source"
-"$CAGE_DIR/dist/claude-cage-git" >/dev/null 2>&1
+"$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
 
 # Fix origin path for testing outside sandbox
 git -C "$TEST_TMP/source/.caged/work" remote set-url origin "$TEST_TMP/source/.caged/intermediary"
@@ -153,7 +153,7 @@ claude_cage {
 }
 EOF
 
-"$CAGE_DIR/dist/claude-cage-git" >/dev/null 2>&1
+"$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
 
 # Fix origin path for testing outside sandbox
 git -C "$TEST_TMP/source/.caged/work" remote set-url origin "$TEST_TMP/source/.caged/intermediary"

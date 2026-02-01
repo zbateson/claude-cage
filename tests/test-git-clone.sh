@@ -43,7 +43,7 @@ EOF
 
 echo "Test 1: Dry-run should show intermediary creation"
 cd "$TEST_TMP/source"
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1) || true
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1) || true
 
 if ! echo "$output" | grep -q "Creating intermediary"; then
     echo "FAIL: Did not find 'Creating intermediary' message"
@@ -85,7 +85,7 @@ echo "=== Testing actual intermediary creation ==="
 
 # Run without dry-run to actually create the intermediary
 echo "Test 5: Create intermediary and work directories"
-actual_output=$("$CAGE_DIR/dist/claude-cage-git" 2>&1) || true
+actual_output=$("$CAGE_DIR/dist/claude-cage" 2>&1) || true
 
 if [ ! -d "$TEST_TMP/source/.caged/intermediary" ]; then
     echo "FAIL: Intermediary directory not created"

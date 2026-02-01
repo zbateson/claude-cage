@@ -37,7 +37,7 @@ EOF
 
 echo "Test 1: With autoMerge=true, should create post-receive hook"
 cd "$TEST_TMP/source"
-output=$("$CAGE_DIR/dist/claude-cage-git" 2>&1) || true
+output=$("$CAGE_DIR/dist/claude-cage" 2>&1) || true
 
 hook_path="$TEST_TMP/source/.caged/intermediary/.git/hooks/post-receive"
 if [ ! -f "$hook_path" ]; then
@@ -132,7 +132,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" 2>&1) || true
+output=$("$CAGE_DIR/dist/claude-cage" 2>&1) || true
 
 echo "Test 11: With autoMerge=false, should NOT create pipe"
 if [ -p "$TEST_TMP/source/.caged/.pipe" ]; then

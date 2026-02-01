@@ -73,7 +73,7 @@ manual_git_merge() {
 
     if [ ! -d "$intermediary_dir" ]; then
         echo "No intermediary directory found at $intermediary_dir"
-        echo "Run claude-cage-git first to create the cage."
+        echo "Run claude-cage first to create the cage."
         exit 1
     fi
 

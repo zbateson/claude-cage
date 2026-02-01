@@ -35,7 +35,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 
 # Check for ASCII art elements (CLAUDE or CAGE text)
 if ! echo "$output" | grep -q "██████\|CLAUDE\|CAGE"; then
@@ -53,7 +53,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 
 if echo "$output" | grep -q "██████"; then
     echo "FAIL: Should NOT show ASCII banner when showBanner = false"
@@ -69,7 +69,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 
 if ! echo "$output" | grep -q "██████\|CLAUDE\|CAGE"; then
     echo "FAIL: Should show banner by default"

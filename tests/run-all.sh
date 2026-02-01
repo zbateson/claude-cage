@@ -1,12 +1,12 @@
 #!/bin/bash
-# Run all claude-cage-git tests
+# Run all claude-cage tests
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "========================================"
-echo "  claude-cage-git test suite"
+echo "  claude-cage test suite"
 echo "========================================"
 echo ""
 

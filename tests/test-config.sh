@@ -39,7 +39,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Configuration loaded from:.*project1/claude-cage.config"; then
     echo "FAIL: Should find config in current directory"
     echo "Output was:"
@@ -58,7 +58,7 @@ claude_cage {
 EOF
 
 cd "$TEST_TMP/project2/subdir"
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Configuration loaded from:.*project2/claude-cage.config"; then
     echo "FAIL: Should find config in parent directory"
     echo "Output was:"
@@ -72,7 +72,7 @@ mkdir -p "$TEST_TMP/no-config"
 setup_git_repo "$TEST_TMP/no-config"
 cd "$TEST_TMP/no-config"
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1) || true
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1) || true
 if ! echo "$output" | grep -q "claude-cage.config"; then
     echo "FAIL: Should mention missing config file"
     echo "Output was:"
@@ -94,7 +94,7 @@ claude_cage {
 EOF
 
 cd "$TEST_TMP/project4"
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Exclude: .env"; then
     echo "FAIL: Should show .env exclude"
     echo "Output was:"
@@ -117,7 +117,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Auto-merge:.*true"; then
     echo "FAIL: Should show autoMerge = true"
     echo "Output was:"
@@ -134,7 +134,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Mode:.*docker"; then
     echo "FAIL: Should show mode = docker"
     echo "Output was:"
@@ -150,7 +150,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Mode:.*bwrap"; then
     echo "FAIL: Default mode should be bwrap"
     echo "Output was:"
@@ -171,7 +171,7 @@ claude_cage {
 EOF
 
 cd "$TEST_TMP/workspace/myproject"
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Project:.*myproject"; then
     echo "FAIL: Should derive project name from directory"
     echo "Output was:"
@@ -188,7 +188,7 @@ claude_cage {
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Project:.*custom-name"; then
     echo "FAIL: Should use explicit project name"
     echo "Output was:"
@@ -209,7 +209,7 @@ claude_cage {
 EOF
 
 cd "$TEST_TMP/explicit-test"
-output=$("$CAGE_DIR/dist/claude-cage-git" --config "$TEST_TMP/my-custom.config" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --config "$TEST_TMP/my-custom.config" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Configuration loaded from:.*my-custom.config"; then
     echo "FAIL: Should use explicit config path"
     echo "Output was:"
@@ -219,7 +219,7 @@ fi
 echo "  PASS: Used explicit config path"
 
 echo "Test 11: Should error on invalid explicit config path"
-output=$("$CAGE_DIR/dist/claude-cage-git" --config "/nonexistent/config" --dry-run 2>&1) || true
+output=$("$CAGE_DIR/dist/claude-cage" --config "/nonexistent/config" --dry-run 2>&1) || true
 if ! echo "$output" | grep -qi "ain't there\|not found\|no such"; then
     echo "FAIL: Should error on invalid config path"
     echo "Output was:"
@@ -240,7 +240,7 @@ claude_cage {
 EOF
 
 cd "$TEST_TMP/syntax-error"
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1) || true
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1) || true
 if ! echo "$output" | grep -qi "error\|wrong\|fix"; then
     echo "FAIL: Should report Lua syntax error"
     echo "Output was:"
@@ -265,7 +265,7 @@ claude_cage {
 EOF
 
 cd "$TEST_TMP/mounts-test"
-output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1)
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
 if ! echo "$output" | grep -q "Additional mounts:\|\.npmrc"; then
     echo "FAIL: Should show additionalMounts"
     echo "Output was:"

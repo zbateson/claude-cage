@@ -23,13 +23,17 @@ setup_git_hooks() {
 
     # Create post-receive hook on intermediary
     # This runs inside the sandbox when work/ pushes to intermediary/
-    cat > "$hook_path" << EOF
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path"
+    else
+        cat > "$hook_path" << EOF
 #!/bin/bash
 while read oldrev newrev refname; do
     echo "\$refname \$newrev" > "$mounted_pipe_path"
 done
 EOF
-    run chmod +x "$hook_path"
+        chmod +x "$hook_path"
+    fi
 
     if [ "$verbose" = true ]; then
         echo "  Created pipe: $pipe_path"
@@ -67,7 +71,10 @@ setup_source_post_commit() {
     fi
 
     # Create post-commit hook
-    cat > "$hook_path" << EOF
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path"
+    else
+        cat > "$hook_path" << EOF
 #!/bin/bash
 # claude-cage: sync commits to intermediary (excluding sensitive files)
 CAGED_DIR="$caged_dir"
@@ -87,7 +94,8 @@ if [ -d "\$WORK" ]; then
     (cd "\$WORK" && git fetch origin 2>/dev/null) || true
 fi
 EOF
-    run chmod +x "$hook_path"
+        chmod +x "$hook_path"
+    fi
 
     if [ "$verbose" = true ]; then
         echo "  Created source hook: $hook_path"

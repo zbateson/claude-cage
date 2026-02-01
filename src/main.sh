@@ -107,10 +107,13 @@ if [ "$test_mode" = true ]; then
         run_in_bwrap "$caged_dir" "$project_path"
     fi
 
-    # Stop pipe listener
+    # Stop pipe listener and clean up hooks
     if [ -n "$listener_pid" ]; then
         stop_pipe_listener "$listener_pid"
         cleanup_pipe "$caged_dir"
+    fi
+    if [ "$cfg_autoMerge" = "true" ]; then
+        cleanup_source_hooks "$cfg_source"
     fi
 else
     echo ""

@@ -51,6 +51,27 @@ cleanup_pipe() {
     fi
 }
 
+# Clean up source repo hooks
+cleanup_source_hooks() {
+    local source_dir="$1"
+    local pre_commit="$source_dir/.git/hooks/pre-commit"
+    local post_commit="$source_dir/.git/hooks/post-commit"
+
+    if [ -f "$pre_commit" ]; then
+        run rm -f "$pre_commit"
+        if [ "$verbose" = true ]; then
+            echo "  Removed hook: $pre_commit"
+        fi
+    fi
+
+    if [ -f "$post_commit" ]; then
+        run rm -f "$post_commit"
+        if [ "$verbose" = true ]; then
+            echo "  Removed hook: $post_commit"
+        fi
+    fi
+}
+
 # Set up pre-commit hook on source repo to prevent mixed commits
 # Arguments:
 #   $1 - source_dir: The source project directory

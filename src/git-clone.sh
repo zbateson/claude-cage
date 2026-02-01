@@ -82,6 +82,11 @@ create_intermediary_clone() {
     echo "Creating work directory..."
     run git clone "$intermediary_dir" "$work_dir"
 
+    # Update origin to use the path as it appears inside the cage
+    # (.caged is mounted at $source_dir, so intermediary is at $source_dir/intermediary)
+    echo "  Setting origin to cage path: $source_dir/intermediary"
+    run git -C "$work_dir" remote set-url origin "$source_dir/intermediary"
+
     # Create claude branch for work
     echo "  Creating branch: claude/$source_branch"
     run git -C "$work_dir" checkout -b "claude/$source_branch"

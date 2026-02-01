@@ -10,7 +10,30 @@ Documentation for `claude-cage` - a lightweight sandboxed git workflow for Claud
 - No sudo required - runs as current user
 - Git-based sync - uses git archive + fresh init
 - File exclusion at archive time (no history of excluded files)
-- Network filtering via slirp4netns (optional)
+- Network filtering via iptables (optional)
+
+## Platform Support
+
+| Platform | bwrap mode | Docker mode |
+|----------|------------|-------------|
+| Linux | ✅ | ✅ |
+| Windows (WSL 2) | ✅ | ✅ |
+| macOS | ❌ | ✅ |
+
+**macOS users:** Use `mode = "docker"` in your config. bwrap requires Linux kernel features not available on macOS.
+
+**Windows users:** WSL 2 is required. Both modes work since WSL 2 runs a real Linux kernel.
+
+### Installation
+
+**Linux / WSL 2 (bwrap mode):**
+```bash
+sudo apt install bubblewrap slirp4netns
+```
+
+**All platforms (Docker mode):**
+- Install [Docker Desktop](https://docs.docker.com/get-docker/)
+- On Windows, enable WSL 2 backend
 
 ## Architecture
 
@@ -228,9 +251,13 @@ claude_cage {
 - [ ] Instance tracking (multiple concurrent runs)
 - [x] Network filtering for Docker mode (uses iptables with privilege drop)
 
-## Network Isolation (bwrap mode)
+## Network Isolation
 
-Network filtering uses slirp4netns to create an isolated network namespace, then configures iptables inside that namespace. No root/sudo required.
+Both bwrap and Docker modes support network filtering using iptables. Same config options work for both.
+
+### bwrap mode (Linux / WSL 2)
+
+Uses slirp4netns to create an isolated network namespace, then configures iptables inside that namespace. No root/sudo required.
 
 ### Requirements
 
@@ -281,9 +308,9 @@ Destinations can include optional ports:
 - `192.168.1.0/24:80,443` - Multiple ports
 - `10.0.0.1` - All ports
 
-## Network Isolation (Docker mode)
+### Docker mode (Linux / WSL 2 / macOS)
 
-Docker mode also supports network filtering using iptables. Works on macOS (Docker Desktop) and Linux.
+Docker mode supports network filtering using iptables. Works everywhere Docker runs.
 
 ### How It Works
 

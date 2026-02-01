@@ -44,8 +44,8 @@ create_intermediary_clone() {
         done
     fi
 
-    # Extract files using git archive + tar excludes
-    echo "  Extracting files with git archive..."
+    # Extract files using git ls-files + tar (ignores .gitattributes export-ignore)
+    echo "  Extracting files with git ls-files..."
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
@@ -54,12 +54,12 @@ create_intermediary_clone() {
     fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] git -C $source_dir archive HEAD | tar -x ${tar_excludes[*]} -C $intermediary_dir"
+        echo "[dry-run] git -C $source_dir ls-files -z | tar -C $source_dir --null -T - -cf - | tar -x ${tar_excludes[*]} -C $intermediary_dir"
     else
         if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] git -C $source_dir archive HEAD | tar -x ${tar_excludes[*]} -C $intermediary_dir${_reset}" >&2
+            echo -e "${_yellow}[run] git -C $source_dir ls-files -z | tar -C $source_dir --null -T - -cf - | tar -x ${tar_excludes[*]} -C $intermediary_dir${_reset}" >&2
         fi
-        git -C "$source_dir" archive HEAD | tar -x "${tar_excludes[@]}" -C "$intermediary_dir"
+        git -C "$source_dir" ls-files -z | tar -C "$source_dir" --null -T - -cf - | tar -x "${tar_excludes[@]}" -C "$intermediary_dir"
     fi
 
     # Initialize fresh git repo (no history of excluded files)

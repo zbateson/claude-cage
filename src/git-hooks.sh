@@ -51,6 +51,61 @@ cleanup_pipe() {
     fi
 }
 
+# Set up pre-commit hook on source repo to prevent mixed commits
+# Arguments:
+#   $1 - source_dir: The source project directory
+setup_source_pre_commit() {
+    local source_dir="$1"
+    local hook_path="$source_dir/.git/hooks/pre-commit"
+    local caged_dir="$source_dir/.caged"
+
+    # Create pre-commit hook
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path"
+    else
+        cat > "$hook_path" << 'EOF'
+#!/bin/bash
+# claude-cage: prevent mixing excluded and included files in same commit
+CAGED_DIR=".caged"
+INTERMEDIARY="$CAGED_DIR/intermediary"
+
+if [ ! -d "$INTERMEDIARY" ]; then
+    exit 0  # cage not set up yet
+fi
+
+# Get staged files
+STAGED=$(git diff --cached --name-only)
+if [ -z "$STAGED" ]; then
+    exit 0  # no staged files
+fi
+
+# Check which files would be included by sparse-checkout
+INCLUDED=$(echo "$STAGED" | git -C "$INTERMEDIARY" sparse-checkout check-rules --stdin 2>/dev/null | grep -v "^$" || true)
+EXCLUDED=$(echo "$STAGED" | grep -vxF "$INCLUDED" 2>/dev/null || true)
+
+if [ -n "$EXCLUDED" ] && [ -n "$INCLUDED" ]; then
+    echo "ERROR: Mixed commit - excluded and included files together."
+    echo ""
+    echo "Excluded files:"
+    echo "$EXCLUDED" | sed 's/^/  /'
+    echo ""
+    echo "Included files:"
+    echo "$INCLUDED" | sed 's/^/  /'
+    echo ""
+    echo "Please commit them separately."
+    exit 1
+fi
+
+exit 0
+EOF
+        chmod +x "$hook_path"
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo "  Created source hook: $hook_path"
+    fi
+}
+
 # Set up post-commit hook on source repo to sync commits to intermediary
 # Arguments:
 #   $1 - source_dir: The source project directory
@@ -83,6 +138,17 @@ WORK="\$CAGED_DIR/work"
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet
+fi
+
+# Get files changed in this commit
+CHANGED=\$(git diff-tree --no-commit-id --name-only -r HEAD)
+
+# Check which files would be included by sparse-checkout
+INCLUDED=\$(echo "\$CHANGED" | git -C "\$INTERMEDIARY" sparse-checkout check-rules --stdin 2>/dev/null | grep -v "^\$" || true)
+
+if [ -z "\$INCLUDED" ]; then
+    # All files are excluded, skip syncing this commit
+    exit 0
 fi
 
 # Apply commit to intermediary, excluding sensitive files

@@ -21,9 +21,26 @@ get_pipe_path() {
 }
 
 # Get current branch from source project
+# Returns empty string and exits 1 if not on a branch (detached HEAD or no commits)
 get_source_branch() {
     local source_dir="$1"
-    git -C "$source_dir" branch --show-current
+    local branch
+    branch=$(git -C "$source_dir" branch --show-current)
+
+    if [ -z "$branch" ]; then
+        # Try to get default branch name
+        branch=$(git -C "$source_dir" config --get init.defaultBranch 2>/dev/null)
+        if [ -z "$branch" ]; then
+            # Check if main or master exists
+            if git -C "$source_dir" rev-parse --verify main >/dev/null 2>&1; then
+                branch="main"
+            elif git -C "$source_dir" rev-parse --verify master >/dev/null 2>&1; then
+                branch="master"
+            fi
+        fi
+    fi
+
+    echo "$branch"
 }
 
 # Create the intermediary and work directories

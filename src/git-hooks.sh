@@ -21,10 +21,8 @@ setup_git_hooks() {
     pipe_dir=$(dirname "$pipe_path")
     run mkdir -p "$pipe_dir"
 
-    # Create named pipe for communication
-    if [ -p "$pipe_path" ]; then
-        run rm -f "$pipe_path"
-    fi
+    # Create named pipe for communication (always fresh)
+    run rm -f "$pipe_path"
     run mkfifo "$pipe_path"
 
     # Create post-receive hook on intermediary

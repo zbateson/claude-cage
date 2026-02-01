@@ -137,11 +137,16 @@ start_pipe_listener() {
 
     # Run listener in background
     # Open pipe read-write to avoid blocking (there may be no writer yet)
+    # Note: Variables are captured at fork time, including target_branch
     (
         exec 3<>"$pipe_path"
         while read -r refname newrev <&3; do
             if [ -n "$refname" ]; then
-                sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch"
+                if [ -z "$target_branch" ]; then
+                    echo "claude-cage: No target branch - can't sync. Was source repo on a branch when cage started?"
+                else
+                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch"
+                fi
             fi
         done
     ) &

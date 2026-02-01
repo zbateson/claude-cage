@@ -78,6 +78,14 @@ echo ""
 
 # Capture source branch before creating intermediary (for sync targeting)
 source_branch=$(get_source_branch "$cfg_source")
+if [ -z "$source_branch" ]; then
+    echo "Hold on. Can't figure out what branch you're on."
+    echo "You need to be on a branch (not detached HEAD) for auto-merge to work."
+    if [ "$cfg_autoMerge" = "true" ]; then
+        echo "Either switch to a branch or disable autoMerge in your config."
+        exit 1
+    fi
+fi
 
 # Create the intermediary clone and work directory
 create_intermediary_clone "$cfg_source"

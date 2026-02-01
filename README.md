@@ -26,21 +26,27 @@ Your `.env` files, credentials, and secrets? They never make it into the cage. N
 # Install dependencies (Ubuntu/Debian)
 sudo apt install bubblewrap slirp4netns
 
-# Clone and build
-git clone https://github.com/zbateson/claude-cage.git
-cd claude-cage
-make
+# Install claude-cage
+curl -L https://github.com/zbateson/claude-cage/releases/latest/download/claude-cage -o ~/.local/bin/claude-cage && chmod +x ~/.local/bin/claude-cage
 
-# Create a config in your project
-cat > ~/myproject/claude-cage.config << 'EOF'
+# Or clone and build
+git clone https://github.com/zbateson/claude-cage.git && cd claude-cage && make
+```
+
+Create a config in your project:
+
+```lua
+-- ~/myproject/claude-cage.config
 claude_cage {
     exclude = { ".env", "secrets/**", ".git/config" }
 }
-EOF
+```
 
-# Run it
+Run it:
+
+```bash
 cd ~/myproject
-/path/to/claude-cage/dist/claude-cage
+claude-cage
 ```
 
 ## ⚠️ Now Listen to Me Very Carefully
@@ -112,6 +118,12 @@ claude_cage {
 
     -- Auto-sync commits back to source
     autoMerge = true,
+
+    -- Additional read-only mounts (optional)
+    additionalMounts = {
+        "~/.config/git",                              -- same path inside cage
+        { source = "~/.npmrc", dest = "~/.npmrc" }    -- explicit source/dest
+    },
 
     -- Network filtering (optional)
     networkMode = "allowlist",  -- "disabled", "allowlist", or "blocklist"

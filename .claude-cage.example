@@ -23,8 +23,8 @@ claude_cage {
         "*.pem",
         "*.key",
         "secrets/**",
-        ".git/config",           -- May contain credentials
         "config/production.yml",
+        "application-*.properties",
     },
 
     -- =========================================================================
@@ -65,8 +65,14 @@ claude_cage {
     -- that Claude needs but aren't in your project.
 
     additionalMounts = {
+        "~/.local/bin/claude",
+        "~/.claude",
+        "~/.claude.json",
         "~/.gitconfig",
-        -- { source = "/opt/tools", as = "/tools" },
+        "~/.bashrc",
+        "~/.profile",
+        "~/Projects/public/.gitconfig",
+        { source = "~/.config/claude-cage/claude-settings.json", as = "~/.claude/settings.json" },
     },
 
     -- =========================================================================

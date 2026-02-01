@@ -33,6 +33,19 @@ claude_cage {
     },
 
     -- =========================================================================
+    -- CLAUDE CODE MOUNTS
+    -- =========================================================================
+    -- These files are needed for Claude Code to run inside the cage.
+    -- Users should add these to their ~/.config/claude-cage/config:
+    --
+    --   additionalMounts = {
+    --       "~/.local/bin/claude",   -- Claude Code binary
+    --       "~/.claude",             -- Claude config directory
+    --       "~/.claude.json",        -- Claude auth/settings
+    --       "~/.gitconfig",          -- Git config (for commits)
+    --   },
+
+    -- =========================================================================
     -- ORGANIZATION-WIDE NETWORK RESTRICTIONS (optional)
     -- =========================================================================
 

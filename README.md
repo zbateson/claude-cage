@@ -74,7 +74,7 @@ Consider yourself warned.
 
 ## Prerequisites
 
-**Platform:** Linux only (bwrap doesn't run on macOS)
+**Platform:** Linux or Windows (WSL 2). macOS requires Docker mode.
 
 **Dependencies:**
 ```bash
@@ -110,7 +110,6 @@ claude_cage {
         "secrets/**",
         "*.pem",
         "*.key",
-        ".git/config"
     },
 
     -- Sandbox mode: "bwrap" or "docker"
@@ -119,10 +118,12 @@ claude_cage {
     -- Auto-sync commits back to source
     autoMerge = true,
 
-    -- Additional read-only mounts (optional)
+    -- Required mounts for Claude Code to work inside the sandbox
     additionalMounts = {
-        "~/.config/git",                              -- same path inside cage
-        { source = "~/.npmrc", dest = "~/.npmrc" }    -- explicit source/dest
+        "~/.local/bin/claude",   -- Claude Code binary
+        "~/.claude",             -- Claude config directory
+        "~/.claude.json",        -- Claude auth/settings
+        "~/.gitconfig",          -- Git config (for commits)
     },
 
     -- Network filtering (optional)
@@ -133,6 +134,8 @@ claude_cage {
     }
 }
 ```
+
+**Note:** The `additionalMounts` for Claude Code files are required for Claude to run inside the sandbox. Put these in your user config (`~/.config/claude-cage/config`) so they apply to all projects.
 
 
 ## Usage

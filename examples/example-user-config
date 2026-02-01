@@ -37,6 +37,19 @@ claude_cage {
     },
 
     -- =========================================================================
+    -- CLAUDE CODE MOUNTS (required to run Claude in the sandbox)
+    -- =========================================================================
+    -- These files are needed for Claude Code to run inside the cage.
+    -- Put them at user level so they apply to all your projects.
+
+    additionalMounts = {
+        "~/.local/bin/claude",   -- Claude Code binary
+        "~/.claude",             -- Claude config directory
+        "~/.claude.json",        -- Claude auth/settings
+        "~/.gitconfig",          -- Git config (for commits)
+    },
+
+    -- =========================================================================
     -- PERSONAL NETWORK RESTRICTIONS (optional)
     -- =========================================================================
 

@@ -20,21 +20,23 @@ git_fetch_merge() {
 # Arguments:
 #   $1 - source_dir: The original source directory
 #   $2 - caged_dir: The .caged directory
-# Returns: PID of the background listener
+# Sets: PIPE_LISTENER_PID
 start_pipe_listener() {
     local source_dir="$1"
     local caged_dir="$2"
     local pipe_path="$caged_dir/.pipe"
 
     # Run listener in background
+    # Open pipe read-write to avoid blocking (there may be no writer yet)
     (
-        while read refname newrev < "$pipe_path" 2>/dev/null; do
+        exec 3<>"$pipe_path"
+        while read -r refname newrev <&3; do
             if [ -n "$refname" ]; then
                 git_fetch_merge "$source_dir" "$refname"
             fi
         done
     ) &
-    echo $!
+    PIPE_LISTENER_PID=$!
 }
 
 # Stop the pipe listener

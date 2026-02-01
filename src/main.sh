@@ -93,10 +93,10 @@ if [ "$test_mode" = true ]; then
     echo ""
 
     # Start pipe listener if autoMerge enabled
-    listener_pid=""
+    PIPE_LISTENER_PID=""
     if [ "$cfg_autoMerge" = "true" ]; then
         echo "Auto-merge enabled: pushes to intermediary will sync to source"
-        listener_pid=$(start_pipe_listener "$cfg_source" "$caged_dir")
+        start_pipe_listener "$cfg_source" "$caged_dir"
     fi
 
     if [ "$cfg_mode" = "docker" ]; then
@@ -108,8 +108,8 @@ if [ "$test_mode" = true ]; then
     fi
 
     # Stop pipe listener and clean up hooks
-    if [ -n "$listener_pid" ]; then
-        stop_pipe_listener "$listener_pid"
+    if [ -n "$PIPE_LISTENER_PID" ]; then
+        stop_pipe_listener "$PIPE_LISTENER_PID"
         cleanup_pipe "$caged_dir"
     fi
     if [ "$cfg_autoMerge" = "true" ]; then

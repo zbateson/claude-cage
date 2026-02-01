@@ -77,7 +77,7 @@ The intermediary repo serves as a buffer:
 |------|---------|
 | `src/helpers.sh` | `run`, `run_quiet`, color codes, dry-run support |
 | `src/banner.sh` | ASCII art banner (print_banner) |
-| `src/config.sh` | Lua-based config parsing, finds claude-cage.config |
+| `src/config.sh` | Lua-based config parsing (system, user, project levels) |
 | `src/git-clone.sh` | `create_intermediary_clone()` - archives source with excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
@@ -158,7 +158,15 @@ What do you wanna do?
 
 ## Configuration
 
-Uses same `claude-cage.config` format as main project:
+Config files are loaded and merged in order (later values override, arrays merge):
+
+| Level | Path |
+|-------|------|
+| System | `/etc/claude-cage.conf` |
+| User | `~/.config/claude-cage/config` |
+| Project | `.claude-cage` (current directory) |
+
+Example `.claude-cage`:
 
 ```lua
 claude_cage {
@@ -167,7 +175,7 @@ claude_cage {
     autoMerge = true,  -- enable real-time sync
     showBanner = true,
 
-    -- Network filtering (bwrap mode only)
+    -- Network filtering
     networkMode = "allowlist",  -- "disabled", "allowlist", or "blocklist"
     allow = {
         domains = { "github.com:443", "api.anthropic.com:443" },
@@ -181,7 +189,7 @@ claude_cage {
 }
 ```
 
-**Note:** The git version uses a flat exclude array, not nested `name`/`path` tables.
+Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all config levels. Scalar options are overridden by later configs.
 
 ### Key Options
 
@@ -360,7 +368,7 @@ $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UI
 └── pipes/<branch>/<project-path>       # Named pipe for communication
 
 project/
-├── claude-cage.config                  # Config file (required)
+├── .claude-cage                        # Project config file (required)
 └── .git/hooks/
     ├── pre-commit                      # Prevents mixed commits (autoMerge)
     └── post-commit                     # Syncs to intermediary, updates state file (autoMerge)

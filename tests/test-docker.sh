@@ -36,7 +36,7 @@ echo "content" > file.txt
 git add .
 git commit -q -m "Initial"
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     showBanner = false
@@ -106,7 +106,7 @@ echo ""
 echo "=== Testing docker config options ==="
 
 echo "Test 7: Should accept custom image"
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     docker = {
@@ -126,7 +126,7 @@ fi
 echo "  PASS: Uses custom image"
 
 echo "Test 8: Should accept custom container name"
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     docker = {
@@ -148,7 +148,7 @@ echo "  PASS: Uses custom container name"
 echo ""
 echo "=== Testing docker with additionalMounts ==="
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     additionalMounts = {
@@ -235,7 +235,7 @@ fi
 echo "  PASS: Blocklist has catch-all ACCEPT"
 
 echo "Test 16: Docker with networkMode should add NET_ADMIN capability"
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     networkMode = "allowlist",

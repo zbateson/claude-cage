@@ -36,7 +36,7 @@ echo "content" > file.txt
 git add .
 git commit -q -m "Initial"
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
     showBanner = false
@@ -123,7 +123,7 @@ echo "  PASS: Includes --die-with-parent"
 echo ""
 echo "=== Testing bwrap with additionalMounts ==="
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
     additionalMounts = {
@@ -166,7 +166,7 @@ echo "=== Testing actual bwrap execution (--test mode) ==="
 
 # Reset config - clean up cache dirs
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
     showBanner = false

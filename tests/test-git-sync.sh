@@ -31,7 +31,7 @@ git add .
 git commit -m "Initial commit"
 
 # Create config
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     autoMerge = true,
     showBanner = false
@@ -155,7 +155,7 @@ rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
 rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
 rm -f "$TEST_TMP/source/.git/hooks/post-commit"
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     exclude = { ".env" },
     autoMerge = true,
@@ -233,7 +233,7 @@ BRANCH_NAME="feature"
 INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/intermediary$SOURCE_PATH"
 WORK_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/work$SOURCE_PATH"
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     autoMerge = true,
     showBanner = false

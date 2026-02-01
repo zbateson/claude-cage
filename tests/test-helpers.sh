@@ -30,7 +30,7 @@ echo "content" > file.txt
 git add .
 git commit -q -m "Initial"
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     showBanner = false
 }

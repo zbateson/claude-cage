@@ -31,7 +31,7 @@ git add .
 git commit -m "Initial commit"
 
 # Create config with autoMerge enabled
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     exclude = { ".env" },
     autoMerge = true,
@@ -136,7 +136,7 @@ rm -rf "$PIPE_PATH"
 rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
 rm -f "$TEST_TMP/source/.git/hooks/post-commit"
 
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     autoMerge = false,
     showBanner = false

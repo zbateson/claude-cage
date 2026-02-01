@@ -29,7 +29,7 @@ git commit -q -m "Initial"
 echo "=== Testing showBanner config ==="
 
 echo "Test 1: showBanner = true should show banner"
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     showBanner = true
 }
@@ -47,7 +47,7 @@ fi
 echo "  PASS: Shows banner when showBanner = true"
 
 echo "Test 2: showBanner = false should hide banner"
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     showBanner = false
 }
@@ -64,7 +64,7 @@ fi
 echo "  PASS: Hides banner when showBanner = false"
 
 echo "Test 3: Default should show banner"
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
 }
 EOF

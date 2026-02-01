@@ -1,0 +1,108 @@
+-- Example .claude-cage configuration
+--
+-- Place this file as .claude-cage in your project root.
+--
+-- Config files are loaded and merged in order:
+--   1. /etc/claude-cage.conf          (system-wide defaults)
+--   2. ~/.config/claude-cage/config   (user preferences)
+--   3. .claude-cage                    (project settings)
+--
+-- Array options (exclude, allow, block, additionalMounts) merge across levels.
+-- Scalar options are overridden by later configs.
+
+claude_cage {
+    -- =========================================================================
+    -- FILE EXCLUSION
+    -- =========================================================================
+    -- Files matching these patterns are stripped at archive time.
+    -- They never enter the cage - not in files, not in git history.
+
+    exclude = {
+        ".env",
+        ".env.*",
+        "*.pem",
+        "*.key",
+        "secrets/**",
+        ".git/config",           -- May contain credentials
+        "config/production.yml",
+    },
+
+    -- =========================================================================
+    -- SANDBOX MODE
+    -- =========================================================================
+    -- "bwrap" (default) - Uses bubblewrap for namespace isolation
+    --   Requires: bubblewrap, slirp4netns (for network filtering)
+    --   Platform: Linux, Windows (WSL 2)
+    --
+    -- "docker" - Uses Docker container
+    --   Requires: Docker
+    --   Platform: Linux, macOS, Windows (WSL 2)
+
+    mode = "bwrap",
+
+    -- Docker-specific options (only used when mode = "docker")
+    -- docker = {
+    --     image = "node:lts-slim",      -- Base image
+    --     container = "my-container",   -- Custom container name
+    -- },
+
+    -- =========================================================================
+    -- SYNC OPTIONS
+    -- =========================================================================
+    -- Auto-merge syncs Claude's commits back to your source repo in real-time.
+    -- When enabled, git hooks are installed on your source repo.
+
+    autoMerge = true,
+
+    -- Isolated mode mounts only this project. When false (default), all
+    -- projects on the same git branch are visible inside the sandbox.
+    -- isolated = false,
+
+    -- =========================================================================
+    -- ADDITIONAL MOUNTS
+    -- =========================================================================
+    -- Extra read-only mounts for the sandbox. Useful for config files
+    -- that Claude needs but aren't in your project.
+
+    additionalMounts = {
+        "~/.gitconfig",
+        -- { source = "/opt/tools", as = "/tools" },
+    },
+
+    -- =========================================================================
+    -- NETWORK FILTERING
+    -- =========================================================================
+    -- Control what network destinations Claude can reach.
+    --
+    -- "disabled" (default) - No filtering, full network access
+    -- "allowlist" - Block everything except specified destinations
+    -- "blocklist" - Allow everything except specified destinations
+
+    networkMode = "disabled",
+
+    -- Allowlist example: only allow specific services
+    -- networkMode = "allowlist",
+    -- allow = {
+    --     domains = {
+    --         "github.com:443",
+    --         "api.anthropic.com:443",
+    --         "registry.npmjs.org:443",
+    --     },
+    --     ips = { "8.8.8.8:53" },
+    --     networks = { "10.0.0.0/8" },
+    -- },
+
+    -- Blocklist example: block internal infrastructure
+    -- networkMode = "blocklist",
+    -- block = {
+    --     domains = { "internal.company.com" },
+    --     ips = { "169.254.169.254" },  -- AWS metadata endpoint
+    --     networks = { "192.168.0.0/16" },
+    -- },
+
+    -- =========================================================================
+    -- DISPLAY
+    -- =========================================================================
+
+    showBanner = true,
+}

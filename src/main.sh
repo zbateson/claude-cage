@@ -45,7 +45,6 @@ fi
 echo "Configuration loaded from: $local_config"
 echo ""
 echo "  Project:       $cfg_project"
-echo "  User:          $cfg_user"
 echo "  Source:        $cfg_source"
 echo "  Mounted as:    $cfg_mounted"
 echo "  Mode:          $cfg_mode"

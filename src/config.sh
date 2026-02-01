@@ -12,18 +12,6 @@ check_lua() {
     fi
 }
 
-# Search for config file up the directory tree
-find_config() {
-    local dir="$1"
-    while [ "$dir" != "/" ]; do
-        if [ -f "$dir/claude-cage.config" ]; then
-            echo "$dir"
-            return 0
-        fi
-        dir=$(dirname "$dir")
-    done
-    return 1
-}
 
 # Parse config files using Lua
 # Sets all cfg_* variables
@@ -31,17 +19,13 @@ parse_config() {
     local system_config="$1"
     local user_config="$2"
     local local_config="$3"
-    local cli_project_arg="$4"
-    local derived_project="$5"
-    local config_root_real="$6"
-    local relative_path="$7"
+    local derived_project="$4"
+    local config_root_real="$5"
 
     local lua_output
-    lua_output=$(lua - "$cli_project_arg" "$derived_project" "$config_root_real" "$relative_path" <<EOF 2>&1
-local cli_arg = arg[1] or ""
-local derived_project = arg[2] or ""
-local config_root = arg[3] or ""
-local relative_path = arg[4] or ""
+    lua_output=$(lua - "$derived_project" "$config_root_real" <<EOF 2>&1
+local derived_project = arg[1] or ""
+local config_root = arg[2] or ""
 
 -- Merge two tables (later overrides earlier)
 local function merge_config(base, override)
@@ -98,8 +82,7 @@ end
 local sources = {
     { name = "system", path = "$system_config", excludes = {} },
     { name = "user", path = "$user_config", excludes = {} },
-    { name = "local", path = "$local_config", excludes = {} },
-    { name = "project", path = "", excludes = {} }
+    { name = "local", path = "$local_config", excludes = {} }
 }
 
 local function track_excludes(source_entry, cfg)
@@ -168,35 +151,10 @@ for _, cfg in ipairs(configs) do
     config = merge_config(config, cfg)
 end
 
--- Determine project name
-local project = cli_arg ~= "" and cli_arg or config.project or derived_project or ""
-
--- Load project-specific config if exists
-if project ~= "" then
-    local project_config = config_root .. "/" .. project .. ".claude-cage.config"
-    sources[4].path = project_config
-    local f = io.open(project_config, "r")
-    if f then
-        f:close()
-        local project_configs = {}
-        local function project_handler(tbl) table.insert(project_configs, tbl) end
-        local success, err = safe_load_config(project_config, project_handler)
-        if not success then
-            io.stderr:write("Error loading project config: " .. project_config .. "\n" .. tostring(err) .. "\n")
-            os.exit(1)
-        end
-        for _, cfg in ipairs(project_configs) do
-            track_excludes(sources[4], cfg)
-            config = merge_config(config, cfg)
-        end
-    end
-end
-
-if cli_arg ~= "" then project = cli_arg end
-if project == "" then project = derived_project end
+-- Project name is the current directory name
+local project = derived_project
 
 -- Set defaults
-local user = config.user or "claude-cage"
 local source = config.source or ""
 local mounted = config.mounted or ""
 local showBanner = config.showBanner
@@ -213,13 +171,9 @@ local docker = config.docker or {}
 local docker_image = docker.image or "node:lts-slim"
 local docker_container = docker.container or ""
 
--- Source defaults
+-- Source defaults to current directory
 if source == "" then
-    if relative_path ~= "" then
-        source = config_root .. "/" .. project
-    else
-        source = config_root
-    end
+    source = config_root
 end
 
 if mounted == "" then
@@ -239,7 +193,7 @@ local function array_to_string(arr)
 end
 
 -- Output (pipe-delimited)
-print(user .. "|" .. source .. "|" .. mounted .. "|" .. tostring(showBanner))
+print(source .. "|" .. mounted .. "|" .. tostring(showBanner))
 print(array_to_string(exclude))
 print(networkMode)
 print(array_to_string(allow.domains))
@@ -249,7 +203,6 @@ print(array_to_string(block.domains))
 print(array_to_string(block.ips))
 print(array_to_string(block.networks))
 print(project)
-print(relative_path)
 print(config_root)
 print(mode)
 print(tostring(autoMerge))
@@ -307,7 +260,7 @@ EOF
 
     # Parse the lua output
     {
-        IFS='|' read -r cfg_user cfg_source cfg_mounted cfg_showBanner
+        IFS='|' read -r cfg_source cfg_mounted cfg_showBanner
         read -r cfg_exclude
         read -r cfg_networkMode
         read -r cfg_allow_domains
@@ -317,7 +270,6 @@ EOF
         read -r cfg_block_ips
         read -r cfg_block_networks
         read -r cfg_project
-        read -r cfg_relative_path
         read -r cfg_config_root
         read -r cfg_mode
         read -r cfg_autoMerge
@@ -353,7 +305,7 @@ init_config() {
     check_lua
 
     original_user="${SUDO_USER:-$USER}"
-    system_config="/etc/claude-cage/config"
+    system_config="/etc/claude-cage.conf"
     user_config="/home/${original_user}/.config/claude-cage/config"
 
     # Parse --config flag
@@ -377,51 +329,17 @@ init_config() {
         local_config="$explicit_config"
         config_root=$(dirname "$(realpath "$explicit_config")")
     else
-        current_dir=$(pwd)
-        config_root=$(find_config "$current_dir")
-        if [ -z "$config_root" ]; then
-            echo "Can't find a 'claude-cage.config' anywhere around here."
-            echo "Searched from $current_dir all the way up to /."
+        config_root=$(pwd)
+        local_config="$config_root/.claude-cage"
+        if [ ! -f "$local_config" ]; then
+            echo "Can't find a '.claude-cage' config in the current directory."
             exit 1
         fi
-        local_config="$config_root/claude-cage.config"
     fi
 
-    # Compute paths
     config_root_real=$(realpath "$config_root")
-    current_dir_real=$(realpath "$(pwd)")
-
-    if [ "$config_root_real" = "$current_dir_real" ]; then
-        relative_path=""
-    else
-        relative_path="${current_dir_real#$config_root_real/}"
-    fi
-
-    # Derive project name
-    if [ -n "$relative_path" ]; then
-        derived_project=$(echo "$relative_path" | cut -d'/' -f1)
-    else
-        derived_project=$(basename "$config_root_real")
-    fi
-
-    # Parse CLI for project arg
-    cli_project_arg=""
-    skip_next=false
-    for arg in "$@"; do
-        if [ "$skip_next" = true ]; then
-            skip_next=false
-            continue
-        fi
-        if [ "$arg" = "--config" ]; then
-            skip_next=true
-            continue
-        fi
-        if [[ "$arg" != --* ]]; then
-            cli_project_arg="$arg"
-            break
-        fi
-    done
+    derived_project=$(basename "$config_root_real")
 
     parse_config "$system_config" "$user_config" "$local_config" \
-                 "$cli_project_arg" "$derived_project" "$config_root_real" "$relative_path"
+                 "$derived_project" "$config_root_real"
 }

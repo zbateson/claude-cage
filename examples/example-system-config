@@ -1,80 +1,49 @@
 -- Example system-wide config for claude-cage
--- Place at: /etc/claude-cage/config
+-- Place at: /etc/claude-cage.conf
 --
--- This file provides organization-wide defaults for all users on the system.
--- Users can override these in ~/.config/claude-cage/config
--- Projects can override these in ./claude-cage.config (required)
+-- This file provides organization-wide defaults for all users.
+-- Users override these in ~/.config/claude-cage/config
+-- Projects override in ./.claude-cage
 
 claude_cage {
-    -- ============================================================================
+    -- =========================================================================
     -- ORGANIZATIONAL DEFAULTS
-    -- ============================================================================
+    -- =========================================================================
 
-    -- Default isolation mode (default: "bwrap")
-    -- "bwrap" - bwrap namespace isolation, requires sudo
-    -- "docker" - Container isolation, no sudo required
-    -- isolationMode = "bwrap",
+    -- Default sandbox mode: "bwrap" or "docker"
+    -- mode = "bwrap",
 
-    -- ============================================================================
+    -- =========================================================================
     -- ORGANIZATION-WIDE FILE EXCLUSIONS
-    -- ============================================================================
-
-    -- Common excludes that apply to all projects
-    -- These arrays are merged with user and project configs
+    -- =========================================================================
+    -- These are merged with user and project excludes
 
     exclude = {
-        name = {
-            ".DS_Store",         -- macOS metadata
-            "*.swp",             -- Vim swap files
-            "*~",                -- Backup files
-            "Thumbs.db",         -- Windows thumbnails
-            "node_modules",      -- JavaScript dependencies (anywhere in tree)
-            "target",            -- Java/Rust build output (anywhere)
-            ".venv",             -- Python virtual environments (anywhere)
-            "vendor",            -- PHP/Go dependencies (anywhere)
-            "__pycache__",       -- Python bytecode (anywhere)
-            "build",             -- Common build output (anywhere)
-            "dist"               -- Common distribution output (anywhere)
-        },
-        belowPath = {
-            ".git"               -- Git repository at root (blocks git history)
-        }
+        ".DS_Store",
+        "*.swp",
+        "*~",
+        "Thumbs.db",
+        "node_modules",
+        "target",
+        ".venv",
+        "vendor",
+        "__pycache__",
+        "build",
+        "dist",
     },
 
-    -- ============================================================================
+    -- =========================================================================
     -- ORGANIZATION-WIDE NETWORK RESTRICTIONS (optional)
-    -- ============================================================================
+    -- =========================================================================
 
-    -- Network mode (default: "disabled")
-    -- Organizations may want to set network restrictions as baseline security
-    -- Uncomment to enable network restrictions for all users:
-
-    -- Blocklist mode: Block specific networks, allow everything else
+    -- Blocklist example: block internal infrastructure
     -- networkMode = "blocklist",
     -- block = {
     --     networks = {
-    --         "127.0.0.1",        -- Localhost
-    --         "192.168.0.0/16",   -- Home networks
-    --         "10.0.0.0/8",       -- Corporate internal network
-    --         "172.16.0.0/12"     -- Corporate private network
+    --         "10.0.0.0/8",
+    --         "172.16.0.0/12",
+    --         "192.168.0.0/16",
     --     },
-    --     domains = {
-    --         "secret-api.example.com"    -- Block internal API
-    --     }
-    -- },
-
-    -- Blocklist exceptions: Allow specific services on blocked networks
-    -- allow = {
-    --     ips = {
-    --         "10.0.1.50:5432",   -- Corporate dev database
-    --         "10.0.1.51:6379"    -- Corporate dev Redis
-    --     }
-    -- },
-
-    -- Allowlist mode: Only allow specific connections (everything else blocked)
-    -- networkMode = "allowlist",
-    -- allow = {
-    --     domains = { "github.com:443", "npmjs.org:443" },
-    --     ips = { "10.0.1.50:5432" }
+    --     ips = { "169.254.169.254" },  -- AWS metadata
     -- },
 }

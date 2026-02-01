@@ -37,7 +37,7 @@ git add .
 git commit -m "Initial commit"
 
 # Create config with excludes (flat array format for git version)
-cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+cat > "$TEST_TMP/.claude-cage" << 'EOF'
 claude_cage {
     exclude = { ".env", "config/prod.yml" },
     autoMerge = false,

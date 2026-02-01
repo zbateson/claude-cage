@@ -36,7 +36,7 @@ git clone https://github.com/zbateson/claude-cage.git && cd claude-cage && make
 Create a config in your project:
 
 ```lua
--- ~/myproject/claude-cage.config
+-- ~/myproject/.claude-cage
 claude_cage {
     exclude = { ".env", "secrets/**", ".git/config" }
 }
@@ -99,7 +99,7 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
 ## Configuration
 
-Create `claude-cage.config` in your project root:
+Create `.claude-cage` in your project root:
 
 ```lua
 claude_cage {
@@ -218,7 +218,7 @@ Note: Network filtering in Docker mode uses a different approach (coming soon).
 **On your machine:**
 ```
 your-project/
-├── claude-cage.config      # Your config
+├── .claude-cage            # Your config
 ├── .caged/                 # Created by claude-cage
 │   ├── intermediary/       # Sanitized repo
 │   ├── work/               # Claude's working copy

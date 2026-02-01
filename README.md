@@ -215,16 +215,24 @@ Note: Network filtering in Docker mode uses a different approach (coming soon).
 
 ## File Locations
 
+**On your machine:**
 ```
 your-project/
 ├── claude-cage.config      # Your config
 ├── .caged/                 # Created by claude-cage
-│   ├── intermediary/       # Sanitized repo (Claude's origin)
-│   ├── work/               # Claude's working directory
+│   ├── intermediary/       # Sanitized repo
+│   ├── work/               # Claude's working copy
 │   └── .pipe               # Communication pipe (autoMerge)
 └── .git/hooks/             # Hooks added when autoMerge=true
     ├── pre-commit          # Prevents mixing excluded/included files
     └── post-commit         # Syncs your commits to intermediary
+```
+
+**Inside the sandbox:**
+```
+/home/you/your-project/           # Working directory (same path as yours)
+/run/claude-cage/intermediary/    # Git origin for pushing
+/run/claude-cage/.pipe            # Hook communication pipe
 ```
 
 ## Troubleshooting

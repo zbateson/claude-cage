@@ -71,14 +71,14 @@ if ! echo "$output" | grep -q "\-v.*\.caged"; then
 fi
 echo "  PASS: Mounts .caged directory"
 
-echo "Test 4: Should set working directory to work/"
-if ! echo "$output" | grep -q "\-w.*work"; then
-    echo "FAIL: Should set workdir to work/"
+echo "Test 4: Should set working directory to project path"
+if ! echo "$output" | grep -q "\-w.*/source"; then
+    echo "FAIL: Should set workdir to project path"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Sets working directory"
+echo "  PASS: Sets working directory to project path"
 
 echo "Test 5: Should run interactively (-it)"
 if ! echo "$output" | grep -q "\-it\|--interactive.*--tty"; then

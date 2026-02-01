@@ -16,12 +16,12 @@ check_docker() {
 #
 # Arguments:
 #   caged_dir    - The .caged directory (contains intermediary/ and work/)
-#   mount_as     - Path to mount it as inside container
+#   mount_as     - Path to mount work/ as (the original project path)
 #   [command...] - Optional command to run (defaults to interactive shell)
 #
 # Inside the container:
-#   $mount_as/intermediary/  - git origin remote
-#   $mount_as/work/          - working directory (chdir here)
+#   /run/claude-cage/intermediary/  - git origin remote
+#   $mount_as                       - working directory (the work/ dir)
 run_in_docker() {
     local caged_dir="$1"
     local mount_as="$2"
@@ -47,10 +47,7 @@ run_in_docker() {
     # Run as current user
     docker_args+=(--user "${user_uid}:${user_gid}")
 
-    # Mount .caged at the project path
-    docker_args+=(-v "$caged_dir:$mount_as")
-
-    # Additional mounts from config
+    # Additional mounts from config (before work dir so work can overlay)
     for mount_entry in "${cfg_mounts[@]}"; do
         IFS='|' read -r mount_source mount_dest <<< "$mount_entry"
         # Expand tilde to user home
@@ -61,8 +58,19 @@ run_in_docker() {
         fi
     done
 
-    # Working directory
-    docker_args+=(-w "$mount_as/work")
+    # Mount intermediary at /run/claude-cage/intermediary
+    docker_args+=(-v "$caged_dir/intermediary:/run/claude-cage/intermediary")
+
+    # Mount pipe for git hook communication (if it exists)
+    if [ -p "$caged_dir/.pipe" ]; then
+        docker_args+=(-v "$caged_dir/.pipe:/run/claude-cage/.pipe")
+    fi
+
+    # Mount work dir at the original project path (LAST so it overlays additional mounts)
+    docker_args+=(-v "$caged_dir/work:$mount_as")
+
+    # Working directory is the project path
+    docker_args+=(-w "$mount_as")
 
     # Environment
     docker_args+=(-e "HOME=$user_home")

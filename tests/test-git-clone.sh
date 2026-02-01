@@ -162,13 +162,13 @@ if [ -f "$TEST_TMP/source/.caged/work/.env" ]; then
 fi
 echo "  PASS: Work directory excludes sensitive files"
 
-echo "Test 12: Work origin should point to intermediary path"
+echo "Test 12: Work origin should point to cage intermediary path"
 origin=$(git -C "$TEST_TMP/source/.caged/work" remote get-url origin)
-if [ "$origin" != "$TEST_TMP/source/intermediary" ]; then
-    echo "FAIL: Work origin is '$origin', expected '$TEST_TMP/source/intermediary'"
+if [ "$origin" != "/run/claude-cage/intermediary" ]; then
+    echo "FAIL: Work origin is '$origin', expected '/run/claude-cage/intermediary'"
     exit 1
 fi
-echo "  PASS: Work origin points to intermediary"
+echo "  PASS: Work origin points to /run/claude-cage/intermediary"
 
 echo "Test 13: Intermediary should have clean git history (no excluded file history)"
 # Check that .env was never in the git history

@@ -98,14 +98,14 @@ if echo "$output" | grep -q "\-\-unshare-pid"; then
 fi
 echo "  PASS: Does not unshare PID namespace"
 
-echo "Test 7: Should set working directory to work/"
-if ! echo "$output" | grep -q "\-\-chdir.*work"; then
-    echo "FAIL: Should chdir to work directory"
+echo "Test 7: Should set working directory to project path"
+if ! echo "$output" | grep -q "\-\-chdir.*source"; then
+    echo "FAIL: Should chdir to project directory"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Sets working directory to work/"
+echo "  PASS: Sets working directory to project path"
 
 echo "Test 8: Should include --die-with-parent"
 if ! echo "$output" | grep -q "\-\-die-with-parent"; then

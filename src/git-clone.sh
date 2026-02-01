@@ -91,8 +91,8 @@ create_intermediary_clone() {
     run git clone "$intermediary_dir" "$work_dir"
 
     # Update origin to use the path as it appears inside the cage
-    echo "  Setting origin to cage path: $source_dir/intermediary"
-    run git -C "$work_dir" remote set-url origin "$source_dir/intermediary"
+    echo "  Setting origin to cage path: /run/claude-cage/intermediary"
+    run git -C "$work_dir" remote set-url origin "/run/claude-cage/intermediary"
 
     # Configure push to auto-setup upstream tracking
     run git -C "$work_dir" config push.autoSetupRemote true

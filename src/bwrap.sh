@@ -16,12 +16,12 @@ check_bwrap() {
 #
 # Arguments:
 #   caged_dir    - The .caged directory (contains intermediary/ and work/)
-#   mount_as     - Path to mount it as (typically the project path)
+#   mount_as     - Path to mount work/ as (the original project path)
 #   [command...] - Optional command to run (defaults to interactive shell)
 #
 # Inside the sandbox:
-#   $mount_as/intermediary/  - git origin remote
-#   $mount_as/work/          - working directory (chdir here)
+#   /run/claude-cage/intermediary/  - git origin remote
+#   $mount_as                       - working directory (the work/ dir)
 run_in_bwrap() {
     local caged_dir="$1"
     local mount_as="$2"
@@ -84,15 +84,12 @@ run_in_bwrap() {
     bwrap_args+=(--ro-bind-try /etc/bash_completion.d /etc/bash_completion.d)
     bwrap_args+=(--ro-bind-try /etc/alternatives /etc/alternatives)      # Debian/Ubuntu
 
-    # Mount .caged at the project path (read-write)
-    # This makes intermediary/ and work/ visible at $mount_as/
-    bwrap_args+=(--bind "$caged_dir" "$mount_as")
-
     # User home config (read-only)
     bwrap_args+=(--ro-bind-try "$user_home/.gitconfig" "$user_home/.gitconfig")
     bwrap_args+=(--ro-bind-try "$user_home/.config/git" "$user_home/.config/git")
 
     # Additional mounts from config (read-only)
+    # These come before work dir so work can overlay if needed
     for mount_entry in "${cfg_mounts[@]}"; do
         IFS='|' read -r mount_source mount_dest <<< "$mount_entry"
         # Expand tilde to user home
@@ -104,6 +101,17 @@ run_in_bwrap() {
     # Temp/runtime filesystems
     bwrap_args+=(--tmpfs /tmp)
     bwrap_args+=(--tmpfs /run)
+
+    # Mount intermediary at /run/claude-cage/intermediary (git origin for work)
+    bwrap_args+=(--bind "$caged_dir/intermediary" /run/claude-cage/intermediary)
+
+    # Mount pipe for git hook communication (if it exists)
+    if [ -p "$caged_dir/.pipe" ]; then
+        bwrap_args+=(--bind "$caged_dir/.pipe" /run/claude-cage/.pipe)
+    fi
+
+    # Mount work dir at the original project path (LAST so it overlays additional mounts)
+    bwrap_args+=(--bind "$caged_dir/work" "$mount_as")
 
     # Special filesystems
     bwrap_args+=(--proc /proc)
@@ -137,8 +145,8 @@ run_in_bwrap() {
     # Cleanup on parent exit
     bwrap_args+=(--die-with-parent)
 
-    # Working directory is the work subdir
-    bwrap_args+=(--chdir "$mount_as/work")
+    # Working directory is the project path (where work/ is mounted)
+    bwrap_args+=(--chdir "$mount_as")
 
     # Add command or interactive shell
     # Create custom rcfile that silences command_not_found_handle after sourcing configs

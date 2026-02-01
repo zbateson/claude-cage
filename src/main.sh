@@ -93,13 +93,9 @@ fi
 echo ""
 echo "============================================"
 echo ""
-echo "Sandbox mount:"
-echo "  $caged_dir"
-echo "    -> $project_path/"
-echo ""
 echo "Inside sandbox:"
-echo "  $project_path/intermediary/  (git origin)"
-echo "  $project_path/work/          (working dir)"
+echo "  $project_path              (working dir)"
+echo "  /run/claude-cage/intermediary  (git origin)"
 
 if [ "$test_mode" = true ]; then
     echo ""

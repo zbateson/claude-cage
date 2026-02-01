@@ -4,6 +4,8 @@ SOURCES = \
 	src/banner.sh \
 	src/config.sh \
 	src/git-clone.sh \
+	src/git-hooks.sh \
+	src/git-sync.sh \
 	src/bwrap.sh \
 	src/docker.sh \
 	src/main.sh

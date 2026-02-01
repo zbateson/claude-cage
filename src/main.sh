@@ -1,13 +1,21 @@
 # Parse additional flags
 test_mode=false
+git_merge_mode=false
 for arg in "$@"; do
     case "$arg" in
         --test) test_mode=true ;;
+        --git-merge) git_merge_mode=true ;;
     esac
 done
 
 # Initialize and parse config
 init_config "$@"
+
+# Handle --git-merge early (doesn't need sandbox)
+if [ "$git_merge_mode" = true ]; then
+    manual_git_merge "$cfg_source"
+    exit 0
+fi
 
 # Check isolation tool is available
 if [ "$cfg_mode" = "docker" ]; then
@@ -29,6 +37,7 @@ echo "  User:          $cfg_user"
 echo "  Source:        $cfg_source"
 echo "  Mounted as:    $cfg_mounted"
 echo "  Mode:          $cfg_mode"
+echo "  Auto-merge:    $cfg_autoMerge"
 echo "  Network mode:  $cfg_networkMode"
 
 if [ ${#cfg_display_lines[@]} -gt 0 ]; then
@@ -58,9 +67,14 @@ echo ""
 # Create the intermediary clone and work directory
 create_intermediary_clone "$cfg_source"
 
-# Paths for bwrap
+# Paths for bwrap/docker
 caged_dir="$cfg_source/.caged"
 project_path="$cfg_source"
+
+# Set up git hooks and communication pipe (if autoMerge enabled)
+if [ "$cfg_autoMerge" = "true" ]; then
+    setup_git_hooks "$caged_dir" "$project_path"
+fi
 
 echo ""
 echo "============================================"
@@ -75,12 +89,26 @@ echo "  $project_path/work/          (working dir)"
 
 if [ "$test_mode" = true ]; then
     echo ""
+
+    # Start pipe listener if autoMerge enabled
+    listener_pid=""
+    if [ "$cfg_autoMerge" = "true" ]; then
+        echo "Auto-merge enabled: pushes to intermediary will sync to source"
+        listener_pid=$(start_pipe_listener "$cfg_source" "$caged_dir")
+    fi
+
     if [ "$cfg_mode" = "docker" ]; then
         echo "Droppin' you into the Docker container for testing..."
         run_in_docker "$caged_dir" "$project_path"
     else
         echo "Droppin' you into the bwrap sandbox for testing..."
         run_in_bwrap "$caged_dir" "$project_path"
+    fi
+
+    # Stop pipe listener
+    if [ -n "$listener_pid" ]; then
+        stop_pipe_listener "$listener_pid"
+        cleanup_pipe "$caged_dir"
     fi
 else
     echo ""

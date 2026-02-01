@@ -203,6 +203,8 @@ local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
 local networkMode = config.networkMode or "disabled"
 local mode = config.mode or "bwrap"
+local autoMerge = config.autoMerge
+if autoMerge == nil then autoMerge = false end
 
 -- Docker options
 local docker = config.docker or {}
@@ -248,6 +250,7 @@ print(project)
 print(relative_path)
 print(config_root)
 print(mode)
+print(tostring(autoMerge))
 print(docker_image)
 print(docker_container)
 
@@ -314,6 +317,7 @@ EOF
         read -r cfg_relative_path
         read -r cfg_config_root
         read -r cfg_mode
+        read -r cfg_autoMerge
         read -r cfg_docker_image
         read -r cfg_docker_container
         read -r cfg_display_line_count

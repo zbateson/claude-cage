@@ -1,6 +1,6 @@
 # ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
-Now let me tell you about `claude-cage`. It's a bash script that keeps your sensitive files outta sight and your network locked down while Claude Code does its thing. No sudo required. No complicated setup. Just a clean, isolated workspace where Claude can't touch what it shouldn't.
+Now I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Two modes of operation. Multiple layers of protection. Optional network isolation. Multiple barriers between Claude and your personal files, credentials, and secrets. That's how we do this right.
 
 ## What This Thing Does
 
@@ -18,7 +18,7 @@ Your `.env` files, credentials, and secrets? They never make it into the cage. N
 
 - **Allowlist mode**: Only approved connections get through
 - **Blocklist mode**: Block specific destinations (like your internal infrastructure)
-- **No sudo needed**: Uses slirp4netns for unprivileged network namespaces
+- Uses slirp4netns for unprivileged network namespaces
 
 ## Quick Start
 
@@ -167,7 +167,7 @@ Source Project                    .caged/intermediary              .caged/work
 
 ## Network Filtering
 
-When you enable network filtering, claude-cage uses slirp4netns to create an isolated network namespace, then configures iptables rules inside it. No root required.
+When you enable network filtering, claude-cage uses slirp4netns to create an isolated network namespace, then configures iptables rules inside it. Runs as your regular user.
 
 **Allowlist mode** - Block everything except what you specify:
 ```lua

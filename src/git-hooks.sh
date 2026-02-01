@@ -14,7 +14,7 @@ setup_git_hooks() {
     local hook_path="$intermediary_dir/.git/hooks/post-receive"
 
     # Path to pipe as seen from inside the sandbox
-    local mounted_pipe_path="/run/claude-cage/pipe"
+    local mounted_pipe_path="/tmp/claude-cage/pipe"
 
     # Create parent directory for pipe if needed
     local pipe_dir

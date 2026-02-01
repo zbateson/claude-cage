@@ -58,6 +58,14 @@ get_branch_work_root() {
     echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work"
 }
 
+# Get the branch intermediary root directory (contains all intermediaries for a branch)
+# This is mounted at /run so all same-branch intermediaries are accessible
+get_branch_intermediary_root() {
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/intermediary"
+}
+
 # Get current branch from source project
 # Returns empty string and exits 1 if not on a branch (detached HEAD or no commits)
 get_source_branch() {
@@ -169,8 +177,9 @@ create_intermediary_clone() {
     run git clone "$intermediary_dir" "$work_dir"
 
     # Update origin to use the path as it appears inside the cage
-    echo "  Setting origin to cage path: /run/claude-cage/intermediary"
-    run git -C "$work_dir" remote set-url origin "/run/claude-cage/intermediary"
+    # Intermediary is mounted at /run, so origin is /run<source_dir>
+    echo "  Setting origin to cage path: /run$source_dir"
+    run git -C "$work_dir" remote set-url origin "/run$source_dir"
 
     # Configure push to auto-setup upstream tracking
     run git -C "$work_dir" config push.autoSetupRemote true

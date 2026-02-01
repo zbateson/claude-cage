@@ -96,6 +96,7 @@ export CLAUDE_CAGE_BRANCH
 intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
 work_dir=$(get_cage_path "$cfg_source" "work")
 branch_work_root=$(get_branch_work_root)
+branch_intermediary_root=$(get_branch_intermediary_root)
 pipe_path=$(get_pipe_path "$cfg_source")
 state_path=$(get_state_path "$cfg_source")
 project_path="$cfg_source"
@@ -142,7 +143,7 @@ echo "============================================"
 echo ""
 echo "Inside sandbox:"
 echo "  $project_path              (working dir)"
-echo "  /run/claude-cage/intermediary  (git origin)"
+echo "  /run$project_path          (git origin)"
 
 if [ "$test_mode" = true ]; then
     echo ""
@@ -156,15 +157,15 @@ if [ "$test_mode" = true ]; then
 
     if [ "$cfg_mode" = "docker" ]; then
         echo "Droppin' you into the Docker container for testing..."
-        run_in_docker "$intermediary_dir" "$branch_work_root" "$work_dir" "$pipe_path" "$project_path"
+        run_in_docker "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
     else
         echo "Droppin' you into the bwrap sandbox for testing..."
         # Use network-isolated bwrap if network filtering is enabled
         if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
             echo "Network filtering enabled (mode: $cfg_networkMode)"
-            run_in_bwrap_with_network "$intermediary_dir" "$branch_work_root" "$work_dir" "$pipe_path" "$project_path"
+            run_in_bwrap_with_network "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
         else
-            run_in_bwrap "$intermediary_dir" "$branch_work_root" "$work_dir" "$pipe_path" "$project_path"
+            run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
         fi
     fi
 

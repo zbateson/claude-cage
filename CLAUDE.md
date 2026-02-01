@@ -35,7 +35,7 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 2. **Intermediary** (`~/.cache/claude-cage/branches/<branch>/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
 3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
 
-Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches.
+Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches. Inside the sandbox, `work/` is mounted at `/` and `intermediary/` at `/run`, so projects appear at their original paths and git origins are at `/run<project-path>`.
 
 Both intermediary and work use a single `claude` branch. Intermediary has `receive.denyCurrentBranch=updateInstead` to allow pushing to the checked-out branch.
 
@@ -80,7 +80,7 @@ When `autoMerge = true`:
 1. Claude makes commits in the work directory
 2. Claude runs `git push origin`
 3. Intermediary's `post-receive` hook fires
-4. Hook writes `<refname> <newrev>` to named pipe (`$XDG_RUNTIME_DIR/claude-cage/pipes/<project-path>`)
+4. Hook writes `<refname> <newrev>` to named pipe (mounted at `/tmp/claude-cage/pipe` inside sandbox)
 5. Pipe listener on host reads the message
 6. `sync_to_source()` runs:
    - Skips initial commit (just a copy)
@@ -136,7 +136,7 @@ claude_cage {
 | `exclude` | `{}` | Patterns to exclude from archive |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
-| `isolated` | `false` | Mount from branch dir instead of current/ symlinks |
+| `isolated` | `false` | Only mount single project instead of all same-branch projects |
 | `showBanner` | `true` | Show ASCII banner |
 | `additionalMounts` | `{}` | Extra read-only mounts for sandbox |
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
@@ -185,6 +185,7 @@ claude_cage {
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
 - [x] Comprehensive test suite (111 tests across 9 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
+- [x] Multi-project visibility (same-branch projects see each other in sandbox)
 
 ### Known Issues / TODO
 
@@ -257,7 +258,7 @@ Destinations can include optional ports:
     └── <branch>/                         # Sanitized branch name (e.g., "main", "feature--foo")
         ├── intermediary/<project-path>/  # Sanitized repo (git origin for work)
         │   └── .git/hooks/post-receive   # Triggers sync
-        ├── work/<project-path>/          # Claude's working directory (mounted at / in sandbox)
+        ├── work/<project-path>/          # Claude's working directory
         └── state-<path-hash>             # Last processed source commit ID (12-char md5)
 
 $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
@@ -269,6 +270,20 @@ project/
     ├── pre-commit                      # Prevents mixed commits (autoMerge)
     └── post-commit                     # Syncs to intermediary, updates state file (autoMerge)
 ```
+
+### Sandbox Mount Structure
+
+Inside the sandbox, directories are mounted to preserve original paths:
+
+| Host Path | Sandbox Path | Purpose |
+|-----------|--------------|---------|
+| `branches/<branch>/work/` | `/` | All same-branch work dirs visible at original paths |
+| `branches/<branch>/intermediary/` | `/run` | All same-branch intermediaries as git origins |
+| Named pipe | `/tmp/claude-cage/pipe` | Git hook communication |
+
+This means if you have projects at `/home/user/project-a` and `/home/user/project-b` on the same branch, both are visible inside the sandbox at their original paths, and their git origins are at `/run/home/user/project-a` and `/run/home/user/project-b`.
+
+With `isolated = true`, only the single project's work and intermediary are mounted.
 
 Branch names are sanitized for filesystem paths: `/` becomes `--`, other special chars become `-`.
 
@@ -319,7 +334,6 @@ Note: bwrap execution tests are skipped if user namespaces are unavailable.
 2. Add `--cleanup` flag for removing cache dirs and hooks
 3. Test full workflow with actual Claude Code session
 4. Handle git-am conflicts gracefully
-5. Add shared mode (mount entire `~/.cache/claude-cage` for multiple projects)
 
 ## Gotchas / Technical Notes
 

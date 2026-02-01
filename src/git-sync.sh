@@ -13,7 +13,7 @@ sync_to_source() {
 
     # Skip the initial commit (it's just a copy of source files)
     local commit_msg
-    commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s HEAD)
+    commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$refname")
     if [ "$commit_msg" = "Initial commit from claude-cage" ]; then
         echo "Skipping initial commit sync"
         return 0
@@ -22,7 +22,7 @@ sync_to_source() {
     echo "Syncing from intermediary to source: $refname"
 
     # Apply the latest commit from intermediary using format-patch/git-am
-    if git -C "$intermediary_dir" format-patch -1 HEAD --stdout | git -C "$source_dir" am --3way 2>/dev/null; then
+    if git -C "$intermediary_dir" format-patch -1 "$refname" --stdout | git -C "$source_dir" am --3way; then
         echo "  Applied commit to source"
     else
         echo "  Warning: Failed to apply commit (may need manual merge)"

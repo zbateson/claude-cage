@@ -27,11 +27,12 @@ run_in_bwrap() {
     local mount_as="$2"
     shift 2
 
+    # Use real UID/GID if passed from parent (when inside network namespace, we're root)
     local user_uid user_gid username user_home
-    user_uid=$(id -u)
-    user_gid=$(id -g)
-    username=$(whoami)
-    user_home="$HOME"
+    user_uid="${BWRAP_REAL_UID:-$(id -u)}"
+    user_gid="${BWRAP_REAL_GID:-$(id -g)}"
+    username="${BWRAP_REAL_USER:-$(whoami)}"
+    user_home="${BWRAP_REAL_HOME:-$HOME}"
 
     # Hostname for the cage
     local cage_hostname="caged.$(hostname)"
@@ -205,6 +206,12 @@ run_in_bwrap_with_network() {
     export BWRAP_MOUNT_AS="$mount_as"
     export BWRAP_DRY_RUN="$dry_run"
     export BWRAP_VERBOSE="$verbose"
+
+    # Capture real UID/GID before entering namespace (where we become root)
+    export BWRAP_REAL_UID="$(id -u)"
+    export BWRAP_REAL_GID="$(id -g)"
+    export BWRAP_REAL_USER="$(whoami)"
+    export BWRAP_REAL_HOME="$HOME"
 
     # Signal to bwrap that we're in a slirp4netns network namespace
     # This tells it to use 10.0.2.3 as DNS resolver instead of host's resolv.conf

@@ -1,336 +1,248 @@
 # ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
-Now, I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Two modes of operation. Multiple layers of protection. Optional network isolation. Multiple barriers between Claude and your personal files, credentials, and secrets. That's how we do this right.
+Now let me tell you about `claude-cage`. It's a bash script that keeps your sensitive files outta sight and your network locked down while Claude Code does its thing. No sudo required. No complicated setup. Just a clean, isolated workspace where Claude can't touch what it shouldn't.
 
 ## What This Thing Does
 
-Listen up. `claude-cage` sets up a containment system with OS-level user isolation. Two modes of operation:
+Listen up. `claude-cage` creates a sanitized copy of your project usin' git, then runs Claude Code inside a bwrap sandbox. Here's how it works:
 
-**Sync Mode** (default) - Three-layer file isolation:
+**Three-Repository Model:**
 
-1. **Source directory** - That's your actual project files
-2. **Sync directory** - A synchronized copy maintained by `unison`, with sensitive files excluded
-3. **Mounted directory** - Where Claude Code operates, permission-mapped through `bindfs`
+1. **Source** - Your actual project with full git history
+2. **Intermediary** (`.caged/intermediary/`) - Fresh git repo with excluded files stripped out. No history of your secrets.
+3. **Work** (`.caged/work/`) - Where Claude operates. Pushes go to intermediary, then sync back to source.
 
-Changes sync bidirectionally between source and sync. Excluded files never make it to Claude's environment - they don't exist in the sync directory.
+Your `.env` files, credentials, and secrets? They never make it into the cage. Not in the files. Not in the git history. Claude don't even know they exist.
 
-**Direct Mount Mode** - Two-layer isolation for when you got a whole collection:
+**Network Isolation** (optional) - Keep Claude's network access under control:
 
-1. **Source directory** - Your entire directory tree (like `/home/user/Projects/public/`)
-2. **Mounted directory** - Direct bindfs mount with permission mapping
+- **Allowlist mode**: Only approved connections get through
+- **Blocklist mode**: Block specific destinations (like your internal infrastructure)
+- **No sudo needed**: Uses slirp4netns for unprivileged network namespaces
 
-No sync. No duplication. Useful when you got yourself a big collection of open-source projects and you ain't gonna copy 20GB just to work on one. But remember - no exclude patterns in this mode. Claude sees everything in your source directory.
+## Quick Start
 
-**Network Isolation** (optional) - OS-level restrictions on top of Claude Code's sandbox:
+```bash
+# Install dependencies (Ubuntu/Debian)
+sudo apt install bubblewrap slirp4netns
 
-- **Allowlist mode**: Lock it down - only approved connections get through
-- **Blocklist mode**: Keep Claude away from your internal infrastructure
-- **Defense in depth**: Process sandbox plus user-level firewall rules
+# Clone and build
+git clone https://github.com/zbateson/claude-cage.git
+cd claude-cage
+make
 
-You don't have to use network restrictions. But they're there if you need 'em.
+# Create a config in your project
+cat > ~/myproject/claude-cage.config << 'EOF'
+claude_cage {
+    exclude = { ".env", "secrets/**", ".git/config" }
+}
+EOF
 
-📖 **[Detailed Architecture & Security Model →](docs/configuration.md)**
+# Run it
+cd ~/myproject
+/path/to/claude-cage/dist/claude-cage
+```
 
 ## ⚠️ Now Listen to Me Very Carefully
 
-**Sync mode uses bidirectional synchronization.** That means what happens in one place happens in the other. **Including deletions.** You understand what I'm tellin' you? You delete somethin' on one side, it's gone on the other. Gone.
+**This tool syncs changes back to your source repo.** When Claude commits and pushes, those changes come home. You understand what I'm tellin' you?
 
-**Before you even think about runnin' this in sync mode:**
-- ✅ **Commit and push everything to git** - Every last change. I mean it.
-- ✅ **Make yourself a backup** - A real one. The kind that'll still be there when you need it.
-- ✅ **Test this on somethin' that don't matter first** - Learn how it works before you bet the farm.
-- ✅ **Set up your exclude patterns right** - Protect what needs protectin'.
-
-**Direct mount mode is different:** Changes happen directly to your source files. No sync, so no sync-related deletions to worry about. But here's what you gotta understand - also no file exclusion. Claude can see everything in that mounted tree. Every. Single. File. Only use direct mount with directories containing files you're comfortable exposin'.
-
-If you ain't sure about your setup, you test it on somethin' expendable first. That ain't a suggestion.
+**Before you run this:**
+- ✅ **Commit and push everything to git** - Every last change
+- ✅ **Make yourself a backup** - A real one
+- ✅ **Test on somethin' expendable first** - Learn how it works before you bet the farm
+- ✅ **Set up your exclude patterns right** - Protect what needs protectin'
 
 ### ⚠️ Use At Your Own Risk
 
-Look, I'm gonna level with you here. This tool does what it's designed to do - creates isolation layers, manages permissions, keeps your files separated. But at the end of the day, you're lettin' an AI work on your code. That comes with inherent risks, no matter how many cages you build around it.
+Look, I'm gonna level with you. This tool does what it's designed to do - strips out your secrets, locks down the sandbox, syncs changes back. But you're still lettin' an AI work on your code.
 
 **The reality:**
-- Nobody likes gettin' caged - not you, not me, not an AI. But layers of security? That's just good practice.
 - This script is provided as-is. No warranties. No guarantees.
-- You're responsible for your data. Back it up. Use version control. Test on expendable projects first.
-- If somethin' goes wrong, that's on you. I gave you the tools. How you use 'em is your call.
+- You're responsible for your data. Back it up. Use version control.
+- If somethin' goes wrong, that's on you. I gave you the tools.
 
-Consider this your warning. Proceed accordingly.
+Consider yourself warned.
 
 ![Talk to the hand](https://zbateson.github.io/claude-cage/facepalm-lo.png)
 
 ## Prerequisites
 
-**Supported Platforms:** Linux (Ubuntu/Debian/Fedora/RHEL/CentOS) and macOS
+**Platform:** Linux only (bwrap doesn't run on macOS)
 
-Get your dependencies installed:
-
-**Linux:**
+**Dependencies:**
 ```bash
 # Ubuntu/Debian
-sudo apt install unison bindfs lua inotify-tools
+sudo apt install bubblewrap
 
-# RHEL/CentOS/Fedora
-sudo yum install unison bindfs lua inotify-tools
+# For network filtering (optional)
+sudo apt install slirp4netns
+
+# Fedora/RHEL
+sudo dnf install bubblewrap slirp4netns
 ```
 
-**macOS:**
+**Kernel Requirements** (for network filtering):
 ```bash
-# Using Homebrew
-brew install unison bindfs lua macfuse
+# Check if unprivileged user namespaces are enabled
+cat /proc/sys/kernel/unprivileged_userns_clone  # Should be 1
 
-# Note: macFUSE may require enabling in System Settings > Privacy & Security
+# If blocked by AppArmor (Ubuntu 23.10+):
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-**⚠️ macOS Warning:** Now I gotta be straight with you - macOS support ain't been tested yet. The code's there, but nobody's taken it for a spin on a Mac. You're flyin' blind on that one, friend. Use at your own risk and let us know if somethin' goes sideways.
+## Configuration
 
-**Claude Code:** If Claude Code ain't installed for the cage user, don't worry - the script'll offer to install it for you using the official installer. Just say yes when it asks and we'll get you set up.
+Create `claude-cage.config` in your project root:
 
-## Quick Start
-
-### 1. Install
-
-Alright, let's get you set up.
-
-**Option 1: Download script only**
-```bash
-curl -O https://raw.githubusercontent.com/zbateson/claude-cage/main/claude-cage
-chmod +x claude-cage
-```
-
-**Option 2: Clone repository**
-```bash
-git clone https://github.com/zbateson/claude-cage.git
-cd claude-cage
-chmod +x claude-cage
-```
-
-**Optional: Install to PATH**
-```bash
-sudo cp claude-cage /usr/local/bin/
-```
-
-**Optional: [Shell Completions](docs/configuration.md#shell-completions)** - Tab completion for flags and arguments.
-
-### 2. Configure
-
-Create `claude-cage.config` in your project root (or parent directory):
-
-**Config file search:** The script searches for `claude-cage.config` starting from your current directory going up the tree. The directory containing the config becomes your "project boundary."
-
-**Sync mode** (for projects with secrets to exclude):
 ```lua
 claude_cage {
-    -- project is derived from directory structure - no need to specify!
+    -- Files to exclude (never enter the cage)
     exclude = {
-        name = { ".env", "node_modules", "dist" },
-        belowPath = { ".git" }
+        ".env",
+        ".env.*",
+        "secrets/**",
+        "*.pem",
+        "*.key",
+        ".git/config"
+    },
+
+    -- Sandbox mode: "bwrap" or "docker"
+    mode = "bwrap",
+
+    -- Auto-sync commits back to source
+    autoMerge = true,
+
+    -- Network filtering (optional)
+    networkMode = "allowlist",  -- "disabled", "allowlist", or "blocklist"
+    allow = {
+        domains = { "github.com:443", "api.anthropic.com:443" },
+        ips = { "8.8.8.8:53" }
     }
 }
 ```
-
-**Important for sync mode:**
-- You must run from a **subdirectory** of the config root (not from the same directory)
-
-**Direct mount - workspace mode** (mount entire directory, access sibling projects):
-```lua
-claude_cage {
-    directMount = "workspace"
-}
-```
-
-**Direct mount - project mode** (mount only the specified project):
-```lua
-claude_cage {
-    directMount = "project"
-}
-```
-
-**Multi-project workspace** (config at parent level):
-```lua
--- ~/Projects/claude-cage.config (shared settings)
-claude_cage {
-    exclude = {
-        name = { ".env", "node_modules" },
-        belowPath = { ".git" }
-    }
-}
-```
-Then cd into a project and run: `cd ~/Projects/backend && sudo claude-cage`
-The project name "backend" is derived automatically from the directory structure.
 
 📖 **[Full Configuration Reference →](docs/configuration.md)**
-📖 **[Configuration Examples →](docs/examples.md)**
 
-### 3. Run
+## Usage
 
-Now we're ready to fly.
-
-**Sync mode** (run from a subdirectory of config root):
 ```bash
-cd ~/Projects/myapp              # cd into project subdirectory
-sudo claude-cage                 # Project name derived from directory (myapp)
+# Basic usage - creates cage and shows info
+./claude-cage
+
+# Drop into sandbox shell for testing
+./claude-cage --test
+
+# Preview what would happen (no changes)
+./claude-cage --dry-run
+
+# Verbose output
+./claude-cage --verbose
+
+# Manually merge Claude's changes
+./claude-cage git-merge
 ```
 
-**Direct mount mode** (specify subdirectory to start in):
-```bash
-cd ~/Projects/public
-sudo claude-cage my-project      # Argument is subdirectory to start in
+## How It Works
+
+```
+Source Project                    .caged/intermediary              .caged/work
+(your actual repo)                (sanitized, fresh git)           (Claude's workspace)
+       │                                   │                              │
+       │  git ls-files + tar               │     git clone                │
+       │  (excludes applied)               │                              │
+       └──────────────────────────────────>│──────────────────────────────>
+                                           │                              │
+                                           │<────── git push ─────────────┤
+                                           │     (Claude commits)         │
+                                           │                              │
+       │<──── format-patch/git-am ─────────┤                              │
+       │     (auto-sync if enabled)        │                              │
 ```
 
-**Explicit config location:**
-```bash
-sudo claude-cage --config /path/to/claude-cage.config
-```
+**Key points:**
+- Excluded files are stripped at archive time - no history leaks
+- Fresh git init means no trace of secrets in any commit
+- Changes sync back via git patches when `autoMerge = true`
+- The bwrap sandbox can't see your home directory, SSH keys, or AWS credentials
 
-**Test mode** (verify setup without launching Claude):
-```bash
-sudo claude-cage --test
-```
+## Network Filtering
 
-**Resume previous conversation**:
-```bash
-sudo claude-cage --continue      # Resume most recent conversation
-sudo claude-cage --resume        # Pick from conversation list
-```
+When you enable network filtering, claude-cage uses slirp4netns to create an isolated network namespace, then configures iptables rules inside it. No root required.
 
-That's it. Clean and simple.
-
-## Key Features
-
-### File Protection (Sync Mode)
-
-Exclude sensitive files from Claude's view:
-
+**Allowlist mode** - Block everything except what you specify:
 ```lua
-exclude = {
-    path = { "config/production.yml" },        -- Specific paths from root
-    name = { ".env", "node_modules", "*.pem" }, -- By name anywhere in tree
-    belowPath = { ".git" },                    -- Path from root + everything below
-    regex = { ".*\\.log$" }                    -- Regex patterns
+networkMode = "allowlist",
+allow = {
+    domains = { "github.com:443", "registry.npmjs.org:443" },
+    networks = { "10.0.0.0/8" }
 }
 ```
 
-**Important:** Files matching exclude patterns are never synced - they literally don't exist in Claude's environment.
-
-### Cage-Local Files (One-Way Sync)
-
-Now here's somethin' special. Sometimes Claude creates files in the cage you didn't ask for - and you don't want 'em showin' up in your source.
-
-That's where `cageLocal` comes in:
-
+**Blocklist mode** - Allow everything except what you block:
 ```lua
-cageLocal = {
-    name = { ".bashrc", ".profile", ".gitconfig", ".mcp.json" }
+networkMode = "blocklist",
+block = {
+    domains = { "internal.company.com" },
+    ips = { "169.254.169.254" }  -- AWS metadata endpoint
 }
-```
-
-Here's how it works - and pay attention 'cause this is different from `exclude`:
-- New files Claude creates in the cage? They don't show up in your source. They stay where they belong.
-- But files that already exist in both places? Those sync normally, both ways. Updates, deletions, the whole deal.
-
-It ain't about blockin' sync entirely - it's about keepin' Claude's new file creations from cluttering up your project.
-
-### ⚠️ **Watch Your Build Outputs**
-
-Build processes can leak excluded secrets. You exclude `.env`, but webpack bundles it into `dist/bundle.js` - now Claude can read it there. **Exclude build outputs too** if they might contain secrets.
-
-**Git history can also leak.** Secrets in your commit history? Claude can `git show` them. Either exclude `.git` entirely, or scrub your history first with `git-filter-repo`.
-
-📖 **[More on protecting against build processes →](docs/examples.md#protecting-against-build-processes)**
-
-**Recommended excludes:**
-```lua
-exclude = {
-    name = {
-        ".env",           -- Environment files (anywhere in tree)
-        "secrets.json",   -- Secret files (anywhere)
-        "*.key", "*.pem", -- Certificate files (anywhere)
-        "node_modules",   -- npm/yarn dependencies (anywhere)
-        "target",         -- Maven/Cargo build output (anywhere)
-        ".venv",          -- Python virtual environment (anywhere)
-        "vendor"          -- PHP/Go dependencies (anywhere)
-    },
-    belowPath = {
-        ".git"            -- Git history at root (Claude can't use git)
-    }
-}
-```
-
-### State Isolation (Sync Mode)
-
-Sync mode's separate copies mean Claude's work doesn't stomp on yours. If you exclude build directories (`target/`, `dist/`), Claude can build in the cage without overwriting your local artifacts that may contain embedded credentials. You can keep working, testing, and verifying locally while Claude works in parallel. Direct mount shares one reality - Claude's builds replace yours.
-
-### Network Restrictions (Optional)
-
-OS-level network controls on top of Claude Code's sandbox:
-
-```lua
-networkMode = "blocklist"                     -- or "allowlist"
-block = { networks = { "192.168.1.0/24" } }   -- Keep Claude off your LAN
-allow = { ips = { "127.0.0.1:5432" } }        -- Exception for PostgreSQL
 ```
 
 📖 **[Network Security Guide →](docs/network-security.md)**
 
-### Isolation Modes
+## Docker Mode
 
-**bwrap mode** (default) - Uses bwrap (bubblewrap) for namespace isolation. Requires sudo. Linux only.
-
-**Docker mode** - Uses a Docker container for isolation. No sudo required, just Docker group membership.
+Don't have bwrap? Use Docker instead:
 
 ```lua
-isolationMode = "docker"   -- Default is "bwrap"
-
-docker = {
-    image = "node:lts-slim",       -- Base image (must have Node.js)
-    packages = { "git", "curl" },  -- Packages to install
-    isolated = true,               -- Per-project containers (default: false = shared)
+claude_cage {
+    mode = "docker",
+    exclude = { ".env" }
 }
 ```
 
-You can also use your own existing container - see [Using an Existing Docker Container](docs/docker-existing-container.md).
+Note: Network filtering in Docker mode uses a different approach (coming soon).
 
-### Home Config Sync
-
-Cage user's got a different home directory. Git don't know who you are, Claude don't know you're logged in. Fix that:
-
-```lua
-homeConfigSync = {
-    ".gitconfig",
-    ".claude",       -- Claude credentials and settings directory
-    ".claude.json",  -- Claude onboarding state (separate file!)
-    { path = ".config/claude-cage/claude-settings.json",
-      destination = ".claude/settings.json" }
-}
-```
-
-Just don't go syncin' files with secrets in 'em.
-
-## Defense in Depth
-
-Use `claude-cage` alongside Claude Code's sandbox and you got multiple layers:
+## File Locations
 
 ```
-Layer 1: OS User Isolation (claude-cage)
-    └─> Layer 2: OS Network Restrictions (iptables/pf)
-        └─> Layer 3: Process Sandbox (Claude Code /sandbox)
+your-project/
+├── claude-cage.config      # Your config
+├── .caged/                 # Created by claude-cage
+│   ├── intermediary/       # Sanitized repo (Claude's origin)
+│   ├── work/               # Claude's working directory
+│   └── .pipe               # Communication pipe (autoMerge)
+└── .git/hooks/             # Hooks added when autoMerge=true
+    ├── pre-commit          # Prevents mixing excluded/included files
+    └── post-commit         # Syncs your commits to intermediary
 ```
 
-Bug in the sandbox? Linux permissions still contain it. Compromised claude user? They still can't access your excluded files. That's defense in depth.
+## Troubleshooting
 
-📖 **[Claude Code sandbox docs →](https://docs.anthropic.com/en/docs/claude-code/security)**
+**"Unprivileged user namespaces are not available"**
+```bash
+# Ubuntu 23.10+ blocks this by default
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
 
-## Documentation
+**"slirp4netns not found"**
+```bash
+sudo apt install slirp4netns
+```
 
-- **[Configuration Reference](docs/configuration.md)** - Every config option, explained
-- **[Network Security](docs/network-security.md)** - How to lock down the network
-- **[Examples & Workflows](docs/examples.md)** - Common patterns, real use cases
-- **[Troubleshooting](docs/troubleshooting.md)** - When things go wrong, start here
+**DNS not working inside sandbox**
+
+The sandbox uses slirp4netns DNS at 10.0.2.3. If you're filtering network access, make sure DNS is allowed (it's automatic in allowlist mode).
+
+📖 **[Full Troubleshooting Guide →](docs/troubleshooting.md)**
+
+## Contributing
+
+Contributions welcome. Just remember - commit messages gotta have that Con Air energy.
 
 ## License
 
-BSD 2-Clause
+BSD 2-Clause. See [LICENSE](LICENSE) for details.
 
 ---
 

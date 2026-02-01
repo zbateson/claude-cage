@@ -37,8 +37,9 @@ create_intermediary_clone() {
     run git -C "$source_dir" config uploadpack.allowFilter true
 
     # Create shallow sparse clone
+    # Note: --filter=blob:none would create a partial clone that can't be cloned from
     echo "  Creating shallow sparse clone..."
-    run git clone --depth 1 --sparse --filter=blob:none "file://$source_dir" "$intermediary_dir"
+    run git clone --depth 1 --sparse "file://$source_dir" "$intermediary_dir"
 
     # Initialize sparse-checkout in no-cone mode (allows gitignore-style patterns)
     echo "  Initializing sparse-checkout (no-cone mode)..."

@@ -1,10 +1,10 @@
-# Parse additional flags
+# Parse additional flags and subcommands
 test_mode=false
 git_merge_mode=false
 for arg in "$@"; do
     case "$arg" in
         --test) test_mode=true ;;
-        --git-merge) git_merge_mode=true ;;
+        git-merge) git_merge_mode=true ;;
     esac
 done
 

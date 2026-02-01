@@ -49,7 +49,18 @@ run_in_bwrap() {
     # System config (read-only)
     bwrap_args+=(--ro-bind /etc/passwd /etc/passwd)
     bwrap_args+=(--ro-bind /etc/group /etc/group)
-    bwrap_args+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
+
+    # For slirp4netns network namespace, use its DNS resolver (10.0.2.3)
+    # Otherwise use host's resolv.conf
+    if [ "${SLIRP_NETWORK:-}" = "1" ]; then
+        local slirp_resolv
+        slirp_resolv=$(mktemp)
+        echo "nameserver 10.0.2.3" > "$slirp_resolv"
+        bwrap_args+=(--ro-bind "$slirp_resolv" /etc/resolv.conf)
+    else
+        bwrap_args+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
+    fi
+
     bwrap_args+=(--ro-bind /etc/hosts /etc/hosts)
     bwrap_args+=(--ro-bind /etc/nsswitch.conf /etc/nsswitch.conf)
     bwrap_args+=(--ro-bind-try /etc/localtime /etc/localtime)
@@ -115,12 +126,13 @@ run_in_bwrap() {
     bwrap_args+=(--uid "$user_uid")
     bwrap_args+=(--gid "$user_gid")
 
-    # Process isolation
-    bwrap_args+=(--unshare-pid)
-
     # Hostname isolation
     bwrap_args+=(--unshare-uts)
     bwrap_args+=(--hostname "$cage_hostname")
+
+    # Note: We intentionally don't use --unshare-pid for interactive shells
+    # PID namespace makes the shell PID 1, which has special signal handling
+    # that breaks Ctrl+C. User namespace already prevents accessing host processes.
 
     # Cleanup on parent exit
     bwrap_args+=(--die-with-parent)
@@ -153,4 +165,88 @@ exec bash --rcfile /tmp/.cage-bashrc')
     fi
 
     bwrap "${bwrap_args[@]}"
+}
+
+# Run bwrap with network isolation via slirp4netns
+# This wraps run_in_bwrap in a network namespace with iptables filtering
+#
+# Usage: run_in_bwrap_with_network <caged_dir> <mount_as> [command...]
+#
+# Uses global config variables:
+#   cfg_networkMode      - "disabled", "allowlist", or "blocklist"
+#   cfg_allow_domains    - pipe-separated allowed domains
+#   cfg_allow_ips        - pipe-separated allowed IPs
+#   cfg_allow_networks   - pipe-separated allowed networks
+#   cfg_block_domains    - pipe-separated blocked domains
+#   cfg_block_ips        - pipe-separated blocked IPs
+#   cfg_block_networks   - pipe-separated blocked networks
+run_in_bwrap_with_network() {
+    local caged_dir="$1"
+    local mount_as="$2"
+    shift 2
+
+    # If network mode is disabled, just run bwrap directly
+    if [ "$cfg_networkMode" = "disabled" ] || [ -z "$cfg_networkMode" ]; then
+        run_in_bwrap "$caged_dir" "$mount_as" "$@"
+        return $?
+    fi
+
+    # Export bwrap-related variables for the inner call
+    # run_with_network_namespace sources the main script, so run_in_bwrap will be available
+    export BWRAP_CAGED_DIR="$caged_dir"
+    export BWRAP_MOUNT_AS="$mount_as"
+    export BWRAP_DRY_RUN="$dry_run"
+    export BWRAP_VERBOSE="$verbose"
+
+    # Signal to bwrap that we're in a slirp4netns network namespace
+    # This tells it to use 10.0.2.3 as DNS resolver instead of host's resolv.conf
+    export SLIRP_NETWORK="1"
+
+    # Export cfg_mounts array as a string (^-separated entries)
+    local mounts_str=""
+    for mount_entry in "${cfg_mounts[@]}"; do
+        mounts_str="${mounts_str}${mounts_str:+^}${mount_entry}"
+    done
+    export BWRAP_MOUNTS="$mounts_str"
+
+    # Build the command to run inside the network namespace
+    # We need to source the main script again because exec creates a new bash process
+    local inner_cmd
+    if [ $# -eq 0 ]; then
+        inner_cmd='
+            export CLAUDE_CAGE_SOURCING=1
+            source "$CLAUDE_CAGE_SCRIPT"
+            dry_run="$BWRAP_DRY_RUN"
+            verbose="$BWRAP_VERBOSE"
+            # Restore cfg_mounts array
+            IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
+            run_in_bwrap "$BWRAP_CAGED_DIR" "$BWRAP_MOUNT_AS"
+        '
+    else
+        # Escape command arguments for passing through
+        local escaped_args=""
+        for arg in "$@"; do
+            escaped_args="$escaped_args '${arg//\'/\'\\\'\'}'"
+        done
+        inner_cmd='
+            export CLAUDE_CAGE_SOURCING=1
+            source "$CLAUDE_CAGE_SCRIPT"
+            dry_run="$BWRAP_DRY_RUN"
+            verbose="$BWRAP_VERBOSE"
+            # Restore cfg_mounts array
+            IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
+            run_in_bwrap "$BWRAP_CAGED_DIR" "$BWRAP_MOUNT_AS" '"$escaped_args"'
+        '
+    fi
+
+    run_with_network_namespace \
+        "$cfg_networkMode" \
+        "$cfg_allow_domains" \
+        "$cfg_allow_ips" \
+        "$cfg_allow_networks" \
+        "$cfg_block_domains" \
+        "$cfg_block_ips" \
+        "$cfg_block_networks" \
+        -- \
+        bash -c "$inner_cmd"
 }

@@ -1,3 +1,9 @@
+# Guard: if we're being sourced just for function definitions, stop here
+# This is used by run_with_network_namespace to get functions in subprocess
+if [ "${CLAUDE_CAGE_SOURCING:-}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 # Parse additional flags and subcommands
 test_mode=false
 git_merge_mode=false
@@ -22,6 +28,12 @@ if [ "$cfg_mode" = "docker" ]; then
     check_docker
 else
     check_bwrap
+    # Check slirp4netns and user namespaces if network filtering is enabled
+    if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+        check_userns
+        check_slirp4netns
+        check_iptables
+    fi
 fi
 
 # Show banner if enabled
@@ -104,7 +116,13 @@ if [ "$test_mode" = true ]; then
         run_in_docker "$caged_dir" "$project_path"
     else
         echo "Droppin' you into the bwrap sandbox for testing..."
-        run_in_bwrap "$caged_dir" "$project_path"
+        # Use network-isolated bwrap if network filtering is enabled
+        if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+            echo "Network filtering enabled (mode: $cfg_networkMode)"
+            run_in_bwrap_with_network "$caged_dir" "$project_path"
+        else
+            run_in_bwrap "$caged_dir" "$project_path"
+        fi
     fi
 
     # Stop pipe listener and clean up hooks

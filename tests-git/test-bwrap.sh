@@ -89,14 +89,14 @@ if ! echo "$output" | grep -q "\-\-unshare-user"; then
 fi
 echo "  PASS: Unshares user namespace"
 
-echo "Test 6: Should include PID namespace flags"
-if ! echo "$output" | grep -q "\-\-unshare-pid"; then
-    echo "FAIL: Should unshare PID namespace"
+echo "Test 6: Should NOT include PID namespace (breaks Ctrl+C)"
+if echo "$output" | grep -q "\-\-unshare-pid"; then
+    echo "FAIL: Should NOT unshare PID namespace (causes signal handling issues)"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Unshares PID namespace"
+echo "  PASS: Does not unshare PID namespace"
 
 echo "Test 7: Should set working directory to work/"
 if ! echo "$output" | grep -q "\-\-chdir.*work"; then

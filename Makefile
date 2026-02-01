@@ -6,6 +6,7 @@ SOURCES = \
 	src/git-clone.sh \
 	src/git-hooks.sh \
 	src/git-sync.sh \
+	src/network.sh \
 	src/bwrap.sh \
 	src/docker.sh \
 	src/main.sh

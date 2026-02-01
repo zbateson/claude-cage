@@ -102,6 +102,18 @@ claude_cage {
     mode = "bwrap",  -- or "docker"
     autoMerge = true,  -- enable real-time sync
     showBanner = true,
+
+    -- Network filtering (bwrap mode only)
+    networkMode = "allowlist",  -- "disabled", "allowlist", or "blocklist"
+    allow = {
+        domains = { "github.com:443", "api.anthropic.com:443" },
+        ips = { "8.8.8.8:53" },
+        networks = { "10.0.0.0/8" }
+    },
+    block = {
+        domains = { "internal.company.com" },
+        ips = { "169.254.169.254" }  -- AWS metadata
+    }
 }
 ```
 
@@ -116,6 +128,9 @@ claude_cage {
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
 | `showBanner` | `true` | Show ASCII banner |
 | `additionalMounts` | `{}` | Extra read-only mounts for sandbox |
+| `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
+| `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
+| `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
 
 ## CLI Usage
 
@@ -156,7 +171,8 @@ claude_cage {
 - [x] `manual_git_merge()` for manual sync
 - [x] Cleanup on exit
 - [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
-- [x] Comprehensive test suite (82 tests across 8 files)
+- [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
+- [x] Comprehensive test suite (111 tests across 9 files)
 
 ### Known Issues / TODO
 
@@ -166,7 +182,7 @@ claude_cage {
 - [ ] Testing on actual Claude Code workflow
 - [ ] Conflict resolution when git-am fails
 - [ ] Instance tracking (multiple concurrent runs)
-- [ ] Network restriction integration (iptables/pf)
+- [ ] Network filtering for Docker mode (requires different approach)
 
 ## How It Differs from Main claude-cage
 
@@ -174,10 +190,64 @@ claude_cage {
 |--------|-------------|-----------------|
 | Sync method | unison (bidirectional) | git archive + patches |
 | Excludes | Real-time, bidirectional | At archive time only |
-| Dependencies | unison, bindfs, iptables | git, tar, bwrap/docker |
+| Dependencies | unison, bindfs, iptables | git, tar, bwrap/docker, slirp4netns |
 | Sudo required | Yes (user isolation) | No (current user) |
 | Live sync | Yes (inotify/fsmonitor) | On git push only |
 | History sanitization | No (excludes just hidden) | Yes (fresh init) |
+| Network isolation | iptables + UID filtering | slirp4netns + namespace iptables |
+
+## Network Isolation (bwrap mode)
+
+Network filtering uses slirp4netns to create an isolated network namespace, then configures iptables inside that namespace. No root/sudo required.
+
+### Requirements
+
+- `slirp4netns` - Install: `sudo apt install slirp4netns`
+- `iptables` - Usually pre-installed
+- **Unprivileged user namespaces** - Must be enabled in kernel
+
+To check/enable user namespaces:
+```bash
+# Check current setting (1 = enabled)
+cat /proc/sys/kernel/unprivileged_userns_clone
+
+# Enable temporarily
+sudo sysctl -w kernel.unprivileged_userns_clone=1
+
+# Enable permanently
+echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/userns.conf
+sudo sysctl --system
+```
+
+### How It Works
+
+1. Creates user+network namespace via `unshare --user --map-root-user --net`
+2. Attaches slirp4netns to provide network connectivity
+3. Configures iptables rules (we have CAP_NET_ADMIN inside the namespace)
+4. Drops into bwrap sandbox (which drops all capabilities)
+
+### slirp4netns Address Mapping
+
+| Address | Maps to |
+|---------|---------|
+| 10.0.2.2 | Host loopback (127.0.0.1) |
+| 10.0.2.3 | DNS resolver |
+| 10.0.2.15 | Sandbox's own IP |
+
+### Network Modes
+
+| Mode | Behavior |
+|------|----------|
+| `disabled` | No network filtering (default) |
+| `allowlist` | Block everything except specified destinations |
+| `blocklist` | Allow everything except specified destinations |
+
+### Port Syntax
+
+Destinations can include optional ports:
+- `github.com:443` - Single port
+- `192.168.1.0/24:80,443` - Multiple ports
+- `10.0.0.1` - All ports
 
 ## File Locations
 
@@ -222,10 +292,11 @@ bash tests-git/run-all.sh
 | test-git-clone.sh | git-clone.sh | 13 |
 | test-git-hooks.sh | git-hooks.sh | 12 |
 | test-git-sync.sh | git-sync.sh | 9 |
+| test-network.sh | network.sh | 29 |
 | test-bwrap.sh | bwrap.sh | 11 |
 | test-docker.sh | docker.sh | 11 |
 
-**Total: 82 tests**
+**Total: 111 tests**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

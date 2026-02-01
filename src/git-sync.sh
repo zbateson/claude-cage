@@ -11,6 +11,14 @@ sync_to_source() {
     local refname="$2"
     local intermediary_dir="$source_dir/.caged/intermediary"
 
+    # Skip the initial commit (it's just a copy of source files)
+    local commit_msg
+    commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s HEAD)
+    if [ "$commit_msg" = "Initial commit from claude-cage" ]; then
+        echo "Skipping initial commit sync"
+        return 0
+    fi
+
     echo "Syncing from intermediary to source: $refname"
 
     # Apply the latest commit from intermediary using format-patch/git-am

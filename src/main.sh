@@ -87,6 +87,10 @@ if [ -z "$source_branch" ]; then
     fi
 fi
 
+# Set branch for path construction
+CLAUDE_CAGE_BRANCH="$source_branch"
+export CLAUDE_CAGE_BRANCH
+
 # Create the intermediary clone and work directory
 create_intermediary_clone "$cfg_source"
 

@@ -6,18 +6,36 @@
 CLAUDE_CAGE_CACHE="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
 CLAUDE_CAGE_RUNTIME="${CLAUDE_CAGE_RUNTIME:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-cage}"
 
+# Sanitize a branch name for use in filesystem paths
+# Replaces problematic characters with dashes
+sanitize_branch_name() {
+    local branch="$1"
+    # Replace / with -- (for feature/foo style branches)
+    # Replace other problematic chars with -
+    echo "$branch" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g'
+}
+
+# Current branch for path construction (set by main.sh before calling get_cage_path)
+CLAUDE_CAGE_BRANCH=""
+
 # Get the cache path for a source directory
 # Arguments: $1 = source directory, $2 = type (work|intermediary)
+# Uses CLAUDE_CAGE_BRANCH if set, otherwise defaults to "default"
 get_cage_path() {
     local source_dir="$1"
     local type="$2"
-    echo "$CLAUDE_CAGE_CACHE/$type$source_dir"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_CACHE/$branch_dir/$type$source_dir"
 }
 
 # Get the pipe path for a source directory
+# Uses CLAUDE_CAGE_BRANCH if set
 get_pipe_path() {
     local source_dir="$1"
-    echo "$CLAUDE_CAGE_RUNTIME/pipes$source_dir"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_RUNTIME/pipes/$branch_dir$source_dir"
 }
 
 # Get current branch from source project

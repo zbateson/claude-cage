@@ -32,8 +32,10 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 ### Three-Repository Model
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`~/.cache/claude-cage/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
-3. **Work** (`~/.cache/claude-cage/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
+2. **Intermediary** (`~/.cache/claude-cage/<branch>/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
+3. **Work** (`~/.cache/claude-cage/<branch>/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
+
+Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches.
 
 Both intermediary and work use a single `claude` branch. Intermediary has `receive.denyCurrentBranch=updateInstead` to allow pushing to the checked-out branch.
 
@@ -250,23 +252,27 @@ Destinations can include optional ports:
 
 ```
 ~/.cache/claude-cage/
-├── intermediary/<project-path>/    # Sanitized repo (git origin for work)
-│   └── .git/hooks/post-receive     # Triggers sync
-└── work/<project-path>/            # Claude's working directory
+└── <branch>/                           # Sanitized branch name (e.g., "main", "feature--foo")
+    ├── intermediary/<project-path>/    # Sanitized repo (git origin for work)
+    │   └── .git/hooks/post-receive     # Triggers sync
+    └── work/<project-path>/            # Claude's working directory
 
-$XDG_RUNTIME_DIR/claude-cage/       # Runtime files (typically /run/user/$UID/)
-└── pipes/<project-path>            # Named pipe for communication
+$XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
+└── pipes/<branch>/<project-path>       # Named pipe for communication
 
 project/
-├── claude-cage.config              # Config file (required)
+├── claude-cage.config                  # Config file (required)
 └── .git/hooks/
-    ├── pre-commit                  # Prevents mixed commits (autoMerge)
-    └── post-commit                 # Syncs to intermediary (autoMerge)
+    ├── pre-commit                      # Prevents mixed commits (autoMerge)
+    └── post-commit                     # Syncs to intermediary (autoMerge)
 ```
+
+Branch names are sanitized for filesystem paths: `/` becomes `--`, other special chars become `-`.
 
 Environment variables for customization:
 - `CLAUDE_CAGE_CACHE` - Override cache directory (default: `~/.cache/claude-cage`)
 - `CLAUDE_CAGE_RUNTIME` - Override runtime directory (default: `$XDG_RUNTIME_DIR/claude-cage`)
+- `CLAUDE_CAGE_BRANCH` - Override branch name for path construction (auto-detected from source)
 
 ## Debugging
 

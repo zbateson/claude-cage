@@ -2,11 +2,6 @@
 # Git sync operations (fetch/merge from intermediary)
 # ============================================================================
 
-# Sanitize branch name for use in file paths (replace / with --)
-sanitize_branch_name() {
-    echo "$1" | sed 's|/|--|g'
-}
-
 # Save a failed patch for later recovery
 # Arguments:
 #   $1 - source_dir: The source directory (where user will see the patch)
@@ -172,6 +167,11 @@ stop_pipe_listener() {
 #   $1 - source_dir: The original source directory
 manual_git_merge() {
     local source_dir="$1"
+
+    # Need to set branch for get_cage_path
+    CLAUDE_CAGE_BRANCH=$(get_source_branch "$source_dir")
+    export CLAUDE_CAGE_BRANCH
+
     local intermediary_dir
     intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
 

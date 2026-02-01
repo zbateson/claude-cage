@@ -52,19 +52,26 @@ run_in_bwrap() {
     bwrap_args+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
     bwrap_args+=(--ro-bind /etc/hosts /etc/hosts)
     bwrap_args+=(--ro-bind /etc/nsswitch.conf /etc/nsswitch.conf)
-    bwrap_args+=(--ro-bind /etc/ssl /etc/ssl)
-    bwrap_args+=(--ro-bind-try /etc/ca-certificates /etc/ca-certificates)
     bwrap_args+=(--ro-bind-try /etc/localtime /etc/localtime)
     bwrap_args+=(--ro-bind-try /etc/timezone /etc/timezone)
-    bwrap_args+=(--ro-bind-try /etc/alternatives /etc/alternatives)
+    bwrap_args+=(--ro-bind-try /etc/environment /etc/environment)
+    bwrap_args+=(--ro-bind-try /etc/ld.so.cache /etc/ld.so.cache)
 
-    # Shell config (read-only)
+    # SSL/TLS certificates (distro-specific locations, public certs only)
+    bwrap_args+=(--ro-bind-try /etc/ssl/certs /etc/ssl/certs)            # Debian/Ubuntu/Arch
+    bwrap_args+=(--ro-bind-try /etc/ca-certificates /etc/ca-certificates) # Debian/Ubuntu
+    bwrap_args+=(--ro-bind-try /etc/pki/ca-trust /etc/pki/ca-trust)      # Fedora/RHEL CA trust
+    bwrap_args+=(--ro-bind-try /etc/pki/tls/certs /etc/pki/tls/certs)    # Fedora/RHEL public certs
+
+    # Shell config (read-only, distro-specific)
     bwrap_args+=(--ro-bind-try /etc/inputrc /etc/inputrc)
-    bwrap_args+=(--ro-bind-try /etc/bash.bashrc /etc/bash.bashrc)
+    bwrap_args+=(--ro-bind-try /etc/bash.bashrc /etc/bash.bashrc)        # Debian/Ubuntu/Arch
+    bwrap_args+=(--ro-bind-try /etc/bashrc /etc/bashrc)                  # Fedora/RHEL/CentOS
     bwrap_args+=(--ro-bind-try /etc/profile /etc/profile)
     bwrap_args+=(--ro-bind-try /etc/profile.d /etc/profile.d)
     bwrap_args+=(--ro-bind-try /etc/bash_completion /etc/bash_completion)
     bwrap_args+=(--ro-bind-try /etc/bash_completion.d /etc/bash_completion.d)
+    bwrap_args+=(--ro-bind-try /etc/alternatives /etc/alternatives)      # Debian/Ubuntu
 
     # Mount .caged at the project path (read-write)
     # This makes intermediary/ and work/ visible at $mount_as/
@@ -113,10 +120,11 @@ run_in_bwrap() {
     bwrap_args+=(--chdir "$mount_as/work")
 
     # Add command or interactive shell
+    # Unset command_not_found_handle to silence distro package suggestion noise
     if [ $# -eq 0 ]; then
-        bwrap_args+=(/bin/bash -l)
+        bwrap_args+=(/bin/bash -l -c 'unset -f command_not_found_handle 2>/dev/null; exec bash')
     else
-        bwrap_args+=(/bin/bash -l -c "$*")
+        bwrap_args+=(/bin/bash -l -c "unset -f command_not_found_handle 2>/dev/null; $*")
     fi
 
     # Run bwrap

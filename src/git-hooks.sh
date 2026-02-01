@@ -81,9 +81,11 @@ cleanup_source_hooks() {
 # Arguments:
 #   $1 - source_dir: The source project directory
 #   $2 - exclude_patterns: Pipe-delimited exclude patterns
+#   $3 - target_branch: The branch that was active when cage started
 setup_source_pre_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
+    local target_branch="$3"
     local hook_path="$source_dir/.git/hooks/pre-commit"
     local work_dir
     work_dir=$(get_cage_path "$source_dir" "work")
@@ -97,9 +99,16 @@ setup_source_pre_commit() {
 #!/bin/bash
 # claude-cage: prevent mixing excluded and included files in same commit
 WORK_DIR="$work_dir"
+TARGET_BRANCH="$target_branch"
 
 if [ ! -d "\$WORK_DIR" ]; then
     exit 0  # cage not set up yet
+fi
+
+# Only enforce on the branch that was active when cage started
+current_branch=\$(git branch --show-current)
+if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
+    exit 0  # different branch, no restrictions
 fi
 
 # Exclude patterns (set at hook creation time)
@@ -162,10 +171,12 @@ EOF
 #   $1 - source_dir: The source project directory
 #   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
 #   $3 - intermediary_dir: The intermediary directory
+#   $4 - target_branch: The branch that was active when cage started
 setup_source_post_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
     local intermediary_dir="$3"
+    local target_branch="$4"
     local hook_path="$source_dir/.git/hooks/post-commit"
 
     # Convert exclude patterns to pathspec format
@@ -186,9 +197,16 @@ setup_source_post_commit() {
 #!/bin/bash
 # claude-cage: sync commits to intermediary's claude branch (excluding sensitive files)
 INTERMEDIARY="$intermediary_dir"
+TARGET_BRANCH="$target_branch"
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet
+fi
+
+# Only sync commits from the branch that was active when cage started
+current_branch=\$(git branch --show-current)
+if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
+    exit 0  # different branch, no sync needed
 fi
 
 # Apply commit to intermediary's claude branch, excluding sensitive files

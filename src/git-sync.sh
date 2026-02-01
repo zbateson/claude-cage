@@ -9,17 +9,19 @@ sanitize_branch_name() {
 
 # Save a failed patch for later recovery
 # Arguments:
-#   $1 - patch content
-#   $2 - branch name
-#   $3 - commit subject (for filename)
+#   $1 - source_dir: The source directory (where user will see the patch)
+#   $2 - patch content
+#   $3 - branch name
+#   $4 - commit subject (for filename)
 save_failed_patch() {
-    local patch="$1"
-    local branch="$2"
-    local subject="$3"
+    local source_dir="${1%/}"  # Strip trailing slash if present
+    local patch="$2"
+    local branch="$3"
+    local subject="$4"
 
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$branch")
-    local failed_dir="$CLAUDE_CAGE_CACHE/failed-patches/$sanitized_branch"
+    local failed_dir="$source_dir/claude-cage-failed-patches/$sanitized_branch"
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local safe_subject
@@ -29,6 +31,7 @@ save_failed_patch() {
     local patch_file="$failed_dir/${timestamp}_${safe_subject}.patch"
     echo "$patch" > "$patch_file"
     echo "  Saved patch to: $patch_file"
+    echo "  (Shows up in git status - apply with: git apply $patch_file)"
 }
 
 # Apply changes from intermediary to source using format-patch/git-am
@@ -68,7 +71,7 @@ sync_to_source() {
         else
             echo "  Well now, that didn't go smooth. Might need to merge this one yourself."
             git -C "$source_dir" am --abort 2>/dev/null || true
-            save_failed_patch "$patch" "$target_branch" "$commit_msg"
+            save_failed_patch "$source_dir" "$patch" "$target_branch" "$commit_msg"
         fi
     else
         # User switched branches - apply to target branch via temp index
@@ -113,7 +116,7 @@ sync_to_source() {
                 echo "  Got it. Changes are on $target_branch."
             else
                 echo "  Patch didn't apply clean to $target_branch."
-                save_failed_patch "$patch" "$target_branch" "$commit_msg"
+                save_failed_patch "$source_dir" "$patch" "$target_branch" "$commit_msg"
             fi
         )
 

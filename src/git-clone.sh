@@ -56,6 +56,9 @@ create_intermediary_clone() {
     if [ "$dry_run" = true ]; then
         echo "[dry-run] git -C $source_dir archive HEAD | tar -x ${tar_excludes[*]} -C $intermediary_dir"
     else
+        if [ "$verbose" = true ]; then
+            echo -e "${_yellow}[run] git -C $source_dir archive HEAD | tar -x ${tar_excludes[*]} -C $intermediary_dir${_reset}" >&2
+        fi
         git -C "$source_dir" archive HEAD | tar -x "${tar_excludes[@]}" -C "$intermediary_dir"
     fi
 
@@ -66,6 +69,9 @@ create_intermediary_clone() {
     if [ "$dry_run" = true ]; then
         echo "[dry-run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'"
     else
+        if [ "$verbose" = true ]; then
+            echo -e "${_yellow}[run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'${_reset}" >&2
+        fi
         git -C "$intermediary_dir" commit -m "Initial commit from claude-cage" >/dev/null
     fi
 

@@ -78,7 +78,7 @@ fi
 echo "  PASS: pre-commit hook created"
 
 echo "Test 6: pre-commit hook should check for mixed commits"
-if ! grep -q "Mixed commit" "$pre_commit"; then
+if ! grep -q "mixin' secret files" "$pre_commit"; then
     echo "FAIL: pre-commit hook doesn't check for mixed commits"
     cat "$pre_commit"
     exit 1

@@ -14,7 +14,7 @@
 # Check if slirp4netns is available
 check_slirp4netns() {
     if ! command -v slirp4netns >/dev/null 2>&1; then
-        echo "Hold on now. I need slirp4netns installed for network filtering."
+        echo "We got a problem. I need slirp4netns for network filtering."
         echo "Install it: sudo apt install slirp4netns"
         exit 1
     fi
@@ -34,7 +34,7 @@ check_userns() {
     local exit_code=$?
 
     if [ $exit_code -ne 0 ]; then
-        echo "Hold on now. Unprivileged user namespaces are not available."
+        echo "Well this ain't gonna work. Unprivileged user namespaces are not available."
         echo ""
         echo "Error: $error_output"
         echo ""
@@ -87,7 +87,7 @@ check_iptables() {
     fi
 
     if ! command -v iptables >/dev/null 2>&1; then
-        echo "Hold on now. I need iptables installed for network filtering."
+        echo "Gonna need iptables for the network stuff."
         echo "Install it: sudo apt install iptables"
         exit 1
     fi

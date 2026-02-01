@@ -5,7 +5,7 @@
 # Check if docker is available
 check_docker() {
     if ! command -v docker >/dev/null 2>&1; then
-        echo "Hold on now. I need docker installed for this mode."
+        echo "Gonna need docker for this one, and I ain't seein' it."
         echo "Install it: https://docs.docker.com/get-docker/"
         exit 1
     fi

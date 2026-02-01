@@ -367,7 +367,7 @@ init_config() {
     # Determine config file location
     if [ -n "$explicit_config" ]; then
         if [ ! -f "$explicit_config" ]; then
-            echo "Hold on now. That config file '$explicit_config' ain't there."
+            echo "Sorry friend, that config file '$explicit_config' ain't there."
             exit 1
         fi
         local_config="$explicit_config"
@@ -376,7 +376,7 @@ init_config() {
         current_dir=$(pwd)
         config_root=$(find_config "$current_dir")
         if [ -z "$config_root" ]; then
-            echo "Hold on now. I'm lookin' for a file called 'claude-cage.config' and it ain't here."
+            echo "Can't find a 'claude-cage.config' anywhere around here."
             echo "Searched from $current_dir all the way up to /."
             exit 1
         fi

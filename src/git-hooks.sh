@@ -129,7 +129,7 @@ while IFS= read -r file; do
 done <<< "\$STAGED"
 
 if [ -n "\$EXCLUDED" ] && [ -n "\$INCLUDED" ]; then
-    echo "ERROR: Mixed commit - excluded and included files together."
+    echo "Whoa there. You're mixin' secret files with regular ones."
     echo ""
     echo "Excluded files:"
     echo -e "\$EXCLUDED" | sed '/^\$/d' | sed 's/^/  /'
@@ -137,7 +137,7 @@ if [ -n "\$EXCLUDED" ] && [ -n "\$INCLUDED" ]; then
     echo "Included files:"
     echo -e "\$INCLUDED" | sed '/^\$/d' | sed 's/^/  /'
     echo ""
-    echo "Please commit them separately."
+    echo "Gotta keep 'em separate, friend."
     exit 1
 fi
 

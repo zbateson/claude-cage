@@ -45,8 +45,8 @@ echo "Test 1: Dry-run should show intermediary creation"
 cd "$TEST_TMP/source"
 output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1) || true
 
-if ! echo "$output" | grep -q "Creating intermediary"; then
-    echo "FAIL: Did not find 'Creating intermediary' message"
+if ! echo "$output" | grep -q "Buildin' your intermediary"; then
+    echo "FAIL: Did not find 'Buildin' your intermediary' message"
     echo "Output was:"
     echo "$output"
     exit 1
@@ -54,8 +54,8 @@ fi
 echo "  PASS: Found intermediary creation message"
 
 echo "Test 2: Dry-run should show claude branch creation"
-if ! echo "$output" | grep -q "Creating branch: claude"; then
-    echo "FAIL: Did not find claude branch creation"
+if ! echo "$output" | grep -q "Settin' up the claude branch"; then
+    echo "FAIL: Did not find claude branch setup message"
     echo "Output was:"
     echo "$output"
     exit 1

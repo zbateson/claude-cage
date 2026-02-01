@@ -15,17 +15,17 @@ sync_to_source() {
     local commit_msg
     commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$refname")
     if [ "$commit_msg" = "Initial commit from claude-cage" ]; then
-        echo "Skipping initial commit sync"
+        echo "First commit, nothin' to sync yet"
         return 0
     fi
 
-    echo "Syncing from intermediary to source: $refname"
+    echo "Bringin' changes home: $refname"
 
     # Apply the latest commit from intermediary using format-patch/git-am
     if git -C "$intermediary_dir" format-patch -1 "$refname" --stdout | git -C "$source_dir" am --3way; then
-        echo "  Applied commit to source"
+        echo "  Got it. Changes are in."
     else
-        echo "  Warning: Failed to apply commit (may need manual merge)"
+        echo "  Well now, that didn't go smooth. Might need to merge this one yourself."
         git -C "$source_dir" am --abort 2>/dev/null || true
     fi
 }
@@ -72,8 +72,8 @@ manual_git_merge() {
     local intermediary_dir="$source_dir/.caged/intermediary"
 
     if [ ! -d "$intermediary_dir" ]; then
-        echo "No intermediary directory found at $intermediary_dir"
-        echo "Run claude-cage first to create the cage."
+        echo "Ain't no cage here at $intermediary_dir"
+        echo "You gotta run claude-cage first, friend."
         exit 1
     fi
 
@@ -82,14 +82,14 @@ manual_git_merge() {
         run git -C "$source_dir" remote add intermediary "$intermediary_dir"
     fi
 
-    echo "Fetching all refs from intermediary..."
+    echo "Grabbin' what Claude's been workin' on..."
     run git -C "$source_dir" fetch intermediary
 
     echo ""
-    echo "Available refs from intermediary:"
+    echo "Here's what's waitin' for ya:"
     git -C "$source_dir" branch -r 2>/dev/null | grep -E "^\\s*intermediary/" | sed 's/^/  /' || echo "  (none yet)"
 
     echo ""
-    echo "To merge a specific ref, run:"
+    echo "When you're ready, just run:"
     echo "  git merge intermediary/<branch>"
 }

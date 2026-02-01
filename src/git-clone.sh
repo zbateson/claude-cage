@@ -22,11 +22,11 @@ create_intermediary_clone() {
     echo "Source branch: $source_branch"
 
     echo ""
-    echo "Creating intermediary..."
+    echo "Buildin' your intermediary now..."
 
     # Clean up existing .caged directory if it exists
     if [ -d "$caged_dir" ]; then
-        echo "  Removing existing .caged directory..."
+        echo "  Cleanin' out the old cage..."
         run rm -rf "$caged_dir"
     fi
 
@@ -45,7 +45,7 @@ create_intermediary_clone() {
     fi
 
     # Extract files using git ls-files + tar (ignores .gitattributes export-ignore)
-    echo "  Extracting files with git ls-files..."
+    echo "  Pullin' out the good stuff..."
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
@@ -63,7 +63,7 @@ create_intermediary_clone() {
     fi
 
     # Initialize fresh git repo (no history of excluded files)
-    echo "  Initializing fresh git repo..."
+    echo "  Startin' fresh, clean slate..."
     run git -C "$intermediary_dir" init
     run git -C "$intermediary_dir" add .
     if [ "$dry_run" = true ]; then
@@ -76,10 +76,10 @@ create_intermediary_clone() {
     fi
 
     echo ""
-    echo "Intermediary created at: $intermediary_dir"
+    echo "Intermediary's ready at: $intermediary_dir"
 
     # Create claude branch in intermediary (this is where source commits land)
-    echo "  Creating branch: claude"
+    echo "  Settin' up the claude branch..."
     run git -C "$intermediary_dir" checkout -b "claude"
 
     # Allow pushing to checked-out branch (updates working tree automatically)
@@ -87,7 +87,7 @@ create_intermediary_clone() {
 
     # Create work directory by cloning from intermediary
     echo ""
-    echo "Creating work directory..."
+    echo "Settin' up your workspace..."
     run git clone "$intermediary_dir" "$work_dir"
 
     # Update origin to use the path as it appears inside the cage
@@ -98,18 +98,18 @@ create_intermediary_clone() {
     run git -C "$work_dir" config push.autoSetupRemote true
 
     echo ""
-    echo "Work directory created at: $work_dir"
+    echo "Workspace is good to go: $work_dir"
     echo "  Branch: claude"
 
     # Show what files are in work (skip in dry-run)
     if [ "$dry_run" != true ]; then
         echo ""
-        echo "Files in work directory:"
+        echo "Here's what we're workin' with:"
         local file_count
         file_count=$(cd "$work_dir" && find . -type f -not -path './.git/*' | wc -l)
         (cd "$work_dir" && find . -type f -not -path './.git/*' | head -20)
         if [ "$file_count" -gt 20 ]; then
-            echo "  ... and $((file_count - 20)) more files"
+            echo "  ... plus $((file_count - 20)) more where that came from"
         fi
     fi
 }

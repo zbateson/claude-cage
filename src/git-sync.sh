@@ -2,18 +2,24 @@
 # Git sync operations (fetch/merge from intermediary)
 # ============================================================================
 
-# Fetch and merge changes from intermediary to source
+# Apply changes from intermediary to source using format-patch/git-am
 # Arguments:
 #   $1 - source_dir: The original source directory
 #   $2 - refname: The git ref that was pushed (e.g., refs/heads/claude/main)
-git_fetch_merge() {
+sync_to_source() {
     local source_dir="$1"
     local refname="$2"
     local intermediary_dir="$source_dir/.caged/intermediary"
 
-    echo "Fetching from intermediary: $refname"
-    run git -C "$source_dir" fetch "$intermediary_dir" "$refname"
-    run git -C "$source_dir" merge FETCH_HEAD --no-edit
+    echo "Syncing from intermediary to source: $refname"
+
+    # Apply the latest commit from intermediary using format-patch/git-am
+    if git -C "$intermediary_dir" format-patch -1 HEAD --stdout | git -C "$source_dir" am --3way 2>/dev/null; then
+        echo "  Applied commit to source"
+    else
+        echo "  Warning: Failed to apply commit (may need manual merge)"
+        git -C "$source_dir" am --abort 2>/dev/null || true
+    fi
 }
 
 # Start the pipe listener in background
@@ -32,7 +38,7 @@ start_pipe_listener() {
         exec 3<>"$pipe_path"
         while read -r refname newrev <&3; do
             if [ -n "$refname" ]; then
-                git_fetch_merge "$source_dir" "$refname"
+                sync_to_source "$source_dir" "$refname"
             fi
         done
     ) &

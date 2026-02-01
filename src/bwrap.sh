@@ -120,9 +120,15 @@ run_in_bwrap() {
     bwrap_args+=(--chdir "$mount_as/work")
 
     # Add command or interactive shell
-    # Unset command_not_found_handle to silence distro package suggestion noise
+    # Create custom rcfile that silences command_not_found_handle after sourcing configs
     if [ $# -eq 0 ]; then
-        bwrap_args+=(/bin/bash -l -c 'unset -f command_not_found_handle 2>/dev/null; exec bash')
+        bwrap_args+=(/bin/bash -c '
+cat > /tmp/.cage-bashrc << "EOF"
+[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+[ -f ~/.bashrc ] && . ~/.bashrc
+unset -f command_not_found_handle 2>/dev/null
+EOF
+exec bash --rcfile /tmp/.cage-bashrc')
     else
         bwrap_args+=(/bin/bash -l -c "unset -f command_not_found_handle 2>/dev/null; $*")
     fi

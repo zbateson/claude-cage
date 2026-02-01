@@ -222,13 +222,14 @@ PATCH=\$(git format-patch HEAD~1..HEAD --stdout --$pathspec_excludes)
 # Check if patch has any actual changes (not just empty)
 if echo "\$PATCH" | grep -q "^diff --git"; then
     # Ensure we're on claude branch and apply
+    echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
     if (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way); then
         : # success
     else
-        echo "claude-cage: Patch didn't apply cleanly to intermediary. You may need to sync manually."
+        echo -e "\033[1;31mclaude-cage:\033[0m Patch didn't apply cleanly. You may need to sync manually."
     fi
 else
-    echo "claude-cage: Only excluded files in this commit, nothin' to sync."
+    echo -e "\033[1;31mclaude-cage:\033[0m Only excluded files in this commit, nothin' to sync."
 fi
 
 # Update state file with current commit (even if only excluded files)

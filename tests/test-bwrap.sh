@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
 
+# Use test-specific cache and runtime dirs to avoid polluting user's dirs
+export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
+export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+
 cleanup() {
     rm -rf "$TEST_TMP"
 }
@@ -62,14 +66,14 @@ if ! echo "$output" | grep -q "\-\-ro-bind.*/usr"; then
 fi
 echo "  PASS: Binds /usr read-only"
 
-echo "Test 3: Should include --bind for .caged directory"
-if ! echo "$output" | grep -q "\-\-bind.*\.caged"; then
-    echo "FAIL: Should bind .caged directory"
+echo "Test 3: Should include --bind for work and intermediary directories"
+if ! echo "$output" | grep -q "\-\-bind.*/run/claude-cage/intermediary"; then
+    echo "FAIL: Should bind intermediary directory"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Binds .caged directory"
+echo "  PASS: Binds intermediary directory"
 
 echo "Test 4: Should set HOME environment variable"
 if ! echo "$output" | grep -q "\-\-setenv HOME"; then
@@ -160,8 +164,8 @@ echo "=== Testing actual bwrap execution (--test mode) ==="
 # available in all environments (containers, restricted kernels).
 # These tests are run only if bwrap can actually create namespaces.
 
-# Reset config
-rm -rf "$TEST_TMP/source/.caged"
+# Reset config - clean up cache dirs
+rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 cat > "$TEST_TMP/claude-cage.config" << 'EOF'
 claude_cage {
     mode = "bwrap",
@@ -190,7 +194,7 @@ fi
 echo "  PASS: --test runs inside cage"
 
 echo "Test 12: Should be able to see files in work directory"
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "ls -la; exit" 2>&1) || true
 
 if ! echo "$test_output" | grep -q "file.txt"; then
@@ -202,7 +206,7 @@ fi
 echo "  PASS: Can see files in work directory"
 
 echo "Test 13: Should be able to run git commands inside cage"
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "git status; exit" 2>&1) || true
 
 if ! echo "$test_output" | grep -q "On branch claude"; then

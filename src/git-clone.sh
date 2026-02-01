@@ -2,6 +2,24 @@
 # Git archive + fresh init (no history of excluded files)
 # ============================================================================
 
+# Base directories for cage data
+CLAUDE_CAGE_CACHE="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+CLAUDE_CAGE_RUNTIME="${CLAUDE_CAGE_RUNTIME:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-cage}"
+
+# Get the cache path for a source directory
+# Arguments: $1 = source directory, $2 = type (work|intermediary)
+get_cage_path() {
+    local source_dir="$1"
+    local type="$2"
+    echo "$CLAUDE_CAGE_CACHE/$type$source_dir"
+}
+
+# Get the pipe path for a source directory
+get_pipe_path() {
+    local source_dir="$1"
+    echo "$CLAUDE_CAGE_RUNTIME/pipes$source_dir"
+}
+
 # Get current branch from source project
 get_source_branch() {
     local source_dir="$1"
@@ -12,9 +30,10 @@ get_source_branch() {
 # Arguments: $1 = source directory (defaults to pwd)
 create_intermediary_clone() {
     local source_dir="${1:-$(pwd)}"
-    local caged_dir="$source_dir/.caged"
-    local intermediary_dir="$caged_dir/intermediary"
-    local work_dir="$caged_dir/work"
+    local intermediary_dir
+    local work_dir
+    intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
+    work_dir=$(get_cage_path "$source_dir" "work")
 
     # Capture source branch before we start
     local source_branch
@@ -24,10 +43,14 @@ create_intermediary_clone() {
     echo ""
     echo "Buildin' your intermediary now..."
 
-    # Clean up existing .caged directory if it exists
-    if [ -d "$caged_dir" ]; then
-        echo "  Cleanin' out the old cage..."
-        run rm -rf "$caged_dir"
+    # Clean up existing directories if they exist
+    if [ -d "$intermediary_dir" ]; then
+        echo "  Cleanin' out the old intermediary..."
+        run rm -rf "$intermediary_dir"
+    fi
+    if [ -d "$work_dir" ]; then
+        echo "  Cleanin' out the old workspace..."
+        run rm -rf "$work_dir"
     fi
 
     run mkdir -p "$intermediary_dir"

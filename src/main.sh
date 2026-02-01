@@ -80,14 +80,16 @@ echo ""
 create_intermediary_clone "$cfg_source"
 
 # Paths for bwrap/docker
-caged_dir="$cfg_source/.caged"
+intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
+work_dir=$(get_cage_path "$cfg_source" "work")
+pipe_path=$(get_pipe_path "$cfg_source")
 project_path="$cfg_source"
 
 # Set up git hooks and communication pipe (if autoMerge enabled)
 if [ "$cfg_autoMerge" = "true" ]; then
-    setup_git_hooks "$caged_dir" "$project_path"
+    setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
     setup_source_pre_commit "$cfg_source" "$cfg_exclude"
-    setup_source_post_commit "$cfg_source" "$cfg_exclude"
+    setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
 fi
 
 echo ""
@@ -104,27 +106,27 @@ if [ "$test_mode" = true ]; then
     PIPE_LISTENER_PID=""
     if [ "$cfg_autoMerge" = "true" ]; then
         echo "Auto-merge enabled: pushes to intermediary will sync to source"
-        start_pipe_listener "$cfg_source" "$caged_dir"
+        start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path"
     fi
 
     if [ "$cfg_mode" = "docker" ]; then
         echo "Droppin' you into the Docker container for testing..."
-        run_in_docker "$caged_dir" "$project_path"
+        run_in_docker "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
     else
         echo "Droppin' you into the bwrap sandbox for testing..."
         # Use network-isolated bwrap if network filtering is enabled
         if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
             echo "Network filtering enabled (mode: $cfg_networkMode)"
-            run_in_bwrap_with_network "$caged_dir" "$project_path"
+            run_in_bwrap_with_network "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
         else
-            run_in_bwrap "$caged_dir" "$project_path"
+            run_in_bwrap "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
         fi
     fi
 
     # Stop pipe listener and clean up hooks
     if [ -n "$PIPE_LISTENER_PID" ]; then
         stop_pipe_listener "$PIPE_LISTENER_PID"
-        cleanup_pipe "$caged_dir"
+        cleanup_pipe "$pipe_path"
     fi
     if [ "$cfg_autoMerge" = "true" ]; then
         cleanup_source_hooks "$cfg_source"

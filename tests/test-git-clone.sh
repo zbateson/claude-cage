@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
 
+# Use test-specific cache and runtime dirs to avoid polluting user's dirs
+export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
+export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+
 cleanup() {
     rm -rf "$TEST_TMP"
 }
@@ -83,24 +87,29 @@ echo "  PASS: Found receive.denyCurrentBranch config"
 echo ""
 echo "=== Testing actual intermediary creation ==="
 
+# Compute expected paths using the new structure
+SOURCE_PATH="$TEST_TMP/source"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
+WORK_DIR="$CLAUDE_CAGE_CACHE/work$SOURCE_PATH"
+
 # Run without dry-run to actually create the intermediary
 echo "Test 5: Create intermediary and work directories"
 actual_output=$("$CAGE_DIR/dist/claude-cage" 2>&1) || true
 
-if [ ! -d "$TEST_TMP/source/.caged/intermediary" ]; then
-    echo "FAIL: Intermediary directory not created"
+if [ ! -d "$INTERMEDIARY_DIR" ]; then
+    echo "FAIL: Intermediary directory not created at $INTERMEDIARY_DIR"
     exit 1
 fi
 echo "  PASS: Intermediary directory created"
 
-if [ ! -d "$TEST_TMP/source/.caged/work" ]; then
-    echo "FAIL: Work directory not created"
+if [ ! -d "$WORK_DIR" ]; then
+    echo "FAIL: Work directory not created at $WORK_DIR"
     exit 1
 fi
 echo "  PASS: Work directory created"
 
 echo "Test 6: Intermediary should be on claude branch"
-branch=$(git -C "$TEST_TMP/source/.caged/intermediary" branch --show-current)
+branch=$(git -C "$INTERMEDIARY_DIR" branch --show-current)
 if [ "$branch" != "claude" ]; then
     echo "FAIL: Intermediary branch is '$branch', expected 'claude'"
     exit 1
@@ -108,7 +117,7 @@ fi
 echo "  PASS: Intermediary is on claude branch"
 
 echo "Test 7: Work should be on claude branch"
-branch=$(git -C "$TEST_TMP/source/.caged/work" branch --show-current)
+branch=$(git -C "$WORK_DIR" branch --show-current)
 if [ "$branch" != "claude" ]; then
     echo "FAIL: Work branch is '$branch', expected 'claude'"
     exit 1
@@ -116,7 +125,7 @@ fi
 echo "  PASS: Work is on claude branch"
 
 echo "Test 8: Intermediary should have receive.denyCurrentBranch=updateInstead"
-config_val=$(git -C "$TEST_TMP/source/.caged/intermediary" config receive.denyCurrentBranch)
+config_val=$(git -C "$INTERMEDIARY_DIR" config receive.denyCurrentBranch)
 if [ "$config_val" != "updateInstead" ]; then
     echo "FAIL: receive.denyCurrentBranch is '$config_val', expected 'updateInstead'"
     exit 1
@@ -124,46 +133,46 @@ fi
 echo "  PASS: receive.denyCurrentBranch is set correctly"
 
 echo "Test 9: Excluded files should NOT be in intermediary"
-if [ -f "$TEST_TMP/source/.caged/intermediary/.env" ]; then
+if [ -f "$INTERMEDIARY_DIR/.env" ]; then
     echo "FAIL: .env should be excluded from intermediary"
     exit 1
 fi
 echo "  PASS: .env is excluded"
 
-if [ -f "$TEST_TMP/source/.caged/intermediary/config/prod.yml" ]; then
+if [ -f "$INTERMEDIARY_DIR/config/prod.yml" ]; then
     echo "FAIL: config/prod.yml should be excluded from intermediary"
     exit 1
 fi
 echo "  PASS: config/prod.yml is excluded"
 
 echo "Test 10: Included files SHOULD be in intermediary"
-if [ ! -f "$TEST_TMP/source/.caged/intermediary/public.txt" ]; then
+if [ ! -f "$INTERMEDIARY_DIR/public.txt" ]; then
     echo "FAIL: public.txt should be in intermediary"
     exit 1
 fi
 echo "  PASS: public.txt is included"
 
-if [ ! -f "$TEST_TMP/source/.caged/intermediary/config/dev.yml" ]; then
+if [ ! -f "$INTERMEDIARY_DIR/config/dev.yml" ]; then
     echo "FAIL: config/dev.yml should be in intermediary"
     exit 1
 fi
 echo "  PASS: config/dev.yml is included"
 
 echo "Test 11: Work directory should match intermediary"
-if [ ! -f "$TEST_TMP/source/.caged/work/public.txt" ]; then
+if [ ! -f "$WORK_DIR/public.txt" ]; then
     echo "FAIL: public.txt should be in work"
     exit 1
 fi
 echo "  PASS: Work directory has included files"
 
-if [ -f "$TEST_TMP/source/.caged/work/.env" ]; then
+if [ -f "$WORK_DIR/.env" ]; then
     echo "FAIL: .env should NOT be in work"
     exit 1
 fi
 echo "  PASS: Work directory excludes sensitive files"
 
 echo "Test 12: Work origin should point to cage intermediary path"
-origin=$(git -C "$TEST_TMP/source/.caged/work" remote get-url origin)
+origin=$(git -C "$WORK_DIR" remote get-url origin)
 if [ "$origin" != "/run/claude-cage/intermediary" ]; then
     echo "FAIL: Work origin is '$origin', expected '/run/claude-cage/intermediary'"
     exit 1
@@ -172,7 +181,7 @@ echo "  PASS: Work origin points to /run/claude-cage/intermediary"
 
 echo "Test 13: Intermediary should have clean git history (no excluded file history)"
 # Check that .env was never in the git history
-history_check=$(git -C "$TEST_TMP/source/.caged/intermediary" log --all --oneline -- .env 2>&1 || true)
+history_check=$(git -C "$INTERMEDIARY_DIR" log --all --oneline -- .env 2>&1 || true)
 if [ -n "$history_check" ]; then
     echo "FAIL: .env appears in intermediary git history"
     echo "History: $history_check"

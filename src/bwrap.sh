@@ -12,20 +12,25 @@ check_bwrap() {
 }
 
 # Run a command inside a bwrap sandbox
-# Usage: run_in_bwrap <caged_dir> <mount_as> [command...]
+# Usage: run_in_bwrap <intermediary_dir> <work_dir> <pipe_path> <mount_as> [command...]
 #
 # Arguments:
-#   caged_dir    - The .caged directory (contains intermediary/ and work/)
-#   mount_as     - Path to mount work/ as (the original project path)
-#   [command...] - Optional command to run (defaults to interactive shell)
+#   intermediary_dir - The intermediary git repo directory
+#   work_dir         - The work directory (Claude's workspace)
+#   pipe_path        - Path to the communication pipe
+#   mount_as         - Path to mount work/ as (the original project path)
+#   [command...]     - Optional command to run (defaults to interactive shell)
 #
 # Inside the sandbox:
 #   /run/claude-cage/intermediary/  - git origin remote
+#   /run/claude-cage/pipe           - communication pipe
 #   $mount_as                       - working directory (the work/ dir)
 run_in_bwrap() {
-    local caged_dir="$1"
-    local mount_as="$2"
-    shift 2
+    local intermediary_dir="$1"
+    local work_dir="$2"
+    local pipe_path="$3"
+    local mount_as="$4"
+    shift 4
 
     # Use real UID/GID if passed from parent (when inside network namespace, we're root)
     local user_uid user_gid username user_home
@@ -104,15 +109,15 @@ run_in_bwrap() {
     bwrap_args+=(--tmpfs /run)
 
     # Mount intermediary at /run/claude-cage/intermediary (git origin for work)
-    bwrap_args+=(--bind "$caged_dir/intermediary" /run/claude-cage/intermediary)
+    bwrap_args+=(--bind "$intermediary_dir" /run/claude-cage/intermediary)
 
     # Mount pipe for git hook communication (if it exists)
-    if [ -p "$caged_dir/.pipe" ]; then
-        bwrap_args+=(--bind "$caged_dir/.pipe" /run/claude-cage/.pipe)
+    if [ -p "$pipe_path" ]; then
+        bwrap_args+=(--bind "$pipe_path" /run/claude-cage/pipe)
     fi
 
     # Mount work dir at the original project path (LAST so it overlays additional mounts)
-    bwrap_args+=(--bind "$caged_dir/work" "$mount_as")
+    bwrap_args+=(--bind "$work_dir" "$mount_as")
 
     # Special filesystems
     bwrap_args+=(--proc /proc)
@@ -157,6 +162,8 @@ cat > /tmp/.cage-bashrc << "EOF"
 [ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
 [ -f ~/.bashrc ] && . ~/.bashrc
 unset -f command_not_found_handle 2>/dev/null
+# Cage prompt - red user@caged with bunny (Con Air style)
+PS1="\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\$ "
 EOF
 exec bash --rcfile /tmp/.cage-bashrc')
     else
@@ -179,7 +186,7 @@ exec bash --rcfile /tmp/.cage-bashrc')
 # Run bwrap with network isolation via slirp4netns
 # This wraps run_in_bwrap in a network namespace with iptables filtering
 #
-# Usage: run_in_bwrap_with_network <caged_dir> <mount_as> [command...]
+# Usage: run_in_bwrap_with_network <intermediary_dir> <work_dir> <pipe_path> <mount_as> [command...]
 #
 # Uses global config variables:
 #   cfg_networkMode      - "disabled", "allowlist", or "blocklist"
@@ -190,19 +197,23 @@ exec bash --rcfile /tmp/.cage-bashrc')
 #   cfg_block_ips        - pipe-separated blocked IPs
 #   cfg_block_networks   - pipe-separated blocked networks
 run_in_bwrap_with_network() {
-    local caged_dir="$1"
-    local mount_as="$2"
-    shift 2
+    local intermediary_dir="$1"
+    local work_dir="$2"
+    local pipe_path="$3"
+    local mount_as="$4"
+    shift 4
 
     # If network mode is disabled, just run bwrap directly
     if [ "$cfg_networkMode" = "disabled" ] || [ -z "$cfg_networkMode" ]; then
-        run_in_bwrap "$caged_dir" "$mount_as" "$@"
+        run_in_bwrap "$intermediary_dir" "$work_dir" "$pipe_path" "$mount_as" "$@"
         return $?
     fi
 
     # Export bwrap-related variables for the inner call
     # run_with_network_namespace sources the main script, so run_in_bwrap will be available
-    export BWRAP_CAGED_DIR="$caged_dir"
+    export BWRAP_INTERMEDIARY_DIR="$intermediary_dir"
+    export BWRAP_WORK_DIR="$work_dir"
+    export BWRAP_PIPE_PATH="$pipe_path"
     export BWRAP_MOUNT_AS="$mount_as"
     export BWRAP_DRY_RUN="$dry_run"
     export BWRAP_VERBOSE="$verbose"
@@ -235,7 +246,7 @@ run_in_bwrap_with_network() {
             verbose="$BWRAP_VERBOSE"
             # Restore cfg_mounts array
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
-            run_in_bwrap "$BWRAP_CAGED_DIR" "$BWRAP_MOUNT_AS"
+            run_in_bwrap "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_MOUNT_AS"
         '
     else
         # Escape command arguments for passing through
@@ -250,7 +261,7 @@ run_in_bwrap_with_network() {
             verbose="$BWRAP_VERBOSE"
             # Restore cfg_mounts array
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
-            run_in_bwrap "$BWRAP_CAGED_DIR" "$BWRAP_MOUNT_AS" '"$escaped_args"'
+            run_in_bwrap "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_MOUNT_AS" '"$escaped_args"'
         '
     fi
 

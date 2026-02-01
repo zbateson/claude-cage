@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
 
+# Use test-specific cache and runtime dirs to avoid polluting user's dirs
+export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
+export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+
 cleanup() {
     rm -rf "$TEST_TMP"
 }
@@ -32,17 +36,22 @@ claude_cage {
 }
 EOF
 
+# Compute expected paths using the new structure
+SOURCE_PATH="$TEST_TMP/source"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
+WORK_DIR="$CLAUDE_CAGE_CACHE/work$SOURCE_PATH"
+
 echo "=== Testing --dry-run mode ==="
 
-echo "Test 1: --dry-run should not create .caged directory"
+echo "Test 1: --dry-run should not create cage directories"
 cd "$TEST_TMP/source"
 "$CAGE_DIR/dist/claude-cage" --dry-run >/dev/null 2>&1
 
-if [ -d "$TEST_TMP/source/.caged" ]; then
-    echo "FAIL: .caged directory should not be created in dry-run mode"
+if [ -d "$INTERMEDIARY_DIR" ]; then
+    echo "FAIL: intermediary directory should not be created in dry-run mode"
     exit 1
 fi
-echo "  PASS: .caged not created in dry-run"
+echo "  PASS: cage directories not created in dry-run"
 
 echo "Test 2: --dry-run should show [dry-run] prefix"
 output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
@@ -79,7 +88,7 @@ fi
 echo "  PASS: Found [run] prefix in verbose mode"
 
 # Clean up for next test
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 
 echo "Test 5: -v should be alias for --verbose"
 v_output=$("$CAGE_DIR/dist/claude-cage" -v 2>&1) || true
@@ -93,7 +102,7 @@ echo "  PASS: -v works as --verbose alias"
 echo ""
 echo "=== Testing --debug mode ==="
 
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 
 echo "Test 6: --debug implies --verbose"
 debug_output=$("$CAGE_DIR/dist/claude-cage" --debug 2>&1) || true
@@ -108,10 +117,10 @@ echo ""
 echo "=== Testing run wrapper behavior ==="
 
 echo "Test 7: Commands should execute successfully without dry-run"
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
 
-if [ ! -d "$TEST_TMP/source/.caged/intermediary" ]; then
+if [ ! -d "$INTERMEDIARY_DIR" ]; then
     echo "FAIL: Intermediary should be created without dry-run"
     exit 1
 fi

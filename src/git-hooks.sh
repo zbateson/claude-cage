@@ -4,16 +4,22 @@
 
 # Set up named pipe and git hooks for cage communication
 # Arguments:
-#   $1 - caged_dir: The .caged directory on host (e.g., /path/to/project/.caged)
-#   $2 - mount_as: The path where work/ is mounted inside sandbox (the project path)
+#   $1 - source_dir: The original source directory
+#   $2 - intermediary_dir: The intermediary directory
+#   $3 - pipe_path: The pipe file path
 setup_git_hooks() {
-    local caged_dir="$1"
-    local mount_as="$2"
-    local pipe_path="$caged_dir/.pipe"
-    local hook_path="$caged_dir/intermediary/.git/hooks/post-receive"
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local pipe_path="$3"
+    local hook_path="$intermediary_dir/.git/hooks/post-receive"
 
     # Path to pipe as seen from inside the sandbox
-    local mounted_pipe_path="/run/claude-cage/.pipe"
+    local mounted_pipe_path="/run/claude-cage/pipe"
+
+    # Create parent directory for pipe if needed
+    local pipe_dir
+    pipe_dir=$(dirname "$pipe_path")
+    run mkdir -p "$pipe_dir"
 
     # Create named pipe for communication
     if [ -p "$pipe_path" ]; then
@@ -42,9 +48,10 @@ EOF
 }
 
 # Clean up the named pipe
+# Arguments:
+#   $1 - pipe_path: The pipe file path
 cleanup_pipe() {
-    local caged_dir="$1"
-    local pipe_path="$caged_dir/.pipe"
+    local pipe_path="$1"
 
     if [ -p "$pipe_path" ]; then
         run rm -f "$pipe_path"
@@ -80,7 +87,8 @@ setup_source_pre_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
     local hook_path="$source_dir/.git/hooks/pre-commit"
-    local caged_dir="$source_dir/.caged"
+    local work_dir
+    work_dir=$(get_cage_path "$source_dir" "work")
 
     # Create pre-commit hook
     # We need to pass exclude patterns into the hook
@@ -90,9 +98,9 @@ setup_source_pre_commit() {
         cat > "$hook_path" << EOF
 #!/bin/bash
 # claude-cage: prevent mixing excluded and included files in same commit
-CAGED_DIR=".caged"
+WORK_DIR="$work_dir"
 
-if [ ! -d "\$CAGED_DIR" ]; then
+if [ ! -d "\$WORK_DIR" ]; then
     exit 0  # cage not set up yet
 fi
 
@@ -155,11 +163,12 @@ EOF
 # Arguments:
 #   $1 - source_dir: The source project directory
 #   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
+#   $3 - intermediary_dir: The intermediary directory
 setup_source_post_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
+    local intermediary_dir="$3"
     local hook_path="$source_dir/.git/hooks/post-commit"
-    local caged_dir="$source_dir/.caged"
 
     # Convert exclude patterns to pathspec format (':!pattern')
     local pathspec_excludes=""
@@ -177,8 +186,7 @@ setup_source_post_commit() {
         cat > "$hook_path" << EOF
 #!/bin/bash
 # claude-cage: sync commits to intermediary's claude branch (excluding sensitive files)
-CAGED_DIR="$caged_dir"
-INTERMEDIARY="\$CAGED_DIR/intermediary"
+INTERMEDIARY="$intermediary_dir"
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet

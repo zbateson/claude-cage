@@ -15,7 +15,7 @@ Documentation for `claude-cage` - a lightweight sandboxed git workflow for Claud
 ## Architecture
 
 ```
-Source Project                    .caged/intermediary              .caged/work
+Source Project                    ~/.cache/.../intermediary        ~/.cache/.../work
 (your actual repo)                (sanitized, fresh git)           (Claude's workspace)
        │                                   │                              │
        │  git ls-files + tar               │     git clone                │
@@ -32,8 +32,8 @@ Source Project                    .caged/intermediary              .caged/work
 ### Three-Repository Model
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`.caged/intermediary/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
-3. **Work** (`.caged/work/`) - Clone of intermediary on `claude` branch where Claude works
+2. **Intermediary** (`~/.cache/claude-cage/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
+3. **Work** (`~/.cache/claude-cage/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
 
 Both intermediary and work use a single `claude` branch. Intermediary has `receive.denyCurrentBranch=updateInstead` to allow pushing to the checked-out branch.
 
@@ -44,6 +44,7 @@ The intermediary repo serves as a buffer:
 - Post-receive hook triggers sync to source
 - Prevents accidental direct access to source history
 - Clean slate - no git history containing excluded files
+- Located in `~/.cache/` - no `.gitignore` entry needed in your project
 
 ## Source Files
 
@@ -63,16 +64,21 @@ The intermediary repo serves as a buffer:
 
 `dist/claude-cage` is the concatenated script (all src files in order).
 
+```bash
+make        # Build dist/claude-cage
+make clean  # Remove built file
+```
+
 ## Sync Mechanism
 
 ### Outbound (Claude -> Source)
 
 When `autoMerge = true`:
 
-1. Claude makes commits in `.caged/work/`
+1. Claude makes commits in the work directory
 2. Claude runs `git push origin`
 3. Intermediary's `post-receive` hook fires
-4. Hook writes `<refname> <newrev>` to named pipe (`.caged/.pipe`)
+4. Hook writes `<refname> <newrev>` to named pipe (`$XDG_RUNTIME_DIR/claude-cage/pipes/<project-path>`)
 5. Pipe listener on host reads the message
 6. `sync_to_source()` runs:
    - Skips initial commit (just a copy)
@@ -162,7 +168,7 @@ claude_cage {
 - [x] Work directory clone with `claude` branch
 - [x] `run_in_bwrap()` - full bwrap sandbox
 - [x] `run_in_docker()` - Docker container sandbox
-- [x] Named pipe communication (`.caged/.pipe`)
+- [x] Named pipe communication (`$XDG_RUNTIME_DIR/claude-cage/pipes/`)
 - [x] `post-receive` hook on intermediary
 - [x] `sync_to_source()` using format-patch/git-am
 - [x] Pipe listener background process
@@ -173,11 +179,12 @@ claude_cage {
 - [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
 - [x] Comprehensive test suite (111 tests across 9 files)
+- [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 
 ### Known Issues / TODO
 
 - [ ] **No Claude Code launch yet** - only `--test` mode works (drops into shell)
-- [ ] Build script missing - currently just concatenating files manually
+- [x] Build script (`make`) - concatenates src/ to dist/
 - [ ] Header/shebang handling in dist needs verification
 - [ ] Testing on actual Claude Code workflow
 - [ ] Conflict resolution when git-am fails
@@ -240,17 +247,24 @@ Destinations can include optional ports:
 ## File Locations
 
 ```
+~/.cache/claude-cage/
+├── intermediary/<project-path>/    # Sanitized repo (git origin for work)
+│   └── .git/hooks/post-receive     # Triggers sync
+└── work/<project-path>/            # Claude's working directory
+
+$XDG_RUNTIME_DIR/claude-cage/       # Runtime files (typically /run/user/$UID/)
+└── pipes/<project-path>            # Named pipe for communication
+
 project/
-├── claude-cage.config      # Config file (required)
-├── .caged/                 # Created by claude-cage
-│   ├── intermediary/       # Sanitized repo (git origin for work)
-│   │   └── .git/hooks/post-receive  # Triggers sync
-│   ├── work/               # Claude's working directory
-│   └── .pipe               # Named pipe for communication
+├── claude-cage.config              # Config file (required)
 └── .git/hooks/
-    ├── pre-commit          # Prevents mixed commits (autoMerge)
-    └── post-commit         # Syncs to intermediary (autoMerge)
+    ├── pre-commit                  # Prevents mixed commits (autoMerge)
+    └── post-commit                 # Syncs to intermediary (autoMerge)
 ```
+
+Environment variables for customization:
+- `CLAUDE_CAGE_CACHE` - Override cache directory (default: `~/.cache/claude-cage`)
+- `CLAUDE_CAGE_RUNTIME` - Override runtime directory (default: `$XDG_RUNTIME_DIR/claude-cage`)
 
 ## Debugging
 
@@ -291,10 +305,10 @@ Note: bwrap execution tests are skipped if user namespaces are unavailable.
 ## Next Steps
 
 1. Add Claude Code launch (not just `--test` mode)
-2. Create build script for concatenating src/ -> dist/
-3. Add `--cleanup` flag for removing .caged and hooks
-4. Test full workflow with actual Claude Code session
-5. Handle git-am conflicts gracefully
+2. Add `--cleanup` flag for removing cache dirs and hooks
+3. Test full workflow with actual Claude Code session
+4. Handle git-am conflicts gracefully
+5. Add shared mode (mount entire `~/.cache/claude-cage` for multiple projects)
 
 ## Voice/Style
 

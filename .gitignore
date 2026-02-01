@@ -4,6 +4,3 @@ claude-cage.instances
 
 # Build output
 dist/
-
-# Caged clone directory
-.caged/

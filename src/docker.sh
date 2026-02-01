@@ -12,20 +12,25 @@ check_docker() {
 }
 
 # Run a command inside a Docker container
-# Usage: run_in_docker <caged_dir> <mount_as> [command...]
+# Usage: run_in_docker <intermediary_dir> <work_dir> <pipe_path> <mount_as> [command...]
 #
 # Arguments:
-#   caged_dir    - The .caged directory (contains intermediary/ and work/)
-#   mount_as     - Path to mount work/ as (the original project path)
-#   [command...] - Optional command to run (defaults to interactive shell)
+#   intermediary_dir - The intermediary git repo directory
+#   work_dir         - The work directory (Claude's workspace)
+#   pipe_path        - Path to the communication pipe
+#   mount_as         - Path to mount work/ as (the original project path)
+#   [command...]     - Optional command to run (defaults to interactive shell)
 #
 # Inside the container:
 #   /run/claude-cage/intermediary/  - git origin remote
+#   /run/claude-cage/pipe           - communication pipe
 #   $mount_as                       - working directory (the work/ dir)
 run_in_docker() {
-    local caged_dir="$1"
-    local mount_as="$2"
-    shift 2
+    local intermediary_dir="$1"
+    local work_dir="$2"
+    local pipe_path="$3"
+    local mount_as="$4"
+    shift 4
 
     local user_uid user_gid user_home
     user_uid=$(id -u)
@@ -59,15 +64,15 @@ run_in_docker() {
     done
 
     # Mount intermediary at /run/claude-cage/intermediary
-    docker_args+=(-v "$caged_dir/intermediary:/run/claude-cage/intermediary")
+    docker_args+=(-v "$intermediary_dir:/run/claude-cage/intermediary")
 
     # Mount pipe for git hook communication (if it exists)
-    if [ -p "$caged_dir/.pipe" ]; then
-        docker_args+=(-v "$caged_dir/.pipe:/run/claude-cage/.pipe")
+    if [ -p "$pipe_path" ]; then
+        docker_args+=(-v "$pipe_path:/run/claude-cage/pipe")
     fi
 
     # Mount work dir at the original project path (LAST so it overlays additional mounts)
-    docker_args+=(-v "$caged_dir/work:$mount_as")
+    docker_args+=(-v "$work_dir:$mount_as")
 
     # Working directory is the project path
     docker_args+=(-w "$mount_as")
@@ -82,7 +87,15 @@ run_in_docker() {
 
     # Add command or interactive shell
     if [ $# -eq 0 ]; then
-        docker_args+=(/bin/bash)
+        # Custom rcfile with cage prompt indicator
+        docker_args+=(/bin/bash -c '
+cat > /tmp/.cage-bashrc << "EOF"
+[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+[ -f ~/.bashrc ] && . ~/.bashrc
+# Cage prompt - red user@caged with bunny (Con Air style)
+PS1="\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\$ "
+EOF
+exec bash --rcfile /tmp/.cage-bashrc')
     else
         docker_args+=(/bin/bash -c "$*")
     fi

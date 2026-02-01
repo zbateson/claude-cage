@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
 
+# Use test-specific cache and runtime dirs to avoid polluting user's dirs
+export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
+export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+
 cleanup() {
     rm -rf "$TEST_TMP"
 }
@@ -35,11 +39,17 @@ claude_cage {
 }
 EOF
 
+# Compute expected paths using the new structure
+SOURCE_PATH="$TEST_TMP/source"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
+WORK_DIR="$CLAUDE_CAGE_CACHE/work$SOURCE_PATH"
+PIPE_PATH="$CLAUDE_CAGE_RUNTIME/pipes$SOURCE_PATH"
+
 echo "Test 1: With autoMerge=true, should create post-receive hook"
 cd "$TEST_TMP/source"
 output=$("$CAGE_DIR/dist/claude-cage" 2>&1) || true
 
-hook_path="$TEST_TMP/source/.caged/intermediary/.git/hooks/post-receive"
+hook_path="$INTERMEDIARY_DIR/.git/hooks/post-receive"
 if [ ! -f "$hook_path" ]; then
     echo "FAIL: post-receive hook not created at $hook_path"
     exit 1
@@ -62,9 +72,8 @@ fi
 echo "  PASS: post-receive hook writes to pipe"
 
 echo "Test 4: Named pipe should be created"
-pipe_path="$TEST_TMP/source/.caged/.pipe"
-if [ ! -p "$pipe_path" ]; then
-    echo "FAIL: Named pipe not created at $pipe_path"
+if [ ! -p "$PIPE_PATH" ]; then
+    echo "FAIL: Named pipe not created at $PIPE_PATH"
     exit 1
 fi
 echo "  PASS: Named pipe created"
@@ -121,7 +130,8 @@ echo ""
 echo "=== Testing autoMerge=false (no hooks) ==="
 
 # Clean up and test with autoMerge=false
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
+rm -rf "$PIPE_PATH"
 rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
 rm -f "$TEST_TMP/source/.git/hooks/post-commit"
 
@@ -135,7 +145,7 @@ EOF
 output=$("$CAGE_DIR/dist/claude-cage" 2>&1) || true
 
 echo "Test 11: With autoMerge=false, should NOT create pipe"
-if [ -p "$TEST_TMP/source/.caged/.pipe" ]; then
+if [ -p "$PIPE_PATH" ]; then
     echo "FAIL: Pipe should not be created when autoMerge=false"
     exit 1
 fi

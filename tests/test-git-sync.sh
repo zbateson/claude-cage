@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
 
+# Use test-specific cache and runtime dirs to avoid polluting user's dirs
+export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
+export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+
 cleanup() {
     rm -rf "$TEST_TMP"
 }
@@ -34,19 +38,24 @@ claude_cage {
 }
 EOF
 
+# Compute expected paths using the new structure
+SOURCE_PATH="$TEST_TMP/source"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
+WORK_DIR="$CLAUDE_CAGE_CACHE/work$SOURCE_PATH"
+
 echo "Setting up cage..."
 cd "$TEST_TMP/source"
 "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
 
 # Fix origin path for testing outside sandbox
-# (inside sandbox, .caged/ is mounted at source, so origin would be source/intermediary)
-git -C "$TEST_TMP/source/.caged/work" remote set-url origin "$TEST_TMP/source/.caged/intermediary"
+# (inside sandbox, intermediary is mounted at /run/claude-cage/intermediary)
+git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
 
 echo ""
 echo "Test 1: Push from work should update intermediary"
 
 # Make a change in work and push
-cd "$TEST_TMP/source/.caged/work"
+cd "$WORK_DIR"
 git config user.email "claude@example.com"
 git config user.name "Claude"
 echo "new content from claude" > newfile.txt
@@ -55,14 +64,14 @@ git commit -m "Add newfile from Claude"
 git push origin claude
 
 # Check intermediary has the file
-if [ ! -f "$TEST_TMP/source/.caged/intermediary/newfile.txt" ]; then
+if [ ! -f "$INTERMEDIARY_DIR/newfile.txt" ]; then
     echo "FAIL: newfile.txt not in intermediary after push"
     exit 1
 fi
 echo "  PASS: Push updated intermediary"
 
 echo "Test 2: Intermediary working tree should be updated (updateInstead)"
-content=$(cat "$TEST_TMP/source/.caged/intermediary/newfile.txt")
+content=$(cat "$INTERMEDIARY_DIR/newfile.txt")
 if [ "$content" != "new content from claude" ]; then
     echo "FAIL: Intermediary content is wrong: '$content'"
     exit 1
@@ -74,7 +83,7 @@ echo "=== Testing manual merge from intermediary ==="
 
 echo "Test 3: Can manually add intermediary as remote and fetch"
 cd "$TEST_TMP/source"
-git remote add intermediary "$TEST_TMP/source/.caged/intermediary"
+git remote add intermediary "$INTERMEDIARY_DIR"
 git fetch intermediary
 
 if ! git branch -r | grep -q "intermediary/claude"; then
@@ -98,7 +107,7 @@ echo ""
 echo "=== Testing source -> intermediary sync ==="
 
 # Clean up and recreate for this test
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
 rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
 rm -f "$TEST_TMP/source/.git/hooks/post-commit"
 git -C "$TEST_TMP/source" remote remove intermediary 2>/dev/null || true
@@ -107,7 +116,7 @@ cd "$TEST_TMP/source"
 "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
 
 # Fix origin path for testing outside sandbox
-git -C "$TEST_TMP/source/.caged/work" remote set-url origin "$TEST_TMP/source/.caged/intermediary"
+git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
 
 echo "Test 5: Commit to source should sync to intermediary"
 cd "$TEST_TMP/source"
@@ -116,10 +125,10 @@ git add source-file.txt
 git commit -m "Add source-file from source"
 
 # The post-commit hook should have synced this
-if [ ! -f "$TEST_TMP/source/.caged/intermediary/source-file.txt" ]; then
+if [ ! -f "$INTERMEDIARY_DIR/source-file.txt" ]; then
     echo "FAIL: source-file.txt not synced to intermediary"
     echo "Intermediary contents:"
-    ls -la "$TEST_TMP/source/.caged/intermediary/"
+    ls -la "$INTERMEDIARY_DIR/"
     echo "Post-commit hook:"
     cat "$TEST_TMP/source/.git/hooks/post-commit"
     exit 1
@@ -127,10 +136,10 @@ fi
 echo "  PASS: Source commit synced to intermediary"
 
 echo "Test 6: Work can pull changes from intermediary"
-cd "$TEST_TMP/source/.caged/work"
+cd "$WORK_DIR"
 git pull origin claude
 
-if [ ! -f "$TEST_TMP/source/.caged/work/source-file.txt" ]; then
+if [ ! -f "$WORK_DIR/source-file.txt" ]; then
     echo "FAIL: source-file.txt not in work after pull"
     exit 1
 fi
@@ -141,7 +150,7 @@ echo "=== Testing pre-commit hook (mixed commit prevention) ==="
 
 # Create a sensitive file in source
 cd "$TEST_TMP/source"
-rm -rf "$TEST_TMP/source/.caged"
+rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
 rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
 rm -f "$TEST_TMP/source/.git/hooks/post-commit"
 
@@ -156,7 +165,7 @@ EOF
 "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
 
 # Fix origin path for testing outside sandbox
-git -C "$TEST_TMP/source/.caged/work" remote set-url origin "$TEST_TMP/source/.caged/intermediary"
+git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
 
 echo "Test 7: Pre-commit hook should allow commits with only included files"
 echo "more content" >> file.txt

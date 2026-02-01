@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
 
+# Use test-specific cache and runtime dirs to avoid polluting user's dirs
+export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
+export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+
 cleanup() {
     rm -rf "$TEST_TMP"
 }
@@ -62,14 +66,14 @@ if ! echo "$output" | grep -q "node:lts-slim"; then
 fi
 echo "  PASS: Uses default image"
 
-echo "Test 3: Should mount .caged directory"
-if ! echo "$output" | grep -q "\-v.*\.caged"; then
-    echo "FAIL: Should mount .caged directory"
+echo "Test 3: Should mount intermediary directory"
+if ! echo "$output" | grep -q "\-v.*/run/claude-cage/intermediary"; then
+    echo "FAIL: Should mount intermediary directory"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Mounts .caged directory"
+echo "  PASS: Mounts intermediary directory"
 
 echo "Test 4: Should set working directory to project path"
 if ! echo "$output" | grep -q "\-w.*/source"; then

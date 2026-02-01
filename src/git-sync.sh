@@ -5,11 +5,12 @@
 # Apply changes from intermediary to source using format-patch/git-am
 # Arguments:
 #   $1 - source_dir: The original source directory
-#   $2 - refname: The git ref that was pushed (e.g., refs/heads/claude/main)
+#   $2 - intermediary_dir: The intermediary directory
+#   $3 - refname: The git ref that was pushed (e.g., refs/heads/claude/main)
 sync_to_source() {
     local source_dir="$1"
-    local refname="$2"
-    local intermediary_dir="$source_dir/.caged/intermediary"
+    local intermediary_dir="$2"
+    local refname="$3"
 
     # Skip the initial commit (it's just a copy of source files)
     local commit_msg
@@ -33,12 +34,13 @@ sync_to_source() {
 # Start the pipe listener in background
 # Arguments:
 #   $1 - source_dir: The original source directory
-#   $2 - caged_dir: The .caged directory
+#   $2 - intermediary_dir: The intermediary directory
+#   $3 - pipe_path: The pipe file path
 # Sets: PIPE_LISTENER_PID
 start_pipe_listener() {
     local source_dir="$1"
-    local caged_dir="$2"
-    local pipe_path="$caged_dir/.pipe"
+    local intermediary_dir="$2"
+    local pipe_path="$3"
 
     # Run listener in background
     # Open pipe read-write to avoid blocking (there may be no writer yet)
@@ -46,7 +48,7 @@ start_pipe_listener() {
         exec 3<>"$pipe_path"
         while read -r refname newrev <&3; do
             if [ -n "$refname" ]; then
-                sync_to_source "$source_dir" "$refname"
+                sync_to_source "$source_dir" "$intermediary_dir" "$refname"
             fi
         done
     ) &
@@ -69,7 +71,8 @@ stop_pipe_listener() {
 #   $1 - source_dir: The original source directory
 manual_git_merge() {
     local source_dir="$1"
-    local intermediary_dir="$source_dir/.caged/intermediary"
+    local intermediary_dir
+    intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
 
     if [ ! -d "$intermediary_dir" ]; then
         echo "Ain't no cage here at $intermediary_dir"

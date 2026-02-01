@@ -226,7 +226,7 @@ claude_cage {
 - [ ] Testing on actual Claude Code workflow
 - [ ] Conflict resolution when git-am fails
 - [ ] Instance tracking (multiple concurrent runs)
-- [ ] Network filtering for Docker mode (requires different approach)
+- [x] Network filtering for Docker mode (uses iptables with privilege drop)
 
 ## Network Isolation (bwrap mode)
 
@@ -280,6 +280,43 @@ Destinations can include optional ports:
 - `github.com:443` - Single port
 - `192.168.1.0/24:80,443` - Multiple ports
 - `10.0.0.1` - All ports
+
+## Network Isolation (Docker mode)
+
+Docker mode also supports network filtering using iptables. Works on macOS (Docker Desktop) and Linux.
+
+### How It Works
+
+1. Container starts as root with `--cap-add=NET_ADMIN`
+2. Configures iptables rules (same allowlist/blocklist logic as bwrap)
+3. Drops to unprivileged user via `su`
+4. User cannot modify iptables rules (no root, no NET_ADMIN)
+
+### Security Model
+
+- `NET_ADMIN` capability is scoped to the container's network namespace
+- Container cannot modify host's iptables
+- After privilege drop, the running user has no way to change the rules
+- Same effective security as bwrap mode
+
+### Docker DNS
+
+Docker's internal DNS resolver is at `127.0.0.11`. This is automatically allowed in both allowlist and blocklist modes so domain resolution works.
+
+### Configuration
+
+Same config options as bwrap mode:
+
+```lua
+claude_cage {
+    mode = "docker",
+    networkMode = "allowlist",
+    allow = {
+        domains = { "github.com:443", "api.anthropic.com:443" },
+        ips = { "8.8.8.8:53" }
+    }
+}
+```
 
 ## File Locations
 
@@ -354,9 +391,9 @@ bash tests/run-all.sh
 | test-git-sync.sh | git-sync.sh | 14 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
-| test-docker.sh | docker.sh | 11 |
+| test-docker.sh | docker.sh | 17 |
 
-**Total: 132 tests**
+**Total: 138 tests**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

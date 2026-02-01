@@ -194,4 +194,75 @@ fi
 echo "  PASS: Runs as current user"
 
 echo ""
+echo "=== Testing docker network filtering ==="
+
+# Source script to test functions directly
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+
+echo "Test 12: generate_docker_iptables_script should generate allowlist rules"
+script=$(generate_docker_iptables_script "allowlist" "1.2.3.4:443" "" "" "")
+if ! echo "$script" | grep -q "iptables -A OUTPUT -p tcp -d 1.2.3.4 --dport 443 -j ACCEPT"; then
+    echo "FAIL: Should generate ACCEPT rule for IP:port"
+    echo "Script was:"
+    echo "$script"
+    exit 1
+fi
+echo "  PASS: Generates allowlist rules"
+
+echo "Test 13: generate_docker_iptables_script should allow Docker DNS"
+if ! echo "$script" | grep -q "127.0.0.11"; then
+    echo "FAIL: Should allow Docker DNS (127.0.0.11)"
+    exit 1
+fi
+echo "  PASS: Allows Docker DNS"
+
+echo "Test 14: generate_docker_iptables_script should generate blocklist rules"
+script=$(generate_docker_iptables_script "blocklist" "" "" "10.0.0.1" "")
+if ! echo "$script" | grep -q "iptables -A OUTPUT -d 10.0.0.1 -j REJECT"; then
+    echo "FAIL: Should generate REJECT rule for blocked IP"
+    echo "Script was:"
+    echo "$script"
+    exit 1
+fi
+echo "  PASS: Generates blocklist rules"
+
+echo "Test 15: blocklist should end with catch-all ACCEPT"
+if ! echo "$script" | grep -q "iptables -A OUTPUT -j ACCEPT"; then
+    echo "FAIL: Blocklist should have catch-all ACCEPT at end"
+    exit 1
+fi
+echo "  PASS: Blocklist has catch-all ACCEPT"
+
+echo "Test 16: Docker with networkMode should add NET_ADMIN capability"
+cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+claude_cage {
+    mode = "docker",
+    networkMode = "allowlist",
+    allow = {
+        domains = { "github.com:443" }
+    },
+    showBanner = false
+}
+EOF
+
+output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+if ! echo "$output" | grep -q "\-\-cap-add=NET_ADMIN"; then
+    echo "FAIL: Should add NET_ADMIN capability"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Adds NET_ADMIN capability"
+
+echo "Test 17: Docker with networkMode should NOT have --user (starts as root)"
+if echo "$output" | grep -q "\-\-user"; then
+    echo "FAIL: Should NOT have --user when network filtering enabled"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: No --user when network filtering (starts as root)"
+
+echo ""
 echo "=== All docker tests passed! ==="

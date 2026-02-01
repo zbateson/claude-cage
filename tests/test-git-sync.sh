@@ -203,4 +203,101 @@ git reset HEAD file.txt .env
 git checkout file.txt .env
 
 echo ""
+echo "=== Testing branch-switching sync ==="
+
+# Clean up and recreate for this test
+rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
+rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
+rm -f "$TEST_TMP/source/.git/hooks/post-commit"
+
+# Create a fresh source repo with a feature branch
+rm -rf "$TEST_TMP/source"
+mkdir -p "$TEST_TMP/source"
+cd "$TEST_TMP/source"
+git init -q
+git config user.email "test@example.com"
+git config user.name "Test User"
+echo "original" > file.txt
+git add .
+git commit -q -m "Initial commit"
+
+# Create and switch to feature branch
+git checkout -b feature
+echo "feature work" > feature.txt
+git add .
+git commit -q -m "Feature commit"
+
+cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+claude_cage {
+    autoMerge = true,
+    showBanner = false
+}
+EOF
+
+# Start cage on feature branch
+"$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
+
+# Fix origin path for testing outside sandbox
+git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
+
+# Make a commit in work
+cd "$WORK_DIR"
+git config user.email "claude@example.com"
+git config user.name "Claude"
+echo "claude work" > claude.txt
+git add claude.txt
+git commit -q -m "Claude's commit"
+git push origin claude 2>/dev/null
+
+# Now switch source to master (simulating user switching branches)
+cd "$TEST_TMP/source"
+git checkout master
+
+echo "Test 10: Source should be on master now"
+current=$(git branch --show-current)
+if [ "$current" != "master" ]; then
+    echo "FAIL: Expected to be on master, but on $current"
+    exit 1
+fi
+echo "  PASS: Source is on master"
+
+# Source the script to get sync_to_source function
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+
+echo "Test 11: sync_to_source should apply to feature branch (not master)"
+# Call sync_to_source directly with target_branch=feature
+sync_to_source "$TEST_TMP/source" "$INTERMEDIARY_DIR" "refs/heads/claude" "feature"
+
+# Check that feature branch has the commit
+if ! git -C "$TEST_TMP/source" log feature --oneline | grep -q "Claude's commit"; then
+    echo "FAIL: Claude's commit should be on feature branch"
+    git -C "$TEST_TMP/source" log feature --oneline
+    exit 1
+fi
+echo "  PASS: Commit applied to feature branch"
+
+echo "Test 12: Master branch should NOT have Claude's commit"
+if git -C "$TEST_TMP/source" log master --oneline | grep -q "Claude's commit"; then
+    echo "FAIL: Claude's commit should NOT be on master"
+    exit 1
+fi
+echo "  PASS: Master branch unchanged"
+
+echo "Test 13: Source working directory should be untouched (still on master)"
+current=$(git -C "$TEST_TMP/source" branch --show-current)
+if [ "$current" != "master" ]; then
+    echo "FAIL: Source should still be on master, but on $current"
+    exit 1
+fi
+echo "  PASS: Source still on master"
+
+echo "Test 14: Working directory should not have claude.txt (master doesn't have it)"
+if [ -f "$TEST_TMP/source/claude.txt" ]; then
+    echo "FAIL: claude.txt should not be in working directory (we're on master)"
+    exit 1
+fi
+echo "  PASS: Working directory unchanged"
+
+echo ""
 echo "=== All git-sync tests passed! ==="

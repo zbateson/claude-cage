@@ -90,9 +90,11 @@ When `autoMerge = true`:
 When you commit to source:
 
 1. `post-commit` hook on source fires
-2. Creates patch excluding sensitive files (`git format-patch -- . ':!pattern'`)
+2. Creates patch excluding sensitive files using pathspec excludes
 3. Applies patch to intermediary's `claude` branch with `git am`
 4. Claude runs `git pull` when ready to get changes
+
+If commit only contains excluded files, shows: "Only excluded files in this commit, nothin' to sync."
 
 ### Commit Separation
 
@@ -293,12 +295,12 @@ bash tests/run-all.sh
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 13 |
 | test-git-hooks.sh | git-hooks.sh | 12 |
-| test-git-sync.sh | git-sync.sh | 9 |
-| test-network.sh | network.sh | 29 |
-| test-bwrap.sh | bwrap.sh | 11 |
+| test-git-sync.sh | git-sync.sh | 14 |
+| test-network.sh | network.sh | 31 |
+| test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 11 |
 
-**Total: 111 tests**
+**Total: 120 tests**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 
@@ -309,6 +311,25 @@ Note: bwrap execution tests are skipped if user namespaces are unavailable.
 3. Test full workflow with actual Claude Code session
 4. Handle git-am conflicts gracefully
 5. Add shared mode (mount entire `~/.cache/claude-cage` for multiple projects)
+
+## Gotchas / Technical Notes
+
+### Git Pathspec Excludes
+
+When using git pathspec to exclude files (e.g., in `git format-patch`), be aware:
+
+- **`:!pattern` vs `:(exclude,glob)pattern`**: The short form `:!**/foo` does NOT match `foo` at the repository root. The `**` only matches one or more directories, not zero. Use `:(exclude,glob)**/foo` for proper glob behavior where `**` matches zero or more directories.
+
+- **Don't use `.` before excludes**: `git format-patch -- . :!pattern` breaks exclude matching. Use `git format-patch -- :!pattern` instead.
+
+- **`-1 HEAD` vs `HEAD~1..HEAD`**: When pathspec excludes all files from a commit, `git format-patch -1 HEAD -- :!pattern` outputs the parent commit instead of empty. Use `HEAD~1..HEAD` for correct behavior.
+
+### Branch-Switching Sync
+
+When syncing commits from intermediary to source, if the user has switched branches:
+- We use a temp index (`.git/claude-cage-tmp-index`) to apply changes without checkout
+- Commits are applied to the original branch the user started on
+- User's current checkout remains untouched
 
 ## Voice/Style
 

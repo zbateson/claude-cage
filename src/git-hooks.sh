@@ -170,12 +170,13 @@ setup_source_post_commit() {
     local intermediary_dir="$3"
     local hook_path="$source_dir/.git/hooks/post-commit"
 
-    # Convert exclude patterns to pathspec format (':!pattern')
+    # Convert exclude patterns to pathspec format
+    # Use :(exclude,glob) for proper ** matching (** means zero or more dirs with glob)
     local pathspec_excludes=""
     if [ -n "$exclude_patterns" ]; then
         IFS='|' read -ra patterns <<< "$exclude_patterns"
         for pattern in "${patterns[@]}"; do
-            pathspec_excludes="$pathspec_excludes ':!$pattern'"
+            pathspec_excludes="$pathspec_excludes ':(exclude,glob)$pattern'"
         done
     fi
 
@@ -194,12 +195,21 @@ fi
 
 # Apply commit to intermediary's claude branch, excluding sensitive files
 # format-patch with pathspec excludes ensures sensitive files aren't included
-PATCH=\$(git format-patch -1 HEAD --stdout -- .$pathspec_excludes)
+# Note: Using HEAD~1..HEAD instead of -1 HEAD because the latter has weird behavior
+# when pathspec excludes all files (it outputs the parent commit instead of empty)
+# Note: Don't use "-- ." before excludes - it breaks pathspec exclude matching
+PATCH=\$(git format-patch HEAD~1..HEAD --stdout --$pathspec_excludes)
 
 # Check if patch has any actual changes (not just empty)
 if echo "\$PATCH" | grep -q "^diff --git"; then
     # Ensure we're on claude branch and apply
-    (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way) || true
+    if (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way); then
+        : # success
+    else
+        echo "claude-cage: Patch didn't apply cleanly to intermediary. You may need to sync manually."
+    fi
+else
+    echo "claude-cage: Only excluded files in this commit, nothin' to sync."
 fi
 EOF
         chmod +x "$hook_path"

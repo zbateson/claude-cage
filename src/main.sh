@@ -76,6 +76,9 @@ fi
 
 echo ""
 
+# Capture source branch before creating intermediary (for sync targeting)
+source_branch=$(get_source_branch "$cfg_source")
+
 # Create the intermediary clone and work directory
 create_intermediary_clone "$cfg_source"
 
@@ -105,8 +108,8 @@ if [ "$test_mode" = true ]; then
     # Start pipe listener if autoMerge enabled
     PIPE_LISTENER_PID=""
     if [ "$cfg_autoMerge" = "true" ]; then
-        echo "Auto-merge enabled: pushes to intermediary will sync to source"
-        start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path"
+        echo "Auto-merge enabled: pushes to intermediary will sync to source ($source_branch)"
+        start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
     fi
 
     if [ "$cfg_mode" = "docker" ]; then

@@ -87,6 +87,9 @@ create_intermediary_clone() {
     echo "  Setting origin to cage path: $source_dir/intermediary"
     run git -C "$work_dir" remote set-url origin "$source_dir/intermediary"
 
+    # Configure push to auto-setup upstream tracking
+    run git -C "$work_dir" config push.autoSetupRemote true
+
     # Create claude branch for work
     echo "  Creating branch: claude/$source_branch"
     run git -C "$work_dir" checkout -b "claude/$source_branch"

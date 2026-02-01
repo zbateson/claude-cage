@@ -202,6 +202,12 @@ local mounted = config.mounted or ""
 local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
 local networkMode = config.networkMode or "disabled"
+local mode = config.mode or "bwrap"
+
+-- Docker options
+local docker = config.docker or {}
+local docker_image = docker.image or "node:lts-slim"
+local docker_container = docker.container or ""
 
 -- Source defaults
 if source == "" then
@@ -241,6 +247,9 @@ print(array_to_string(block.networks))
 print(project)
 print(relative_path)
 print(config_root)
+print(mode)
+print(docker_image)
+print(docker_container)
 
 -- Output excludes by source for display
 local display_lines = {}
@@ -304,6 +313,9 @@ EOF
         read -r cfg_project
         read -r cfg_relative_path
         read -r cfg_config_root
+        read -r cfg_mode
+        read -r cfg_docker_image
+        read -r cfg_docker_container
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do

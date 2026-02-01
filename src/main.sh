@@ -9,8 +9,12 @@ done
 # Initialize and parse config
 init_config "$@"
 
-# Check bwrap is available
-check_bwrap
+# Check isolation tool is available
+if [ "$cfg_mode" = "docker" ]; then
+    check_docker
+else
+    check_bwrap
+fi
 
 # Show banner if enabled
 if [ "$cfg_showBanner" = "true" ]; then
@@ -24,6 +28,7 @@ echo "  Project:       $cfg_project"
 echo "  User:          $cfg_user"
 echo "  Source:        $cfg_source"
 echo "  Mounted as:    $cfg_mounted"
+echo "  Mode:          $cfg_mode"
 echo "  Network mode:  $cfg_networkMode"
 
 if [ ${#cfg_display_lines[@]} -gt 0 ]; then
@@ -70,8 +75,13 @@ echo "  $project_path/work/          (working dir)"
 
 if [ "$test_mode" = true ]; then
     echo ""
-    echo "Droppin' you into the bwrap sandbox for testing..."
-    run_in_bwrap "$caged_dir" "$project_path"
+    if [ "$cfg_mode" = "docker" ]; then
+        echo "Droppin' you into the Docker container for testing..."
+        run_in_docker "$caged_dir" "$project_path"
+    else
+        echo "Droppin' you into the bwrap sandbox for testing..."
+        run_in_bwrap "$caged_dir" "$project_path"
+    fi
 else
     echo ""
     echo "Use --test to drop into a shell for testing."

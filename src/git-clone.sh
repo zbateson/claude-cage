@@ -32,12 +32,13 @@ create_intermediary_clone() {
 
     run mkdir -p "$intermediary_dir"
 
-    # Build pathspec excludes for git archive (':!pattern')
+    # Build pathspec excludes for git archive
+    # Use :(exclude,glob) format for proper ** pattern support
     local -a archive_pathspecs=(".")
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
-            archive_pathspecs+=(":!$pattern")
+            archive_pathspecs+=(":(exclude,glob)$pattern")
         done
     fi
 

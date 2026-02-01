@@ -32,17 +32,19 @@ create_intermediary_clone() {
 
     run mkdir -p "$intermediary_dir"
 
-    # Build pathspec excludes for git archive
-    # Use :(exclude,glob) format for proper ** pattern support
-    local -a archive_pathspecs=(".")
+    # Build tar exclude flags (--exclude=pattern)
+    local -a tar_excludes=()
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
-            archive_pathspecs+=(":(exclude,glob)$pattern")
+            # Convert gitignore-style ** to tar glob
+            # Remove leading **/ for tar compatibility
+            local tar_pattern="${pattern#\*\*/}"
+            tar_excludes+=("--exclude=$tar_pattern")
         done
     fi
 
-    # Extract files using git archive (excludes sensitive files entirely)
+    # Extract files using git archive + tar excludes
     echo "  Extracting files with git archive..."
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
@@ -52,9 +54,9 @@ create_intermediary_clone() {
     fi
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] git -C $source_dir archive HEAD -- ${archive_pathspecs[*]} | tar -x -C $intermediary_dir"
+        echo "[dry-run] git -C $source_dir archive HEAD | tar -x ${tar_excludes[*]} -C $intermediary_dir"
     else
-        git -C "$source_dir" archive HEAD -- "${archive_pathspecs[@]}" | tar -x -C "$intermediary_dir"
+        git -C "$source_dir" archive HEAD | tar -x "${tar_excludes[@]}" -C "$intermediary_dir"
     fi
 
     # Initialize fresh git repo (no history of excluded files)

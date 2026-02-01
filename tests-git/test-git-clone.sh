@@ -1,0 +1,184 @@
+#!/bin/bash
+# Test git-clone.sh functionality
+# Tests create_intermediary_clone and related functions
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CAGE_DIR="$(dirname "$SCRIPT_DIR")"
+TEST_TMP=$(mktemp -d)
+
+cleanup() {
+    rm -rf "$TEST_TMP"
+}
+trap cleanup EXIT
+
+echo "=== Testing git-clone.sh ==="
+echo ""
+
+# Create a test git repo to act as source
+mkdir -p "$TEST_TMP/source"
+cd "$TEST_TMP/source"
+git init
+git config user.email "test@example.com"
+git config user.name "Test User"
+
+# Create some files
+echo "public content" > public.txt
+echo "SECRET_KEY=abc123" > .env
+mkdir -p config
+echo "prod: true" > config/prod.yml
+echo "dev: true" > config/dev.yml
+git add .
+git commit -m "Initial commit"
+
+# Create config with excludes (flat array format for git version)
+cat > "$TEST_TMP/claude-cage.config" << 'EOF'
+claude_cage {
+    exclude = { ".env", "config/prod.yml" },
+    autoMerge = false,
+    showBanner = false
+}
+EOF
+
+echo "Test 1: Dry-run should show intermediary creation"
+cd "$TEST_TMP/source"
+output=$("$CAGE_DIR/dist/claude-cage-git" --dry-run 2>&1) || true
+
+if ! echo "$output" | grep -q "Creating intermediary"; then
+    echo "FAIL: Did not find 'Creating intermediary' message"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found intermediary creation message"
+
+echo "Test 2: Dry-run should show claude branch creation"
+if ! echo "$output" | grep -q "Creating branch: claude"; then
+    echo "FAIL: Did not find claude branch creation"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found claude branch creation"
+
+echo "Test 3: Dry-run should show exclude patterns"
+if ! echo "$output" | grep -q "Exclude: .env"; then
+    echo "FAIL: Did not find .env in excludes"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found exclude patterns"
+
+echo "Test 4: Dry-run should show receive.denyCurrentBranch config"
+if ! echo "$output" | grep -q "receive.denyCurrentBranch"; then
+    echo "FAIL: Did not find receive.denyCurrentBranch config"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found receive.denyCurrentBranch config"
+
+echo ""
+echo "=== Testing actual intermediary creation ==="
+
+# Run without dry-run to actually create the intermediary
+echo "Test 5: Create intermediary and work directories"
+actual_output=$("$CAGE_DIR/dist/claude-cage-git" 2>&1) || true
+
+if [ ! -d "$TEST_TMP/source/.caged/intermediary" ]; then
+    echo "FAIL: Intermediary directory not created"
+    exit 1
+fi
+echo "  PASS: Intermediary directory created"
+
+if [ ! -d "$TEST_TMP/source/.caged/work" ]; then
+    echo "FAIL: Work directory not created"
+    exit 1
+fi
+echo "  PASS: Work directory created"
+
+echo "Test 6: Intermediary should be on claude branch"
+branch=$(git -C "$TEST_TMP/source/.caged/intermediary" branch --show-current)
+if [ "$branch" != "claude" ]; then
+    echo "FAIL: Intermediary branch is '$branch', expected 'claude'"
+    exit 1
+fi
+echo "  PASS: Intermediary is on claude branch"
+
+echo "Test 7: Work should be on claude branch"
+branch=$(git -C "$TEST_TMP/source/.caged/work" branch --show-current)
+if [ "$branch" != "claude" ]; then
+    echo "FAIL: Work branch is '$branch', expected 'claude'"
+    exit 1
+fi
+echo "  PASS: Work is on claude branch"
+
+echo "Test 8: Intermediary should have receive.denyCurrentBranch=updateInstead"
+config_val=$(git -C "$TEST_TMP/source/.caged/intermediary" config receive.denyCurrentBranch)
+if [ "$config_val" != "updateInstead" ]; then
+    echo "FAIL: receive.denyCurrentBranch is '$config_val', expected 'updateInstead'"
+    exit 1
+fi
+echo "  PASS: receive.denyCurrentBranch is set correctly"
+
+echo "Test 9: Excluded files should NOT be in intermediary"
+if [ -f "$TEST_TMP/source/.caged/intermediary/.env" ]; then
+    echo "FAIL: .env should be excluded from intermediary"
+    exit 1
+fi
+echo "  PASS: .env is excluded"
+
+if [ -f "$TEST_TMP/source/.caged/intermediary/config/prod.yml" ]; then
+    echo "FAIL: config/prod.yml should be excluded from intermediary"
+    exit 1
+fi
+echo "  PASS: config/prod.yml is excluded"
+
+echo "Test 10: Included files SHOULD be in intermediary"
+if [ ! -f "$TEST_TMP/source/.caged/intermediary/public.txt" ]; then
+    echo "FAIL: public.txt should be in intermediary"
+    exit 1
+fi
+echo "  PASS: public.txt is included"
+
+if [ ! -f "$TEST_TMP/source/.caged/intermediary/config/dev.yml" ]; then
+    echo "FAIL: config/dev.yml should be in intermediary"
+    exit 1
+fi
+echo "  PASS: config/dev.yml is included"
+
+echo "Test 11: Work directory should match intermediary"
+if [ ! -f "$TEST_TMP/source/.caged/work/public.txt" ]; then
+    echo "FAIL: public.txt should be in work"
+    exit 1
+fi
+echo "  PASS: Work directory has included files"
+
+if [ -f "$TEST_TMP/source/.caged/work/.env" ]; then
+    echo "FAIL: .env should NOT be in work"
+    exit 1
+fi
+echo "  PASS: Work directory excludes sensitive files"
+
+echo "Test 12: Work origin should point to intermediary path"
+origin=$(git -C "$TEST_TMP/source/.caged/work" remote get-url origin)
+if [ "$origin" != "$TEST_TMP/source/intermediary" ]; then
+    echo "FAIL: Work origin is '$origin', expected '$TEST_TMP/source/intermediary'"
+    exit 1
+fi
+echo "  PASS: Work origin points to intermediary"
+
+echo "Test 13: Intermediary should have clean git history (no excluded file history)"
+# Check that .env was never in the git history
+history_check=$(git -C "$TEST_TMP/source/.caged/intermediary" log --all --oneline -- .env 2>&1 || true)
+if [ -n "$history_check" ]; then
+    echo "FAIL: .env appears in intermediary git history"
+    echo "History: $history_check"
+    exit 1
+fi
+echo "  PASS: No excluded files in git history"
+
+echo ""
+echo "=== All git-clone tests passed! ==="

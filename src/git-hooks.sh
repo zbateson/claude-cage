@@ -233,7 +233,6 @@ fi
 
 # Update state file with current commit (even if only excluded files)
 # This tracks that we've processed this commit
-mkdir -p "\$(dirname "\$STATE_FILE")"
 git rev-parse HEAD > "\$STATE_FILE"
 EOF
         chmod +x "$hook_path"

@@ -50,6 +50,7 @@ echo "  Source:        $cfg_source"
 echo "  Mounted as:    $cfg_mounted"
 echo "  Mode:          $cfg_mode"
 echo "  Auto-merge:    $cfg_autoMerge"
+echo "  Isolated:      $cfg_isolated"
 echo "  Network mode:  $cfg_networkMode"
 
 if [ ${#cfg_display_lines[@]} -gt 0 ]; then
@@ -98,6 +99,17 @@ pipe_path=$(get_pipe_path "$cfg_source")
 state_path=$(get_state_path "$cfg_source")
 project_path="$cfg_source"
 
+# Mount paths for sandbox (use current/ symlinks unless isolated)
+if [ "$cfg_isolated" = "true" ]; then
+    # Isolated mode: mount directly from branch directory
+    mount_intermediary="$intermediary_dir"
+    mount_work="$work_dir"
+else
+    # Default: mount via current/ symlinks
+    mount_intermediary=$(get_current_path "$cfg_source" "intermediary")
+    mount_work=$(get_current_path "$cfg_source" "work")
+fi
+
 # Check if existing cage is in sync with source
 cage_state=$(check_cage_state "$cfg_source" "$work_dir" "$state_path")
 
@@ -135,6 +147,11 @@ if [ "$cfg_autoMerge" = "true" ]; then
     setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch" "$state_path"
 fi
 
+# Set up current/ symlinks pointing to active branch directories (unless isolated)
+if [ "$cfg_isolated" != "true" ]; then
+    setup_current_symlinks "$cfg_source"
+fi
+
 echo ""
 echo "============================================"
 echo ""
@@ -154,25 +171,28 @@ if [ "$test_mode" = true ]; then
 
     if [ "$cfg_mode" = "docker" ]; then
         echo "Droppin' you into the Docker container for testing..."
-        run_in_docker "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
+        run_in_docker "$mount_intermediary" "$mount_work" "$pipe_path" "$project_path"
     else
         echo "Droppin' you into the bwrap sandbox for testing..."
         # Use network-isolated bwrap if network filtering is enabled
         if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
             echo "Network filtering enabled (mode: $cfg_networkMode)"
-            run_in_bwrap_with_network "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
+            run_in_bwrap_with_network "$mount_intermediary" "$mount_work" "$pipe_path" "$project_path"
         else
-            run_in_bwrap "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
+            run_in_bwrap "$mount_intermediary" "$mount_work" "$pipe_path" "$project_path"
         fi
     fi
 
-    # Stop pipe listener and clean up hooks
+    # Stop pipe listener and clean up hooks/symlinks
     if [ -n "$PIPE_LISTENER_PID" ]; then
         stop_pipe_listener "$PIPE_LISTENER_PID"
         cleanup_pipe "$pipe_path"
     fi
     if [ "$cfg_autoMerge" = "true" ]; then
         cleanup_source_hooks "$cfg_source"
+    fi
+    if [ "$cfg_isolated" != "true" ]; then
+        cleanup_current_symlinks "$cfg_source"
     fi
 else
     echo ""

@@ -26,7 +26,7 @@ get_cage_path() {
     local type="$2"
     local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
     branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/$branch_dir/$type$source_dir"
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/$type$source_dir"
 }
 
 # Get the pipe path for a source directory
@@ -40,12 +40,73 @@ get_pipe_path() {
 
 # Get the state file path for a source directory
 # State file tracks the last processed commit from source
-# Uses CLAUDE_CAGE_BRANCH if set
+# Uses CLAUDE_CAGE_BRANCH if set, hashes the path for a flat file structure
 get_state_path() {
     local source_dir="$1"
     local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
     branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/$branch_dir/state$source_dir"
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/state-$path_hash"
+}
+
+# Get the current symlink path for a source directory
+# Arguments: $1 = source directory, $2 = type (work|intermediary)
+get_current_path() {
+    local source_dir="$1"
+    local type="$2"
+    echo "$CLAUDE_CAGE_CACHE/current/$type$source_dir"
+}
+
+# Set up symlinks in current/ pointing to the active branch's directories
+# Arguments: $1 = source directory
+# Creates symlinks: current/work/<path> -> branches/<branch>/work/<path>
+#                   current/intermediary/<path> -> branches/<branch>/intermediary/<path>
+setup_current_symlinks() {
+    local source_dir="$1"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+
+    local work_target="$CLAUDE_CAGE_CACHE/branches/$branch_dir/work$source_dir"
+    local intermediary_target="$CLAUDE_CAGE_CACHE/branches/$branch_dir/intermediary$source_dir"
+    local work_link="$CLAUDE_CAGE_CACHE/current/work$source_dir"
+    local intermediary_link="$CLAUDE_CAGE_CACHE/current/intermediary$source_dir"
+
+    # Create parent directories for symlinks
+    run mkdir -p "$(dirname "$work_link")"
+    run mkdir -p "$(dirname "$intermediary_link")"
+
+    # Remove existing symlinks if they point elsewhere
+    if [ -L "$work_link" ]; then
+        run rm -f "$work_link"
+    fi
+    if [ -L "$intermediary_link" ]; then
+        run rm -f "$intermediary_link"
+    fi
+
+    # Create symlinks
+    run ln -s "$work_target" "$work_link"
+    run ln -s "$intermediary_target" "$intermediary_link"
+
+    if [ "$verbose" = true ]; then
+        echo "  Symlinked current/work -> branches/$branch_dir/work"
+        echo "  Symlinked current/intermediary -> branches/$branch_dir/intermediary"
+    fi
+}
+
+# Clean up current/ symlinks for a source directory
+# Arguments: $1 = source directory
+cleanup_current_symlinks() {
+    local source_dir="$1"
+    local work_link="$CLAUDE_CAGE_CACHE/current/work$source_dir"
+    local intermediary_link="$CLAUDE_CAGE_CACHE/current/intermediary$source_dir"
+
+    if [ -L "$work_link" ]; then
+        run rm -f "$work_link"
+    fi
+    if [ -L "$intermediary_link" ]; then
+        run rm -f "$intermediary_link"
+    fi
 }
 
 # Get current branch from source project
@@ -183,7 +244,6 @@ create_intermediary_clone() {
         # Initialize state file with current source HEAD
         local state_path
         state_path=$(get_state_path "$source_dir")
-        mkdir -p "$(dirname "$state_path")"
         git -C "$source_dir" rev-parse HEAD > "$state_path"
     fi
 }

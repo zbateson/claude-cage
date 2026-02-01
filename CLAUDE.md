@@ -32,8 +32,8 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 ### Three-Repository Model
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`~/.cache/claude-cage/<branch>/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
-3. **Work** (`~/.cache/claude-cage/<branch>/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
+2. **Intermediary** (`~/.cache/claude-cage/branches/<branch>/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
+3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
 
 Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches.
 
@@ -136,6 +136,7 @@ claude_cage {
 | `exclude` | `{}` | Patterns to exclude from archive |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
+| `isolated` | `false` | Mount from branch dir instead of current/ symlinks |
 | `showBanner` | `true` | Show ASCII banner |
 | `additionalMounts` | `{}` | Extra read-only mounts for sandbox |
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
@@ -252,11 +253,15 @@ Destinations can include optional ports:
 
 ```
 ~/.cache/claude-cage/
-└── <branch>/                           # Sanitized branch name (e.g., "main", "feature--foo")
-    ├── intermediary/<project-path>/    # Sanitized repo (git origin for work)
-    │   └── .git/hooks/post-receive     # Triggers sync
-    ├── work/<project-path>/            # Claude's working directory
-    └── state/<project-path>            # Last processed source commit ID
+├── branches/
+│   └── <branch>/                         # Sanitized branch name (e.g., "main", "feature--foo")
+│       ├── intermediary/<project-path>/  # Sanitized repo (git origin for work)
+│       │   └── .git/hooks/post-receive   # Triggers sync
+│       ├── work/<project-path>/          # Claude's working directory
+│       └── state-<path-hash>             # Last processed source commit ID (12-char md5)
+└── current/                              # Symlinks to active branch directories
+    ├── intermediary/<project-path>/  ->  branches/<branch>/intermediary/<project-path>/
+    └── work/<project-path>/          ->  branches/<branch>/work/<project-path>/
 
 $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
 └── pipes/<branch>/<project-path>       # Named pipe for communication

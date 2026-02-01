@@ -1,5 +1,5 @@
 # ============================================================================
-# Git clone with sparse checkout
+# Git archive + fresh init (no history of excluded files)
 # ============================================================================
 
 # Get current branch from source project
@@ -8,7 +8,7 @@ get_source_branch() {
     git -C "$source_dir" branch --show-current
 }
 
-# Create the intermediary git clone with sparse checkout
+# Create the intermediary and work directories
 # Arguments: $1 = source directory (defaults to pwd)
 create_intermediary_clone() {
     local source_dir="${1:-$(pwd)}"
@@ -22,7 +22,7 @@ create_intermediary_clone() {
     echo "Source branch: $source_branch"
 
     echo ""
-    echo "Creating intermediary clone..."
+    echo "Creating intermediary..."
 
     # Clean up existing .caged directory if it exists
     if [ -d "$caged_dir" ]; then
@@ -30,65 +30,51 @@ create_intermediary_clone() {
         run rm -rf "$caged_dir"
     fi
 
-    run mkdir -p "$caged_dir"
+    run mkdir -p "$intermediary_dir"
 
-    # Enable filter support in the source repo
-    echo "  Enabling uploadpack.allowFilter..."
-    run git -C "$source_dir" config uploadpack.allowFilter true
-
-    # Create shallow sparse clone with blob filter (blobs fetched on-demand)
-    echo "  Creating shallow sparse clone..."
-    run git clone --depth 1 --sparse --filter=blob:none "file://$source_dir" "$intermediary_dir"
-
-    # Initialize sparse-checkout in no-cone mode (allows gitignore-style patterns)
-    echo "  Initializing sparse-checkout (no-cone mode)..."
-    run git -C "$intermediary_dir" sparse-checkout init --no-cone
-
-    # Build sparse-checkout patterns: start with /* to include all, then add excludes
-    local sparse_patterns=("/*")
-
-    # Add exclude patterns from config (already in gitignore format)
+    # Build pathspec excludes for git archive (':!pattern')
+    local -a archive_pathspecs=(".")
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
-            if [[ "$pattern" != "!"* ]]; then
-                sparse_patterns+=("!$pattern")
-            else
-                sparse_patterns+=("$pattern")
-            fi
+            archive_pathspecs+=(":!$pattern")
         done
     fi
 
-    # Apply sparse-checkout patterns
-    echo "  Setting sparse-checkout patterns..."
-    echo "    Include: /*"
+    # Extract files using git archive (excludes sensitive files entirely)
+    echo "  Extracting files with git archive..."
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
-            if [[ "$pattern" != "!"* ]]; then
-                echo "    Exclude: !$pattern"
-            else
-                echo "    Pattern: $pattern"
-            fi
+            echo "    Exclude: $pattern"
         done
     fi
-    run git -C "$intermediary_dir" sparse-checkout set "${sparse_patterns[@]}"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] git -C $source_dir archive HEAD -- ${archive_pathspecs[*]} | tar -x -C $intermediary_dir"
+    else
+        git -C "$source_dir" archive HEAD -- "${archive_pathspecs[@]}" | tar -x -C "$intermediary_dir"
+    fi
+
+    # Initialize fresh git repo (no history of excluded files)
+    echo "  Initializing fresh git repo..."
+    run git -C "$intermediary_dir" init
+    run git -C "$intermediary_dir" add .
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'"
+    else
+        git -C "$intermediary_dir" commit -m "Initial commit from claude-cage" >/dev/null
+    fi
 
     echo ""
-    echo "Intermediary clone created at: $intermediary_dir"
+    echo "Intermediary created at: $intermediary_dir"
 
-    # Create work directory as partial clone from source (same filters as intermediary)
-    # This allows work to fetch blobs on-demand from source
+    # Create work directory by cloning from intermediary
     echo ""
     echo "Creating work directory..."
-    run git clone --depth 1 --sparse --filter=blob:none "file://$source_dir" "$work_dir"
+    run git clone "$intermediary_dir" "$work_dir"
 
-    # Apply same sparse-checkout patterns as intermediary
-    run git -C "$work_dir" sparse-checkout init --no-cone
-    run git -C "$work_dir" sparse-checkout set "${sparse_patterns[@]}"
-
-    # Point origin to intermediary for pushing (cage-relative path)
-    # Work fetches blobs from source (promisor), but pushes to intermediary
+    # Update origin to use the path as it appears inside the cage
     echo "  Setting origin to cage path: $source_dir/intermediary"
     run git -C "$work_dir" remote set-url origin "$source_dir/intermediary"
 

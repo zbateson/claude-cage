@@ -75,43 +75,67 @@ cleanup_source_hooks() {
 # Set up pre-commit hook on source repo to prevent mixed commits
 # Arguments:
 #   $1 - source_dir: The source project directory
+#   $2 - exclude_patterns: Pipe-delimited exclude patterns
 setup_source_pre_commit() {
     local source_dir="$1"
+    local exclude_patterns="$2"
     local hook_path="$source_dir/.git/hooks/pre-commit"
     local caged_dir="$source_dir/.caged"
 
     # Create pre-commit hook
+    # We need to pass exclude patterns into the hook
     if [ "$dry_run" = true ]; then
         echo "[dry-run] create $hook_path"
     else
-        cat > "$hook_path" << 'EOF'
+        cat > "$hook_path" << EOF
 #!/bin/bash
 # claude-cage: prevent mixing excluded and included files in same commit
 CAGED_DIR=".caged"
-INTERMEDIARY="$CAGED_DIR/intermediary"
 
-if [ ! -d "$INTERMEDIARY" ]; then
+if [ ! -d "\$CAGED_DIR" ]; then
     exit 0  # cage not set up yet
 fi
 
+# Exclude patterns (set at hook creation time)
+EXCLUDE_PATTERNS="$exclude_patterns"
+
 # Get staged files
-STAGED=$(git diff --cached --name-only)
-if [ -z "$STAGED" ]; then
+STAGED=\$(git diff --cached --name-only)
+if [ -z "\$STAGED" ]; then
     exit 0  # no staged files
 fi
 
-# Check which files would be included by sparse-checkout
-INCLUDED=$(echo "$STAGED" | git -C "$INTERMEDIARY" sparse-checkout check-rules --stdin 2>/dev/null | grep -v "^$" || true)
-EXCLUDED=$(echo "$STAGED" | grep -vxF "$INCLUDED" 2>/dev/null || true)
+# Check each staged file against exclude patterns
+EXCLUDED=""
+INCLUDED=""
 
-if [ -n "$EXCLUDED" ] && [ -n "$INCLUDED" ]; then
+while IFS= read -r file; do
+    is_excluded=false
+    IFS='|' read -ra patterns <<< "\$EXCLUDE_PATTERNS"
+    for pattern in "\${patterns[@]}"; do
+        # Convert gitignore pattern to bash glob matching
+        # Remove leading **/ for matching
+        match_pattern="\${pattern#\*\*/}"
+        if [[ "\$file" == \$match_pattern ]] || [[ "\$file" == */\$match_pattern ]] || [[ "\$file" == \$pattern ]]; then
+            is_excluded=true
+            break
+        fi
+    done
+    if [ "\$is_excluded" = true ]; then
+        EXCLUDED="\$EXCLUDED\$file\n"
+    else
+        INCLUDED="\$INCLUDED\$file\n"
+    fi
+done <<< "\$STAGED"
+
+if [ -n "\$EXCLUDED" ] && [ -n "\$INCLUDED" ]; then
     echo "ERROR: Mixed commit - excluded and included files together."
     echo ""
     echo "Excluded files:"
-    echo "$EXCLUDED" | sed 's/^/  /'
+    echo -e "\$EXCLUDED" | sed '/^\$/d' | sed 's/^/  /'
     echo ""
     echo "Included files:"
-    echo "$INCLUDED" | sed 's/^/  /'
+    echo -e "\$INCLUDED" | sed '/^\$/d' | sed 's/^/  /'
     echo ""
     echo "Please commit them separately."
     exit 1
@@ -152,33 +176,22 @@ setup_source_post_commit() {
     else
         cat > "$hook_path" << EOF
 #!/bin/bash
-# claude-cage: sync commits to intermediary (excluding sensitive files)
+# claude-cage: sync commits to intermediary's claude branch (excluding sensitive files)
 CAGED_DIR="$caged_dir"
 INTERMEDIARY="\$CAGED_DIR/intermediary"
-WORK="\$CAGED_DIR/work"
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet
 fi
 
-# Get files changed in this commit
-CHANGED=\$(git diff-tree --no-commit-id --name-only -r HEAD)
+# Apply commit to intermediary's claude branch, excluding sensitive files
+# format-patch with pathspec excludes ensures sensitive files aren't included
+PATCH=\$(git format-patch -1 HEAD --stdout -- .$pathspec_excludes)
 
-# Check which files would be included by sparse-checkout
-INCLUDED=\$(echo "\$CHANGED" | git -C "\$INTERMEDIARY" sparse-checkout check-rules --stdin 2>/dev/null | grep -v "^\$" || true)
-
-if [ -z "\$INCLUDED" ]; then
-    # All files are excluded, skip syncing this commit
-    exit 0
-fi
-
-# Apply commit to intermediary, excluding sensitive files
-git format-patch -1 HEAD --stdout -- .$pathspec_excludes | \\
-    (cd "\$INTERMEDIARY" && git am --3way 2>/dev/null) || true
-
-# Notify work dir that new commits are available (just fetch, don't merge)
-if [ -d "\$WORK" ]; then
-    (cd "\$WORK" && git fetch origin 2>/dev/null) || true
+# Check if patch has any actual changes (not just empty)
+if echo "\$PATCH" | grep -q "^diff --git"; then
+    # Ensure we're on claude branch and apply
+    (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way) || true
 fi
 EOF
         chmod +x "$hook_path"

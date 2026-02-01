@@ -78,6 +78,13 @@ create_intermediary_clone() {
     echo ""
     echo "Intermediary created at: $intermediary_dir"
 
+    # Create claude branch in intermediary (this is where source commits land)
+    echo "  Creating branch: claude"
+    run git -C "$intermediary_dir" checkout -b "claude"
+
+    # Allow pushing to checked-out branch (updates working tree automatically)
+    run git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead
+
     # Create work directory by cloning from intermediary
     echo ""
     echo "Creating work directory..."
@@ -90,13 +97,9 @@ create_intermediary_clone() {
     # Configure push to auto-setup upstream tracking
     run git -C "$work_dir" config push.autoSetupRemote true
 
-    # Create claude branch for work
-    echo "  Creating branch: claude/$source_branch"
-    run git -C "$work_dir" checkout -b "claude/$source_branch"
-
     echo ""
     echo "Work directory created at: $work_dir"
-    echo "  Branch: claude/$source_branch"
+    echo "  Branch: claude"
 
     # Show what files are in work (skip in dry-run)
     if [ "$dry_run" != true ]; then

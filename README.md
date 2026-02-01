@@ -122,7 +122,6 @@ claude_cage {
 }
 ```
 
-📖 **[Full Configuration Reference →](docs/configuration.md)**
 
 ## Usage
 
@@ -188,7 +187,6 @@ block = {
 }
 ```
 
-📖 **[Network Security Guide →](docs/network-security.md)**
 
 ## Docker Mode
 
@@ -234,7 +232,6 @@ sudo apt install slirp4netns
 
 The sandbox uses slirp4netns DNS at 10.0.2.3. If you're filtering network access, make sure DNS is allowed (it's automatic in allowlist mode).
 
-📖 **[Full Troubleshooting Guide →](docs/troubleshooting.md)**
 
 ## Contributing
 

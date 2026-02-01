@@ -76,6 +76,11 @@ local function merge_config(base, override)
                     end
                 end
             end
+        elseif k == "additionalMounts" and type(v) == "table" then
+            result.additionalMounts = result.additionalMounts or {}
+            for _, item in ipairs(v) do
+                table.insert(result.additionalMounts, item)
+            end
         else
             result[k] = v
         end
@@ -248,6 +253,27 @@ print(#display_lines)
 for _, line in ipairs(display_lines) do
     print(line)
 end
+
+-- Process additionalMounts
+local mounts = config.additionalMounts or {}
+local mount_entries = {}
+for _, entry in ipairs(mounts) do
+    local source, dest
+    if type(entry) == "string" then
+        source = entry
+        dest = entry
+    elseif type(entry) == "table" then
+        source = entry.source or entry[1]
+        dest = entry["as"] or entry.dest or source
+    end
+    if source then
+        table.insert(mount_entries, source .. "|" .. dest)
+    end
+end
+print(#mount_entries)
+for _, entry in ipairs(mount_entries) do
+    print(entry)
+end
 EOF
 )
     local lua_exit_code=$?
@@ -283,6 +309,12 @@ EOF
         for ((i=0; i<cfg_display_line_count; i++)); do
             read -r line
             cfg_display_lines+=("$line")
+        done
+        read -r cfg_mount_count
+        cfg_mounts=()
+        for ((i=0; i<cfg_mount_count; i++)); do
+            read -r line
+            cfg_mounts+=("$line")
         done
     } <<< "$lua_output"
 

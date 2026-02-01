@@ -35,6 +35,19 @@ if [ ${#cfg_display_lines[@]} -gt 0 ]; then
     done
 fi
 
+if [ ${#cfg_mounts[@]} -gt 0 ]; then
+    echo ""
+    echo "Additional mounts:"
+    for mount_entry in "${cfg_mounts[@]}"; do
+        IFS='|' read -r mount_source mount_dest <<< "$mount_entry"
+        if [ "$mount_source" = "$mount_dest" ]; then
+            echo "  $mount_source"
+        else
+            echo "  $mount_source -> $mount_dest"
+        fi
+    done
+fi
+
 echo ""
 
 # Create the intermediary clone and work directory

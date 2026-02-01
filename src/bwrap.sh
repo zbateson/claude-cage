@@ -81,6 +81,15 @@ run_in_bwrap() {
     bwrap_args+=(--ro-bind-try "$user_home/.gitconfig" "$user_home/.gitconfig")
     bwrap_args+=(--ro-bind-try "$user_home/.config/git" "$user_home/.config/git")
 
+    # Additional mounts from config (read-only)
+    for mount_entry in "${cfg_mounts[@]}"; do
+        IFS='|' read -r mount_source mount_dest <<< "$mount_entry"
+        # Expand tilde to user home
+        mount_source="${mount_source/#\~/$user_home}"
+        mount_dest="${mount_dest/#\~/$user_home}"
+        bwrap_args+=(--ro-bind-try "$mount_source" "$mount_dest")
+    done
+
     # Temp/runtime filesystems
     bwrap_args+=(--tmpfs /tmp)
     bwrap_args+=(--tmpfs /run)

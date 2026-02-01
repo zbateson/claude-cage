@@ -36,10 +36,9 @@ create_intermediary_clone() {
     echo "  Enabling uploadpack.allowFilter..."
     run git -C "$source_dir" config uploadpack.allowFilter true
 
-    # Create shallow sparse clone
-    # Note: --filter=blob:none would create a partial clone that can't be cloned from
+    # Create shallow sparse clone with blob filter (blobs fetched on-demand)
     echo "  Creating shallow sparse clone..."
-    run git clone --depth 1 --sparse "file://$source_dir" "$intermediary_dir"
+    run git clone --depth 1 --sparse --filter=blob:none "file://$source_dir" "$intermediary_dir"
 
     # Initialize sparse-checkout in no-cone mode (allows gitignore-style patterns)
     echo "  Initializing sparse-checkout (no-cone mode)..."
@@ -78,13 +77,18 @@ create_intermediary_clone() {
     echo ""
     echo "Intermediary clone created at: $intermediary_dir"
 
-    # Create work directory from intermediary
+    # Create work directory as partial clone from source (same filters as intermediary)
+    # This allows work to fetch blobs on-demand from source
     echo ""
     echo "Creating work directory..."
-    run git clone "$intermediary_dir" "$work_dir"
+    run git clone --depth 1 --sparse --filter=blob:none "file://$source_dir" "$work_dir"
 
-    # Update origin to use the path as it appears inside the cage
-    # (.caged is mounted at $source_dir, so intermediary is at $source_dir/intermediary)
+    # Apply same sparse-checkout patterns as intermediary
+    run git -C "$work_dir" sparse-checkout init --no-cone
+    run git -C "$work_dir" sparse-checkout set "${sparse_patterns[@]}"
+
+    # Point origin to intermediary for pushing (cage-relative path)
+    # Work fetches blobs from source (promisor), but pushes to intermediary
     echo "  Setting origin to cage path: $source_dir/intermediary"
     run git -C "$work_dir" remote set-url origin "$source_dir/intermediary"
 

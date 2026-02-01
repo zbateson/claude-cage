@@ -228,6 +228,11 @@ echo "feature work" > feature.txt
 git add .
 git commit -q -m "Feature commit"
 
+# Update paths for feature branch
+BRANCH_NAME="feature"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/intermediary$SOURCE_PATH"
+WORK_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/work$SOURCE_PATH"
+
 cat > "$TEST_TMP/claude-cage.config" << 'EOF'
 claude_cage {
     autoMerge = true,

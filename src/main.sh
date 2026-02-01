@@ -91,15 +91,42 @@ fi
 CLAUDE_CAGE_BRANCH="$source_branch"
 export CLAUDE_CAGE_BRANCH
 
-# Create the intermediary clone and work directory
-create_intermediary_clone "$cfg_source"
-
 # Paths for bwrap/docker
 intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
 work_dir=$(get_cage_path "$cfg_source" "work")
 pipe_path=$(get_pipe_path "$cfg_source")
 state_path=$(get_state_path "$cfg_source")
 project_path="$cfg_source"
+
+# Check if existing cage is in sync with source
+cage_state=$(check_cage_state "$cfg_source" "$work_dir" "$state_path")
+
+case "$cage_state" in
+    "in_sync")
+        echo "Cage is in sync with source. Pickin' up where we left off."
+        ;;
+    "ahead_clean")
+        echo "Source moved ahead but cage is clean. Startin' fresh."
+        create_intermediary_clone "$cfg_source"
+        ;;
+    "ahead_dirty")
+        handle_dirty_cage "$cfg_source" "$work_dir" "$intermediary_dir" "$state_path" "$cfg_exclude"
+        case "$DIRTY_CAGE_RESULT" in
+            "recreate")
+                create_intermediary_clone "$cfg_source"
+                ;;
+            "exit")
+                echo "Alright, we'll sort this out later."
+                exit 0
+                ;;
+            # "continue" - just proceed with existing cage
+        esac
+        ;;
+    "no_cage"|*)
+        # No existing cage, create fresh
+        create_intermediary_clone "$cfg_source"
+        ;;
+esac
 
 # Set up git hooks and communication pipe (if autoMerge enabled)
 if [ "$cfg_autoMerge" = "true" ]; then

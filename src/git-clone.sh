@@ -179,5 +179,11 @@ create_intermediary_clone() {
         if [ "$file_count" -gt 20 ]; then
             echo "  ... plus $((file_count - 20)) more where that came from"
         fi
+
+        # Initialize state file with current source HEAD
+        local state_path
+        state_path=$(get_state_path "$source_dir")
+        mkdir -p "$(dirname "$state_path")"
+        git -C "$source_dir" rev-parse HEAD > "$state_path"
     fi
 }

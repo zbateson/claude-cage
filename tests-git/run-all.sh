@@ -35,9 +35,14 @@ run_test() {
 }
 
 # Run each test
+run_test "$SCRIPT_DIR/test-helpers.sh"
+run_test "$SCRIPT_DIR/test-config.sh"
+run_test "$SCRIPT_DIR/test-banner.sh"
 run_test "$SCRIPT_DIR/test-git-clone.sh"
 run_test "$SCRIPT_DIR/test-git-hooks.sh"
 run_test "$SCRIPT_DIR/test-git-sync.sh"
+run_test "$SCRIPT_DIR/test-bwrap.sh"
+run_test "$SCRIPT_DIR/test-docker.sh"
 
 # Summary
 echo "========================================"

@@ -46,3 +46,50 @@ cleanup_pipe() {
         run rm -f "$pipe_path"
     fi
 }
+
+# Set up post-commit hook on source repo to sync commits to intermediary
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
+setup_source_post_commit() {
+    local source_dir="$1"
+    local exclude_patterns="$2"
+    local hook_path="$source_dir/.git/hooks/post-commit"
+    local caged_dir="$source_dir/.caged"
+
+    # Convert exclude patterns to pathspec format (':!pattern')
+    local pathspec_excludes=""
+    if [ -n "$exclude_patterns" ]; then
+        IFS='|' read -ra patterns <<< "$exclude_patterns"
+        for pattern in "${patterns[@]}"; do
+            pathspec_excludes="$pathspec_excludes ':!$pattern'"
+        done
+    fi
+
+    # Create post-commit hook
+    cat > "$hook_path" << EOF
+#!/bin/bash
+# claude-cage: sync commits to intermediary (excluding sensitive files)
+CAGED_DIR="$caged_dir"
+INTERMEDIARY="\$CAGED_DIR/intermediary"
+WORK="\$CAGED_DIR/work"
+
+if [ ! -d "\$INTERMEDIARY" ]; then
+    exit 0  # cage not set up yet
+fi
+
+# Apply commit to intermediary, excluding sensitive files
+git format-patch -1 HEAD --stdout -- .$pathspec_excludes | \\
+    (cd "\$INTERMEDIARY" && git am --3way 2>/dev/null) || true
+
+# Notify work dir that new commits are available (just fetch, don't merge)
+if [ -d "\$WORK" ]; then
+    (cd "\$WORK" && git fetch origin 2>/dev/null) || true
+fi
+EOF
+    run chmod +x "$hook_path"
+
+    if [ "$verbose" = true ]; then
+        echo "  Created source hook: $hook_path"
+    fi
+}

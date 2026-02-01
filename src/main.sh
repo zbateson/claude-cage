@@ -74,6 +74,7 @@ project_path="$cfg_source"
 # Set up git hooks and communication pipe (if autoMerge enabled)
 if [ "$cfg_autoMerge" = "true" ]; then
     setup_git_hooks "$caged_dir" "$project_path"
+    setup_source_post_commit "$cfg_source" "$cfg_exclude"
 fi
 
 echo ""

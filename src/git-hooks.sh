@@ -172,11 +172,13 @@ EOF
 #   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
 #   $3 - intermediary_dir: The intermediary directory
 #   $4 - target_branch: The branch that was active when cage started
+#   $5 - state_path: Path to the state file for tracking last processed commit
 setup_source_post_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
     local intermediary_dir="$3"
     local target_branch="$4"
+    local state_path="$5"
     local hook_path="$source_dir/.git/hooks/post-commit"
 
     # Convert exclude patterns to pathspec format
@@ -198,6 +200,7 @@ setup_source_post_commit() {
 # claude-cage: sync commits to intermediary's claude branch (excluding sensitive files)
 INTERMEDIARY="$intermediary_dir"
 TARGET_BRANCH="$target_branch"
+STATE_FILE="$state_path"
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet
@@ -227,6 +230,11 @@ if echo "\$PATCH" | grep -q "^diff --git"; then
 else
     echo "claude-cage: Only excluded files in this commit, nothin' to sync."
 fi
+
+# Update state file with current commit (even if only excluded files)
+# This tracks that we've processed this commit
+mkdir -p "\$(dirname "\$STATE_FILE")"
+git rev-parse HEAD > "\$STATE_FILE"
 EOF
         chmod +x "$hook_path"
     fi

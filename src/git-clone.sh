@@ -38,6 +38,16 @@ get_pipe_path() {
     echo "$CLAUDE_CAGE_RUNTIME/pipes/$branch_dir$source_dir"
 }
 
+# Get the state file path for a source directory
+# State file tracks the last processed commit from source
+# Uses CLAUDE_CAGE_BRANCH if set
+get_state_path() {
+    local source_dir="$1"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_CACHE/$branch_dir/state$source_dir"
+}
+
 # Get current branch from source project
 # Returns empty string and exits 1 if not on a branch (detached HEAD or no commits)
 get_source_branch() {

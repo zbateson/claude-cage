@@ -255,7 +255,8 @@ Destinations can include optional ports:
 └── <branch>/                           # Sanitized branch name (e.g., "main", "feature--foo")
     ├── intermediary/<project-path>/    # Sanitized repo (git origin for work)
     │   └── .git/hooks/post-receive     # Triggers sync
-    └── work/<project-path>/            # Claude's working directory
+    ├── work/<project-path>/            # Claude's working directory
+    └── state/<project-path>            # Last processed source commit ID
 
 $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
 └── pipes/<branch>/<project-path>       # Named pipe for communication
@@ -264,7 +265,7 @@ project/
 ├── claude-cage.config                  # Config file (required)
 └── .git/hooks/
     ├── pre-commit                      # Prevents mixed commits (autoMerge)
-    └── post-commit                     # Syncs to intermediary (autoMerge)
+    └── post-commit                     # Syncs to intermediary, updates state file (autoMerge)
 ```
 
 Branch names are sanitized for filesystem paths: `/` becomes `--`, other special chars become `-`.

@@ -98,13 +98,14 @@ create_intermediary_clone "$cfg_source"
 intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
 work_dir=$(get_cage_path "$cfg_source" "work")
 pipe_path=$(get_pipe_path "$cfg_source")
+state_path=$(get_state_path "$cfg_source")
 project_path="$cfg_source"
 
 # Set up git hooks and communication pipe (if autoMerge enabled)
 if [ "$cfg_autoMerge" = "true" ]; then
     setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
     setup_source_pre_commit "$cfg_source" "$cfg_exclude" "$source_branch"
-    setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch"
+    setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch" "$state_path"
 fi
 
 echo ""

@@ -50,63 +50,12 @@ get_state_path() {
     echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/state-$path_hash"
 }
 
-# Get the current symlink path for a source directory
-# Arguments: $1 = source directory, $2 = type (work|intermediary)
-get_current_path() {
-    local source_dir="$1"
-    local type="$2"
-    echo "$CLAUDE_CAGE_CACHE/current/$type$source_dir"
-}
-
-# Set up symlinks in current/ pointing to the active branch's directories
-# Arguments: $1 = source directory
-# Creates symlinks: current/work/<path> -> branches/<branch>/work/<path>
-#                   current/intermediary/<path> -> branches/<branch>/intermediary/<path>
-setup_current_symlinks() {
-    local source_dir="$1"
+# Get the branch work root directory (contains all projects for a branch)
+# This is mounted at / so all same-branch projects are visible at original paths
+get_branch_work_root() {
     local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
     branch_dir=$(sanitize_branch_name "$branch_dir")
-
-    local work_target="$CLAUDE_CAGE_CACHE/branches/$branch_dir/work$source_dir"
-    local intermediary_target="$CLAUDE_CAGE_CACHE/branches/$branch_dir/intermediary$source_dir"
-    local work_link="$CLAUDE_CAGE_CACHE/current/work$source_dir"
-    local intermediary_link="$CLAUDE_CAGE_CACHE/current/intermediary$source_dir"
-
-    # Create parent directories for symlinks
-    run mkdir -p "$(dirname "$work_link")"
-    run mkdir -p "$(dirname "$intermediary_link")"
-
-    # Remove existing symlinks if they point elsewhere
-    if [ -L "$work_link" ]; then
-        run rm -f "$work_link"
-    fi
-    if [ -L "$intermediary_link" ]; then
-        run rm -f "$intermediary_link"
-    fi
-
-    # Create symlinks
-    run ln -s "$work_target" "$work_link"
-    run ln -s "$intermediary_target" "$intermediary_link"
-
-    if [ "$verbose" = true ]; then
-        echo "  Symlinked current/work -> branches/$branch_dir/work"
-        echo "  Symlinked current/intermediary -> branches/$branch_dir/intermediary"
-    fi
-}
-
-# Clean up current/ symlinks for a source directory
-# Arguments: $1 = source directory
-cleanup_current_symlinks() {
-    local source_dir="$1"
-    local work_link="$CLAUDE_CAGE_CACHE/current/work$source_dir"
-    local intermediary_link="$CLAUDE_CAGE_CACHE/current/intermediary$source_dir"
-
-    if [ -L "$work_link" ]; then
-        run rm -f "$work_link"
-    fi
-    if [ -L "$intermediary_link" ]; then
-        run rm -f "$intermediary_link"
-    fi
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work"
 }
 
 # Get current branch from source project

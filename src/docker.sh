@@ -12,25 +12,27 @@ check_docker() {
 }
 
 # Run a command inside a Docker container
-# Usage: run_in_docker <intermediary_dir> <work_dir> <pipe_path> <mount_as> [command...]
+# Usage: run_in_docker <intermediary_dir> <branch_work_root> <work_dir> <pipe_path> <project_path> [command...]
 #
 # Arguments:
-#   intermediary_dir - The intermediary git repo directory
-#   work_dir         - The work directory (Claude's workspace)
-#   pipe_path        - Path to the communication pipe
-#   mount_as         - Path to mount work/ as (the original project path)
-#   [command...]     - Optional command to run (defaults to interactive shell)
+#   intermediary_dir   - The intermediary git repo directory
+#   branch_work_root   - Root of branch work tree (for mounting all same-branch projects)
+#   work_dir           - The specific project's work directory (for isolated mode)
+#   pipe_path          - Path to the communication pipe
+#   project_path       - Original project path (working directory, isolated mount point)
+#   [command...]       - Optional command to run (defaults to interactive shell)
 #
-# Inside the container:
-#   /run/claude-cage/intermediary/  - git origin remote
-#   /run/claude-cage/pipe           - communication pipe
-#   $mount_as                       - working directory (the work/ dir)
+# In non-isolated mode: mounts top-level dirs from branch_work_root,
+# making all same-branch projects visible at their original paths.
+#
+# In isolated mode: only work_dir is mounted at project_path.
 run_in_docker() {
     local intermediary_dir="$1"
-    local work_dir="$2"
-    local pipe_path="$3"
-    local mount_as="$4"
-    shift 4
+    local branch_work_root="$2"
+    local work_dir="$3"
+    local pipe_path="$4"
+    local project_path="$5"
+    shift 5
 
     local user_uid user_gid user_home
     user_uid=$(id -u)
@@ -63,6 +65,21 @@ run_in_docker() {
         fi
     done
 
+    # In non-isolated mode: mount top-level dirs from branch_work_root
+    # This makes all same-branch projects visible at their original paths
+    if [ "$cfg_isolated" != "true" ]; then
+        for dir in "$branch_work_root"/*; do
+            if [ -d "$dir" ]; then
+                local dirname
+                dirname=$(basename "$dir")
+                docker_args+=(-v "$dir:/$dirname")
+            fi
+        done
+    else
+        # Isolated mode: mount only the specific work dir
+        docker_args+=(-v "$work_dir:$project_path")
+    fi
+
     # Mount intermediary at /run/claude-cage/intermediary
     docker_args+=(-v "$intermediary_dir:/run/claude-cage/intermediary")
 
@@ -71,11 +88,8 @@ run_in_docker() {
         docker_args+=(-v "$pipe_path:/run/claude-cage/pipe")
     fi
 
-    # Mount work dir at the original project path (LAST so it overlays additional mounts)
-    docker_args+=(-v "$work_dir:$mount_as")
-
     # Working directory is the project path
-    docker_args+=(-w "$mount_as")
+    docker_args+=(-w "$project_path")
 
     # Environment
     docker_args+=(-e "HOME=$user_home")

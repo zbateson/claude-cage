@@ -253,15 +253,12 @@ Destinations can include optional ports:
 
 ```
 ~/.cache/claude-cage/
-├── branches/
-│   └── <branch>/                         # Sanitized branch name (e.g., "main", "feature--foo")
-│       ├── intermediary/<project-path>/  # Sanitized repo (git origin for work)
-│       │   └── .git/hooks/post-receive   # Triggers sync
-│       ├── work/<project-path>/          # Claude's working directory
-│       └── state-<path-hash>             # Last processed source commit ID (12-char md5)
-└── current/                              # Symlinks to active branch directories
-    ├── intermediary/<project-path>/  ->  branches/<branch>/intermediary/<project-path>/
-    └── work/<project-path>/          ->  branches/<branch>/work/<project-path>/
+└── branches/
+    └── <branch>/                         # Sanitized branch name (e.g., "main", "feature--foo")
+        ├── intermediary/<project-path>/  # Sanitized repo (git origin for work)
+        │   └── .git/hooks/post-receive   # Triggers sync
+        ├── work/<project-path>/          # Claude's working directory (mounted at / in sandbox)
+        └── state-<path-hash>             # Last processed source commit ID (12-char md5)
 
 $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
 └── pipes/<branch>/<project-path>       # Named pipe for communication

@@ -12,17 +12,20 @@ check_bwrap() {
 }
 
 # Run a command inside a bwrap sandbox
-# Usage: run_in_bwrap <work_dir> [command...]
+# Usage: run_in_bwrap <caged_dir> <mount_as> [command...]
 #
 # Arguments:
-#   work_dir     - The work directory to mount (read-write)
+#   caged_dir    - The .caged directory (contains intermediary/ and work/)
+#   mount_as     - Path to mount it as (typically the project path)
 #   [command...] - Optional command to run (defaults to interactive shell)
 #
-# The work directory is mounted at the same path inside the sandbox.
-# System directories are mounted read-only.
+# Inside the sandbox:
+#   $mount_as/intermediary/  - git origin remote
+#   $mount_as/work/          - working directory (chdir here)
 run_in_bwrap() {
-    local work_dir="$1"
-    shift
+    local caged_dir="$1"
+    local mount_as="$2"
+    shift 2
 
     local user_uid user_gid username user_home
     user_uid=$(id -u)
@@ -33,7 +36,7 @@ run_in_bwrap() {
     # Hostname for the cage
     local cage_hostname="caged.$(hostname)"
 
-    # Build bwrap arguments as an array (preserves quoting)
+    # Build bwrap arguments as an array
     local -a bwrap_args=()
 
     # System binaries (read-only)
@@ -63,10 +66,11 @@ run_in_bwrap() {
     bwrap_args+=(--ro-bind-try /etc/bash_completion /etc/bash_completion)
     bwrap_args+=(--ro-bind-try /etc/bash_completion.d /etc/bash_completion.d)
 
-    # Work directory (read-write, mounted at same path)
-    bwrap_args+=(--bind "$work_dir" "$work_dir")
+    # Mount .caged at the project path (read-write)
+    # This makes intermediary/ and work/ visible at $mount_as/
+    bwrap_args+=(--bind "$caged_dir" "$mount_as")
 
-    # User home directory (read-only for now - just for .gitconfig etc)
+    # User home config (read-only)
     bwrap_args+=(--ro-bind-try "$user_home/.gitconfig" "$user_home/.gitconfig")
     bwrap_args+=(--ro-bind-try "$user_home/.config/git" "$user_home/.config/git")
 
@@ -105,8 +109,8 @@ run_in_bwrap() {
     # Cleanup on parent exit
     bwrap_args+=(--die-with-parent)
 
-    # Working directory
-    bwrap_args+=(--chdir "$work_dir")
+    # Working directory is the work subdir
+    bwrap_args+=(--chdir "$mount_as/work")
 
     # Add command or interactive shell
     if [ $# -eq 0 ]; then

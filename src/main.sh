@@ -101,7 +101,7 @@ if [ "$non_git_mode" = false ]; then
 fi
 echo "  Network mode:  $cfg_networkMode"
 
-if [ ${#cfg_display_lines[@]} -gt 0 ]; then
+if [ "$non_git_mode" = false ] && [ ${#cfg_display_lines[@]} -gt 0 ]; then
     echo ""
     echo "Excludes by source:"
     for line in "${cfg_display_lines[@]}"; do

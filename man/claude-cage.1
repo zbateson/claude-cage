@@ -31,6 +31,15 @@ Use \fB\-\-branch\fR to specify a branch directly.
 .TP
 .B clean-all
 Remove all cached branches for the current project. Prompts for confirmation.
+.TP
+.B completion \fISHELL\fR
+Output shell completion script for the specified shell (bash or zsh).
+Can be used with eval: \fBeval "$(claude-cage completion bash)"\fR
+.TP
+.B install-completions
+Install shell completions for the current shell. Detects whether you're
+running bash or zsh and installs the appropriate completion wrapper to
+your home directory. Completions are available in new shell sessions.
 .SH OPTIONS
 .TP
 .B \-\-test
@@ -196,6 +205,23 @@ Fetch intermediary refs for manual merge:
 .RS 4
 .nf
 claude-cage git-merge
+.fi
+.RE
+.PP
+Install shell completions:
+.PP
+.RS 4
+.nf
+claude-cage install-completions
+.fi
+.RE
+.PP
+Add completions to your shell rc file:
+.PP
+.RS 4
+.nf
+# In ~/.bashrc or ~/.zshrc
+eval "$(claude-cage completion bash)"  # or zsh
 .fi
 .RE
 .SH PLATFORM SUPPORT

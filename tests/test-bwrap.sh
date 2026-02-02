@@ -4,6 +4,9 @@
 
 set -e
 
+# Unset sandbox env vars to allow testing from inside a sandbox
+unset CLAUDE_CAGE_SOURCING
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
@@ -36,9 +39,10 @@ echo "content" > file.txt
 git add .
 git commit -q -m "Initial"
 
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
+    isolated = true,  -- needed for dry-run test (dirs must exist for non-isolated mounts)
     showBanner = false
 }
 EOF
@@ -66,9 +70,9 @@ if ! echo "$output" | grep -q "\-\-ro-bind.*/usr"; then
 fi
 echo "  PASS: Binds /usr read-only"
 
-echo "Test 3: Should include --bind for work and intermediary directories"
-if ! echo "$output" | grep -q "\-\-bind.*/run/claude-cage/intermediary"; then
-    echo "FAIL: Should bind intermediary directory"
+echo "Test 3: Should include --bind for intermediary at /run path"
+if ! echo "$output" | grep -q "\-\-bind.*/run.*source"; then
+    echo "FAIL: Should bind intermediary at /run path"
     echo "Output was:"
     echo "$output"
     exit 1
@@ -123,7 +127,7 @@ echo "  PASS: Includes --die-with-parent"
 echo ""
 echo "=== Testing bwrap with additionalMounts ==="
 
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
     additionalMounts = {
@@ -166,7 +170,7 @@ echo "=== Testing actual bwrap execution (--test mode) ==="
 
 # Reset config - clean up cache dirs
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
     showBanner = false

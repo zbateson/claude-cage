@@ -4,6 +4,9 @@
 
 set -e
 
+# Unset sandbox env vars to allow testing from inside a sandbox
+unset CLAUDE_CAGE_SOURCING
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
@@ -48,14 +51,14 @@ if ! echo "$output" | grep -q "Configuration loaded from:.*project1/.claude-cage
 fi
 echo "  PASS: Found config in current directory"
 
-echo "Test 2: Should error when no config found"
+echo "Test 2: Should error when no config found (non-interactive)"
 mkdir -p "$TEST_TMP/no-config"
 setup_git_repo "$TEST_TMP/no-config"
 cd "$TEST_TMP/no-config"
 
 output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1) || true
-if ! echo "$output" | grep -q ".claude-cage"; then
-    echo "FAIL: Should mention missing config file"
+if ! echo "$output" | grep -q "No config found"; then
+    echo "FAIL: Should mention missing config"
     echo "Output was:"
     echo "$output"
     exit 1

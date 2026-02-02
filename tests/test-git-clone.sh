@@ -4,6 +4,9 @@
 
 set -e
 
+# Unset sandbox env vars to allow testing from inside a sandbox
+unset CLAUDE_CAGE_SOURCING
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
@@ -37,7 +40,7 @@ git add .
 git commit -m "Initial commit"
 
 # Create config with excludes (flat array format for git version)
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     exclude = { ".env", "config/prod.yml" },
     autoMerge = false,
@@ -90,8 +93,8 @@ echo "=== Testing actual intermediary creation ==="
 # Compute expected paths using the new structure (includes branch name)
 SOURCE_PATH="$TEST_TMP/source"
 BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
-INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/intermediary$SOURCE_PATH"
-WORK_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/work$SOURCE_PATH"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/intermediary$SOURCE_PATH"
+WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
 
 # Run without dry-run to actually create the intermediary
 echo "Test 5: Create intermediary and work directories"
@@ -174,11 +177,12 @@ echo "  PASS: Work directory excludes sensitive files"
 
 echo "Test 12: Work origin should point to cage intermediary path"
 origin=$(git -C "$WORK_DIR" remote get-url origin)
-if [ "$origin" != "/run/claude-cage/intermediary" ]; then
-    echo "FAIL: Work origin is '$origin', expected '/run/claude-cage/intermediary'"
+expected_origin="/run$SOURCE_PATH"
+if [ "$origin" != "$expected_origin" ]; then
+    echo "FAIL: Work origin is '$origin', expected '$expected_origin'"
     exit 1
 fi
-echo "  PASS: Work origin points to /run/claude-cage/intermediary"
+echo "  PASS: Work origin points to /run\$SOURCE_PATH"
 
 echo "Test 13: Intermediary should have clean git history (no excluded file history)"
 # Check that .env was never in the git history

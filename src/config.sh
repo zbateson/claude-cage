@@ -171,6 +171,9 @@ local docker = config.docker or {}
 local docker_image = docker.image or "node:lts-slim"
 local docker_container = docker.container or ""
 
+-- Launch command (what to run inside sandbox)
+local launch = config.launch or "claude"
+
 -- Source defaults to current directory
 if source == "" then
     source = config_root
@@ -209,6 +212,7 @@ print(tostring(autoMerge))
 print(tostring(isolated))
 print(docker_image)
 print(docker_container)
+print(launch)
 
 -- Output excludes by source for display
 local display_lines = {}
@@ -278,6 +282,7 @@ EOF
         read -r cfg_isolated
         read -r cfg_docker_image
         read -r cfg_docker_container
+        read -r cfg_launch
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do
@@ -334,8 +339,21 @@ init_config() {
         config_root=$(pwd)
         local_config="$config_root/.claude-cage"
         if [ ! -f "$local_config" ]; then
-            echo "Can't find a '.claude-cage' config in the current directory."
-            exit 1
+            # No project config - check if any config exists at all
+            if [ ! -f "$system_config" ] && [ ! -f "$user_config" ]; then
+                # No config anywhere - run the builder (if interactive)
+                if [ -t 0 ]; then
+                    config_builder_run
+                    exit $?
+                else
+                    echo "No config found. Run interactively to set one up, or create:"
+                    echo "  ~/.config/claude-cage/config (user-level)"
+                    echo "  .claude-cage (project-level)"
+                    exit 1
+                fi
+            fi
+            # Have system or user config, proceed without project config
+            local_config=""
         fi
     fi
 

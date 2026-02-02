@@ -48,6 +48,7 @@ echo "  Project:       $cfg_project"
 echo "  Source:        $cfg_source"
 echo "  Mounted as:    $cfg_mounted"
 echo "  Mode:          $cfg_mode"
+echo "  Launch:        $cfg_launch"
 echo "  Auto-merge:    $cfg_autoMerge"
 echo "  Isolated:      $cfg_isolated"
 echo "  Network mode:  $cfg_networkMode"
@@ -153,40 +154,45 @@ echo ""
 echo "Inside sandbox:"
 echo "  $project_path              (working dir)"
 echo "  /run$project_path          (git origin)"
+echo ""
 
+# Start pipe listener if autoMerge enabled
+PIPE_LISTENER_PID=""
+if [ "$cfg_autoMerge" = "true" ]; then
+    echo "Auto-merge enabled: pushes to intermediary will sync to source ($source_branch)"
+    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
+fi
+
+# Determine what to run
 if [ "$test_mode" = true ]; then
-    echo ""
-
-    # Start pipe listener if autoMerge enabled
-    PIPE_LISTENER_PID=""
-    if [ "$cfg_autoMerge" = "true" ]; then
-        echo "Auto-merge enabled: pushes to intermediary will sync to source ($source_branch)"
-        start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
-    fi
-
-    if [ "$cfg_mode" = "docker" ]; then
-        echo "Droppin' you into the Docker container for testing..."
-        run_in_docker "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
-    else
-        echo "Droppin' you into the bwrap sandbox for testing..."
-        # Use network-isolated bwrap if network filtering is enabled
-        if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
-            echo "Network filtering enabled (mode: $cfg_networkMode)"
-            run_in_bwrap_with_network "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
-        else
-            run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path"
-        fi
-    fi
-
-    # Stop pipe listener and clean up hooks
-    if [ -n "$PIPE_LISTENER_PID" ]; then
-        stop_pipe_listener "$PIPE_LISTENER_PID"
-        cleanup_pipe "$pipe_path"
-    fi
-    if [ "$cfg_autoMerge" = "true" ]; then
-        cleanup_source_hooks "$cfg_source"
-    fi
+    # Test mode: drop into interactive shell
+    launch_msg="Droppin' you into a shell for testing..."
+    launch_cmd=""
 else
-    echo ""
-    echo "Use --test to drop into a shell for testing."
+    # Normal mode: run the configured launch command
+    launch_msg="Launchin': $cfg_launch"
+    launch_cmd="$cfg_launch"
+fi
+
+echo "$launch_msg"
+
+if [ "$cfg_mode" = "docker" ]; then
+    run_in_docker "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+else
+    # Use network-isolated bwrap if network filtering is enabled
+    if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+        echo "Network filtering enabled (mode: $cfg_networkMode)"
+        run_in_bwrap_with_network "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    else
+        run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    fi
+fi
+
+# Stop pipe listener and clean up hooks
+if [ -n "$PIPE_LISTENER_PID" ]; then
+    stop_pipe_listener "$PIPE_LISTENER_PID"
+    cleanup_pipe "$pipe_path"
+fi
+if [ "$cfg_autoMerge" = "true" ]; then
+    cleanup_source_hooks "$cfg_source"
 fi

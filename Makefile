@@ -2,6 +2,7 @@ SOURCES = \
 	src/header.sh \
 	src/helpers.sh \
 	src/banner.sh \
+	src/config-builder.sh \
 	src/config.sh \
 	src/git-clone.sh \
 	src/git-hooks.sh \

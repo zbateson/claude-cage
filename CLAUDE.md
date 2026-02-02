@@ -77,6 +77,7 @@ The intermediary repo serves as a buffer:
 |------|---------|
 | `src/helpers.sh` | `run`, `run_quiet`, color codes, dry-run support |
 | `src/banner.sh` | ASCII art banner (print_banner) |
+| `src/config-builder.sh` | Interactive config generator when no config exists |
 | `src/config.sh` | Lua-based config parsing (system, user, project levels) |
 | `src/git-clone.sh` | `create_intermediary_clone()` - archives source with excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
@@ -160,11 +161,13 @@ What do you wanna do?
 
 Config files are loaded and merged in order (later values override, arrays merge):
 
-| Level | Path |
-|-------|------|
-| System | `/etc/claude-cage.conf` |
-| User | `~/.config/claude-cage/config` |
-| Project | `.claude-cage` (current directory) |
+| Level | Path | Required? |
+|-------|------|-----------|
+| System | `/etc/claude-cage.conf` | No |
+| User | `~/.config/claude-cage/config` | No |
+| Project | `.claude-cage` (current directory) | No |
+
+**No config?** If no config exists at any level, an interactive builder walks you through creating one. It prompts for sandbox mode, common excludes, auto-merge, and optional tool-specific mounts (e.g., Claude Code's `~/.claude`).
 
 Example `.claude-cage`:
 
@@ -195,6 +198,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `launch` | `"claude"` | Command to run inside sandbox |
 | `exclude` | `{}` | Patterns to exclude from archive |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
@@ -277,7 +281,7 @@ claude_cage {
 
 ### Known Issues / TODO
 
-- [ ] **No Claude Code launch yet** - only `--test` mode works (drops into shell)
+- [x] Configurable launch command (defaults to `claude`, use `--test` for shell)
 - [x] Build script (`make`) - concatenates src/ to dist/
 - [ ] Header/shebang handling in dist needs verification
 - [ ] Testing on actual Claude Code workflow

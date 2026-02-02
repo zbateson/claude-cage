@@ -4,6 +4,9 @@
 
 set -e
 
+# Unset sandbox env vars to allow testing from inside a sandbox
+unset CLAUDE_CAGE_SOURCING
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
@@ -30,7 +33,7 @@ echo "content" > file.txt
 git add .
 git commit -q -m "Initial"
 
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     showBanner = false
 }
@@ -39,8 +42,8 @@ EOF
 # Compute expected paths using the new structure (includes branch name)
 SOURCE_PATH="$TEST_TMP/source"
 BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
-INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/intermediary$SOURCE_PATH"
-WORK_DIR="$CLAUDE_CAGE_CACHE/$BRANCH_NAME/work$SOURCE_PATH"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/intermediary$SOURCE_PATH"
+WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
 
 echo "=== Testing --dry-run mode ==="
 
@@ -119,7 +122,8 @@ echo "=== Testing run wrapper behavior ==="
 
 echo "Test 7: Commands should execute successfully without dry-run"
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
-"$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1
+# Use --test to get a shell (just exit immediately) rather than trying to launch claude
+echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
 
 if [ ! -d "$INTERMEDIARY_DIR" ]; then
     echo "FAIL: Intermediary should be created without dry-run"

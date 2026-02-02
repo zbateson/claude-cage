@@ -4,6 +4,9 @@
 
 set -e
 
+# Unset sandbox env vars to allow testing from inside a sandbox
+unset CLAUDE_CAGE_SOURCING
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
@@ -36,9 +39,10 @@ echo "content" > file.txt
 git add .
 git commit -q -m "Initial"
 
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
+    isolated = true,  -- needed for dry-run test (dirs must exist for non-isolated mounts)
     showBanner = false
 }
 EOF
@@ -66,14 +70,14 @@ if ! echo "$output" | grep -q "node:lts-slim"; then
 fi
 echo "  PASS: Uses default image"
 
-echo "Test 3: Should mount intermediary directory"
-if ! echo "$output" | grep -q "\-v.*/run/claude-cage/intermediary"; then
-    echo "FAIL: Should mount intermediary directory"
+echo "Test 3: Should mount intermediary at /run path"
+if ! echo "$output" | grep -q "\-v.*/run.*source"; then
+    echo "FAIL: Should mount intermediary at /run path"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Mounts intermediary directory"
+echo "  PASS: Mounts intermediary at /run path"
 
 echo "Test 4: Should set working directory to project path"
 if ! echo "$output" | grep -q "\-w.*/source"; then
@@ -106,7 +110,7 @@ echo ""
 echo "=== Testing docker config options ==="
 
 echo "Test 7: Should accept custom image"
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     docker = {
@@ -126,7 +130,7 @@ fi
 echo "  PASS: Uses custom image"
 
 echo "Test 8: Should accept custom container name"
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     docker = {
@@ -148,7 +152,7 @@ echo "  PASS: Uses custom container name"
 echo ""
 echo "=== Testing docker with additionalMounts ==="
 
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     additionalMounts = {
@@ -234,10 +238,14 @@ if ! echo "$script" | grep -q "iptables -A OUTPUT -j ACCEPT"; then
 fi
 echo "  PASS: Blocklist has catch-all ACCEPT"
 
+# Need to unset again after sourcing the script above
+unset CLAUDE_CAGE_SOURCING
+
 echo "Test 16: Docker with networkMode should add NET_ADMIN capability"
-cat > "$TEST_TMP/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
+    isolated = true,
     networkMode = "allowlist",
     allow = {
         domains = { "github.com:443" }

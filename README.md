@@ -21,22 +21,20 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 
 ## How It Works
 
-```
-Source Project                    Intermediary                      Work (Sandbox)
-(your actual repo)                (sanitized, fresh git)            (where Claude operates)
-       │                                   │                              │
-       │  git archive + tar                │     git clone                │
-       │  (secrets excluded)               │                              │
-       └──────────────────────────────────>│─────────────────────────────>│
-                                           │                              │
-       │<──── format-patch/git-am ─────────│<────── git push ─────────────┤
-       │     (auto on push)                │     (Claude commits)         │
-                                           │                              │
-       ├──── post-commit ─────────────────>│       git pull ─────────────>│
-       │     (your commits)                │     (Claude pulls when ready)│
-```
-
 **Three repositories, one purpose:**
+
+```
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│     SOURCE      │ ───> │  INTERMEDIARY   │ ───> │  WORK (Sandbox) │
+│  (your repo)    │      │  (sanitized)    │      │  (Claude's copy)│
+└─────────────────┘      └─────────────────┘      └─────────────────┘
+        │                        │                        │
+        │   Secrets excluded     │    Fresh git clone     │
+        │   via git archive      │    on 'claude' branch  │
+        │                        │                        │
+        │<─────────────────────────────────────────────────
+                    Claude pushes → patches applied to source
+```
 
 1. **Source** - Your actual project with full git history
 2. **Intermediary** - Fresh git repo with excluded files stripped out. No history of your secrets.

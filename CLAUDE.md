@@ -580,7 +580,7 @@ bash tests/run-all.sh
 | test-helpers.sh | helpers.sh | 7 |
 | test-config.sh | config.sh | 12 |
 | test-banner.sh | banner.sh | 6 |
-| test-git-clone.sh | git-clone.sh | 13 |
+| test-git-clone.sh | git-clone.sh | 14 |
 | test-git-hooks.sh | git-hooks.sh | 6 |
 | test-git-patches.sh | git-patches.sh | 12 |
 | test-git-sync.sh | git-sync.sh | 14 |
@@ -588,7 +588,7 @@ bash tests/run-all.sh
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 17 |
 
-**Total: 131 tests**
+**Total: 132 tests**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

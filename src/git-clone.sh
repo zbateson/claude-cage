@@ -378,6 +378,11 @@ create_intermediary_clone() {
         echo "Warning: Failed to set receive.denyCurrentBranch config"
     fi
 
+    # Prevent force pushes (amended commits cause sync issues)
+    if ! run_quiet git -C "$intermediary_dir" config receive.denyNonFastForwards true; then
+        echo "Warning: Failed to set receive.denyNonFastForwards config"
+    fi
+
     # Create work directory by cloning from intermediary
     echo ""
     echo "Settin' up your workspace..."

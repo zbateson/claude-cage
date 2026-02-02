@@ -136,7 +136,15 @@ if [ "$config_val" != "updateInstead" ]; then
 fi
 echo "  PASS: receive.denyCurrentBranch is set correctly"
 
-echo "Test 9: Excluded files should NOT be in intermediary"
+echo "Test 9: Intermediary should have receive.denyNonFastForwards=true"
+config_val=$(git -C "$INTERMEDIARY_DIR" config receive.denyNonFastForwards)
+if [ "$config_val" != "true" ]; then
+    echo "FAIL: receive.denyNonFastForwards is '$config_val', expected 'true'"
+    exit 1
+fi
+echo "  PASS: receive.denyNonFastForwards is set correctly"
+
+echo "Test 10: Excluded files should NOT be in intermediary"
 if [ -f "$INTERMEDIARY_DIR/.env" ]; then
     echo "FAIL: .env should be excluded from intermediary"
     exit 1
@@ -149,7 +157,7 @@ if [ -f "$INTERMEDIARY_DIR/config/prod.yml" ]; then
 fi
 echo "  PASS: config/prod.yml is excluded"
 
-echo "Test 10: Included files SHOULD be in intermediary"
+echo "Test 11: Included files SHOULD be in intermediary"
 if [ ! -f "$INTERMEDIARY_DIR/public.txt" ]; then
     echo "FAIL: public.txt should be in intermediary"
     exit 1
@@ -162,7 +170,7 @@ if [ ! -f "$INTERMEDIARY_DIR/config/dev.yml" ]; then
 fi
 echo "  PASS: config/dev.yml is included"
 
-echo "Test 11: Work directory should match intermediary"
+echo "Test 12: Work directory should match intermediary"
 if [ ! -f "$WORK_DIR/public.txt" ]; then
     echo "FAIL: public.txt should be in work"
     exit 1
@@ -175,7 +183,7 @@ if [ -f "$WORK_DIR/.env" ]; then
 fi
 echo "  PASS: Work directory excludes sensitive files"
 
-echo "Test 12: Work origin should point to cage intermediary path"
+echo "Test 13: Work origin should point to cage intermediary path"
 origin=$(git -C "$WORK_DIR" remote get-url origin)
 expected_origin="/run$SOURCE_PATH"
 if [ "$origin" != "$expected_origin" ]; then
@@ -184,7 +192,7 @@ if [ "$origin" != "$expected_origin" ]; then
 fi
 echo "  PASS: Work origin points to /run\$SOURCE_PATH"
 
-echo "Test 13: Intermediary should have clean git history (no excluded file history)"
+echo "Test 14: Intermediary should have clean git history (no excluded file history)"
 # Check that .env was never in the git history
 history_check=$(git -C "$INTERMEDIARY_DIR" log --all --oneline -- .env 2>&1 || true)
 if [ -n "$history_check" ]; then

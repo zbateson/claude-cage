@@ -179,13 +179,39 @@ config_builder_run() {
 
     echo
 
-    # 6. Launch command
+    # 6. Caged directory symlinks
+    echo "The .caged/ directory puts shortcuts to your sandbox branches right in your project."
+    echo "Makes it easy to poke around and see what's happenin' in there."
+    local create_caged_str="false"
+    if config_builder_prompt_yesno "Create .caged/ shortcuts to your sandbox branches?" "n"; then
+        create_caged_str="true"
+
+        # Offer to add to root .gitignore
+        local git_root
+        git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+        if [ -n "$git_root" ]; then
+            local gitignore="$git_root/.gitignore"
+            if [ ! -f "$gitignore" ] || ! grep -q '^\.caged/\?$' "$gitignore" 2>/dev/null; then
+                echo
+                echo "The .caged/ directory has its own .gitignore, but addin' it to your"
+                echo "project's .gitignore is extra insurance against accidentally committin' it."
+                if config_builder_prompt_yesno "Add .caged/ to .gitignore?" "y"; then
+                    echo ".caged/" >> "$gitignore"
+                    echo "Added .caged/ to $gitignore"
+                fi
+            fi
+        fi
+    fi
+
+    echo
+
+    # 7. Launch command
     local launch_cmd
     launch_cmd=$(config_builder_prompt_text "What're we runnin' in there" "claude")
 
     echo
 
-    # 7. Tool-specific mounts
+    # 8. Tool-specific mounts
     local additional_mounts=()
     if [ "$launch_cmd" = "claude" ]; then
         echo "Claude Code needs these mounted:"
@@ -232,7 +258,7 @@ config_builder_run() {
         echo
     fi
 
-    # 8. Additional read-only mounts
+    # 9. Additional read-only mounts
     if config_builder_prompt_yesno "Any other read-only mounts you want mounted?" "n"; then
         echo "Gimme the paths, comma-separated:"
         read -r other_mounts
@@ -247,7 +273,7 @@ config_builder_run() {
 
     echo
 
-    # 9. Additional read-write mounts
+    # 10. Additional read-write mounts
     if config_builder_prompt_yesno "Any read-write mounts you need mounted?" "n"; then
         echo "Gimme the paths, comma-separated:"
         read -r rw_mounts
@@ -267,6 +293,7 @@ config_builder_run() {
     config_content+="\n    launch = \"$launch_cmd\","
     config_content+="\n    mode = \"$mode\","
     config_content+="\n    autoMerge = $auto_merge_str,"
+    config_content+="\n    createCagedDir = $create_caged_str,"
 
     if [ ${#exclude_patterns[@]} -gt 0 ]; then
         local excludes_str

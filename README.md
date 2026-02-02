@@ -42,6 +42,8 @@ Source Project                    Intermediary                      Work (Sandbo
 2. **Intermediary** - Fresh git repo with excluded files stripped out. No history of your secrets.
 3. **Work** - Where Claude operates inside the sandbox. Pushes sync back to source.
 
+**Note:** All non-excluded files from your working tree are copied to the intermediary. For large repos, consider running from a subdirectory or using sparse checkout (see [Working with Large Repos](#working-with-large-repos)).
+
 **Git hooks make it work:**
 
 | Hook | Location | What It Does |
@@ -252,6 +254,50 @@ Each branch maintains separate cache directories (`~/.cache/claude-cage/branches
 
 **Multi-project visibility:** If you have multiple projects on the same branch, they can see each other inside the sandbox. Useful for monorepos or related projects. Set `isolated = true` in your config to disable this and only mount the single project.
 
+## Working with Large Repos
+
+**By default, claude-cage copies your entire working tree** (minus excluded files) into the sandbox. For a small project, no big deal. For a massive monorepo? That's a lot of files, a lot of disk space, and a lot of wait time.
+
+Two ways to focus the work:
+
+### Run from a Subdirectory
+
+Just `cd` into the part you care about and run `claude-cage` from there:
+
+```bash
+cd ~/massive-monorepo/services/auth
+claude-cage
+```
+
+Claude only sees `services/auth/`. Your commits sync back to the main repo on the branch you started on. Clean and simple.
+
+### Sparse Checkout
+
+For even more control, use git's sparse checkout to pick exactly what files Claude can see:
+
+```bash
+# Clone without checking out files
+git clone --no-checkout git@github.com:company/huge-repo.git
+cd huge-repo
+
+# Enable sparse checkout
+git sparse-checkout init --cone
+git sparse-checkout set src/frontend tests/frontend
+
+# Now checkout
+git checkout main
+
+# Run claude-cage - only sees frontend code
+claude-cage
+```
+
+Both approaches work seamlessly. Hooks install at the repo root. Commits sync correctly. Claude works in a focused sandbox without the noise of unrelated code.
+
+**Why this matters:**
+- Faster cage setup (less files to copy)
+- Smaller context for Claude to reason about
+- Keep Claude away from parts of the codebase you don't want touched
+
 ## File Locations
 
 **On your machine:**
@@ -263,6 +309,8 @@ Each branch maintains separate cache directories (`~/.cache/claude-cage/branches
 
 your-project/
 ├── .claude-cage            # Your config
+├── .caged/                 # Optional symlinks (createCagedDir=true)
+│   └── <branch>/           # Shortcuts to work/ and intermediary/ in cache
 └── .git/hooks/             # Hooks added when autoMerge=true
     ├── pre-commit          # Prevents mixing excluded/included files
     └── post-commit         # Syncs your commits to intermediary

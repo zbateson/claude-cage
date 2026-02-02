@@ -145,6 +145,11 @@ case "$cage_state" in
         ;;
 esac
 
+# Set up .caged/ symlinks if enabled
+if [ "$cfg_createCagedDir" = "true" ]; then
+    setup_caged_symlinks "$cfg_source"
+fi
+
 # Set up git hooks and communication pipe (if autoMerge enabled)
 if [ "$cfg_autoMerge" = "true" ]; then
     setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"

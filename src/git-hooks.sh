@@ -224,16 +224,20 @@ cleanup_source_hooks() {
         return 0
     fi
 
+    # Use git root for hook paths (supports running from subdirectories)
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+
     # No other sessions, safe to remove our branch-specific hooks
-    local pre_commit_hook="$source_dir/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
-    local post_commit_hook="$source_dir/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+    local pre_commit_hook="$git_root/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
+    local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
 
     if [ -f "$pre_commit_hook" ]; then
         run rm -f "$pre_commit_hook"
         if [ "$verbose" = true ]; then
             echo "  Removed hook: $pre_commit_hook"
         fi
-        maybe_remove_dispatcher "$source_dir" "pre-commit"
+        maybe_remove_dispatcher "$git_root" "pre-commit"
     fi
 
     if [ -f "$post_commit_hook" ]; then
@@ -241,7 +245,7 @@ cleanup_source_hooks() {
         if [ "$verbose" = true ]; then
             echo "  Removed hook: $post_commit_hook"
         fi
-        maybe_remove_dispatcher "$source_dir" "post-commit"
+        maybe_remove_dispatcher "$git_root" "post-commit"
     fi
 }
 
@@ -256,13 +260,16 @@ setup_source_pre_commit() {
     local target_branch="$3"
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$target_branch")
-    local hook_path="$source_dir/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
+    # Use git root for hook installation (supports running from subdirectories)
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local hook_path="$git_root/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
     local work_dir
     work_dir=$(get_cage_path "$source_dir" "work")
 
-    # Ensure dispatcher exists
+    # Ensure dispatcher exists (at git root, not source_dir)
     if [ "$dry_run" != true ]; then
-        ensure_hook_dispatcher "$source_dir" "pre-commit"
+        ensure_hook_dispatcher "$git_root" "pre-commit"
     fi
 
     # Create pre-commit hook
@@ -356,11 +363,14 @@ setup_source_post_commit() {
     local state_path="$5"
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$target_branch")
-    local hook_path="$source_dir/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+    # Use git root for hook installation (supports running from subdirectories)
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local hook_path="$git_root/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
 
-    # Ensure dispatcher exists
+    # Ensure dispatcher exists (at git root, not source_dir)
     if [ "$dry_run" != true ]; then
-        ensure_hook_dispatcher "$source_dir" "post-commit"
+        ensure_hook_dispatcher "$git_root" "post-commit"
     fi
 
     # Register this session

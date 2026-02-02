@@ -218,6 +218,8 @@ local isolated = config.isolated
 if isolated == nil then isolated = false end
 local hideConfirmationPrompt = config.hideConfirmationPrompt
 if hideConfirmationPrompt == nil then hideConfirmationPrompt = false end
+local createCagedDir = config.createCagedDir
+if createCagedDir == nil then createCagedDir = false end
 
 -- Docker options
 local docker = config.docker or {}
@@ -258,6 +260,7 @@ print(docker_image)
 print(docker_container)
 print(launch)
 print(tostring(hideConfirmationPrompt))
+print(tostring(createCagedDir))
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -329,6 +332,7 @@ LUAEOF
         read -r cfg_docker_container
         read -r cfg_launch
         read -r cfg_hideConfirmationPrompt
+        read -r cfg_createCagedDir
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do

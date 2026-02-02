@@ -237,6 +237,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `isolated` | `false` | Only mount single project instead of all same-branch projects |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip the auto-merge info message and key press when autoMerge is off |
+| `createCagedDir` | `false` | Create `.caged/` symlinks to branch caches (see below) |
 | `additionalMounts` | `{}` | Extra mounts for sandbox (see below) |
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
@@ -267,6 +268,31 @@ claude_cage {
 | `source` | Path on host (supports `~` expansion) |
 | `as` / `dest` | Path inside sandbox (defaults to source) |
 | `mode` | `"ro"` (default) or `"rw"` |
+
+### Caged Directory Shortcuts
+
+When `createCagedDir = true`, claude-cage creates a `.caged/` directory in your project root with symlinks to each branch's cache directories. This provides easy visibility into your sandboxed branches without changin' where the actual storage lives.
+
+```
+project/.caged/
+├── .gitignore           # Self-ignoring: contains "* \n !.gitignore"
+├── main/
+│   ├── work         → ~/.cache/claude-cage/branches/main/work/<project-path>/
+│   └── intermediary → ~/.cache/claude-cage/branches/main/intermediary/<project-path>/
+├── feature--foo/
+│   ├── work         → ~/.cache/.../branches/feature--foo/work/<project-path>/
+│   └── intermediary → ~/.cache/.../branches/feature--foo/intermediary/<project-path>/
+```
+
+**Benefits:**
+- `ls .caged/` shows all caged branches at a glance
+- `ls .caged/<branch>/` shows work and intermediary - exactly what you need to poke around
+- Symlinks point directly to project-specific paths (no noise from other projects)
+- `rm -rf .caged/` only removes symlinks, actual cache data stays safe
+- Multi-project visibility preserved (storage still in `~/.cache/`)
+- Defense in depth: both self-ignoring `.gitignore` AND config builder offers to add to root `.gitignore`
+
+**Note:** The `.caged/` directory contains a self-ignoring `.gitignore`, so it won't pollute your git status. The config builder also offers to add `.caged/` to your project's root `.gitignore` for extra insurance.
 
 ## CLI Usage
 
@@ -308,9 +334,12 @@ claude_cage {
 - [x] Cleanup on exit
 - [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (111 tests across 9 files)
+- [x] Comprehensive test suite (131 tests across 9 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
+- [x] Subdirectory support (run from any subdirectory, hooks install at git root)
+- [x] Sparse checkout support (only copies files that exist in working tree)
+- [x] Optional `.caged/` symlinks for easy cache access (`createCagedDir` option)
 
 ### Known Issues / TODO
 
@@ -434,6 +463,11 @@ $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UI
 
 project/
 ├── .claude-cage                        # Project config file (optional with ancestors)
+├── .caged/                             # Optional symlinks to cache (createCagedDir = true)
+│   ├── .gitignore                      # Self-ignoring (* and !.gitignore)
+│   └── <branch>/                       # One directory per caged branch
+│       ├── work         → ~/.cache/.../work/<project-path>/
+│       └── intermediary → ~/.cache/.../intermediary/<project-path>/
 └── .git/hooks/
     ├── pre-commit                      # Dispatcher (runs all in pre-commit.d/)
     ├── pre-commit.d/

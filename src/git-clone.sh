@@ -66,6 +66,13 @@ get_branch_intermediary_root() {
     echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/intermediary"
 }
 
+# Get the git root directory for a path
+# Works from subdirectories by using git's auto-discovery
+get_git_root() {
+    local source_dir="$1"
+    git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null
+}
+
 # Get current branch from source project
 # Returns empty string and exits 1 if not on a branch (detached HEAD or no commits)
 get_source_branch() {
@@ -131,13 +138,16 @@ create_intermediary_clone() {
     fi
 
     # Extract files using git ls-files + tar (ignores .gitattributes export-ignore)
+    # Filter to only existing files to support sparse checkouts
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] git -C $source_dir ls-files -z | tar -C $source_dir --null -T - -cf - | tar -x ${tar_excludes[*]} -C $intermediary_dir"
+        echo "[dry-run] (cd $source_dir && git ls-files -z | filter-existing) | tar ... -C $intermediary_dir"
     else
         if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] git -C $source_dir ls-files -z | tar -C $source_dir --null -T - -cf - | tar -x ${tar_excludes[*]} -C $intermediary_dir${_reset}" >&2
+            echo -e "${_yellow}[run] (cd $source_dir && git ls-files -z | filter-existing) | tar ... -C $intermediary_dir${_reset}" >&2
         fi
-        git -C "$source_dir" ls-files -z | tar -C "$source_dir" --null -T - -cf - | tar -x "${tar_excludes[@]}" -C "$intermediary_dir"
+        (cd "$source_dir" && git ls-files -z | while IFS= read -r -d '' f; do
+            [ -e "$f" ] && printf '%s\0' "$f"
+        done) | tar -C "$source_dir" --null -T - -cf - | tar -x "${tar_excludes[@]}" -C "$intermediary_dir"
     fi
 
     # Initialize fresh git repo (no history of excluded files)
@@ -196,5 +206,61 @@ create_intermediary_clone() {
         local state_path
         state_path=$(get_state_path "$source_dir")
         git -C "$source_dir" rev-parse HEAD > "$state_path"
+    fi
+}
+
+# Set up .caged/ directory with symlinks to cache directories
+# Arguments: $1 = source directory
+setup_caged_symlinks() {
+    local source_dir="$1"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+
+    if [ -z "$git_root" ]; then
+        echo "Can't find git root for .caged/ setup - skippin' it."
+        return 1
+    fi
+
+    local caged_dir="$git_root/.caged"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "${CLAUDE_CAGE_BRANCH:-default}")
+
+    # Target paths in cache
+    local work_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/work$source_dir"
+    local intermediary_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/intermediary$source_dir"
+
+    # Create .caged and branch directories
+    local branch_dir="$caged_dir/$sanitized_branch"
+    run mkdir -p "$branch_dir"
+
+    # Create self-ignoring .gitignore if missing
+    if [ ! -f "$caged_dir/.gitignore" ]; then
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] Creating $caged_dir/.gitignore"
+        else
+            printf '*\n!.gitignore\n' > "$caged_dir/.gitignore"
+        fi
+    fi
+
+    # Create/update work symlink
+    local work_symlink="$branch_dir/work"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $work_target $work_symlink"
+    else
+        rm -f "$work_symlink"
+        ln -s "$work_target" "$work_symlink"
+    fi
+
+    # Create/update intermediary symlink
+    local intermediary_symlink="$branch_dir/intermediary"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $intermediary_target $intermediary_symlink"
+    else
+        rm -f "$intermediary_symlink"
+        ln -s "$intermediary_target" "$intermediary_symlink"
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo "  Created .caged/$sanitized_branch/ symlinks"
     fi
 }

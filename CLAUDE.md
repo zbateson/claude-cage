@@ -173,7 +173,7 @@ Example `.claude-cage`:
 
 ```lua
 claude_cage {
-    exclude = { ".env", "secrets/**", ".git/config" },
+    exclude = { ".env", "secrets/**", "application-*.properties" },
     mode = "bwrap",  -- or "docker"
     autoMerge = true,  -- enable real-time sync
     showBanner = true,

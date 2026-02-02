@@ -56,7 +56,7 @@ config_builder_prompt_multi() {
     done
 
     echo "$prompt"
-    echo "(Toggle with number, Enter when done)"
+    echo "(Hit a number to toggle, Enter when you're done)"
     echo
 
     while true; do
@@ -65,7 +65,7 @@ config_builder_prompt_multi() {
             [ "${selected[$i]}" = "1" ] && mark="[x]"
             printf "  %d) %s %s\n" "$((i + 1))" "$mark" "${options[$i]}"
         done
-        printf "\nToggle [1-%d] or Enter to confirm: " "$count"
+        printf "\nToggle [1-%d] or hit Enter: " "$count"
         read -r choice
 
         if [ -z "$choice" ]; then
@@ -108,12 +108,12 @@ config_builder_run() {
 
     echo
     echo "═══════════════════════════════════════════════════════════════"
-    echo "  No config found. Let's get you set up."
+    echo "  No config found. Let's get you set up, friend."
     echo "═══════════════════════════════════════════════════════════════"
     echo
 
     # 1. Config location
-    config_builder_prompt_choice "Where should I save the config?" \
+    config_builder_prompt_choice "Where do you want me to save this thing?" \
         "$user_config (applies to all projects)" \
         "$project_config (this project only)"
     local config_location=$?
@@ -127,7 +127,7 @@ config_builder_run() {
         "bwrap - Lightweight, Linux/WSL only"
         "docker - Works everywhere Docker runs"
     )
-    config_builder_prompt_choice "Sandbox mode:" "${mode_options[@]}"
+    config_builder_prompt_choice "How we runnin' this sandbox?" "${mode_options[@]}"
     local mode_choice=$?
     local mode="bwrap"
     [ $mode_choice -eq 1 ] && mode="docker"
@@ -139,24 +139,24 @@ config_builder_run() {
         ".env, .env.*"
         "secrets/, credentials/"
         "*.pem, *.key, *.p12"
-        ".git/config (may contain tokens)"
+        "application-*.properties (Spring Boot secrets)"
     )
-    config_builder_prompt_multi "Common patterns to exclude from sandbox:" "${exclude_options[@]}"
+    config_builder_prompt_multi "What should I keep outta the sandbox?" "${exclude_options[@]}"
     local exclude_patterns=()
     for idx in "${MULTI_RESULT[@]}"; do
         case $idx in
             0) exclude_patterns+=('".env"' '".env.*"') ;;
             1) exclude_patterns+=('"secrets/**"' '"credentials/**"') ;;
             2) exclude_patterns+=('"*.pem"' '"*.key"' '"*.p12"') ;;
-            3) exclude_patterns+=('".git/config"') ;;
+            3) exclude_patterns+=('"application-*.properties"') ;;
         esac
     done
 
     echo
 
     # 4. Custom excludes
-    if config_builder_prompt_yesno "Add custom exclude patterns?" "n"; then
-        echo "Enter patterns (comma-separated, e.g., 'private/**, *.secret'):"
+    if config_builder_prompt_yesno "Got any other patterns to exclude?" "n"; then
+        echo "Gimme the patterns, comma-separated (e.g., 'private/**, *.secret'):"
         read -r custom_patterns
         if [ -n "$custom_patterns" ]; then
             IFS=',' read -ra customs <<< "$custom_patterns"
@@ -170,9 +170,9 @@ config_builder_run() {
     echo
 
     # 5. Auto-merge
-    echo "Auto-merge syncs commits from sandbox to source in real-time."
-    echo "Without it, you'll run 'claude-cage git-merge' manually."
-    config_builder_prompt_yesno "Enable auto-merge?" "y"
+    echo "Auto-merge pushes your sandbox commits back to source in real-time."
+    echo "Without it, you gotta run 'claude-cage git-merge' yourself."
+    config_builder_prompt_yesno "Want auto-merge?" "y"
     local auto_merge=$?
     local auto_merge_str="false"
     [ $auto_merge -eq 0 ] && auto_merge_str="true"
@@ -180,48 +180,48 @@ config_builder_run() {
     echo
 
     # 6. Launch command
-    echo "What command should run inside the sandbox?"
     local launch_cmd
-    launch_cmd=$(config_builder_prompt_text "Launch command" "claude")
+    launch_cmd=$(config_builder_prompt_text "What're we runnin' in there" "claude")
 
     echo
 
     # 7. Tool-specific mounts (Claude Code)
     local additional_mounts=()
-    echo "Some AI coding tools need config directories mounted into the sandbox."
-    echo
-    if config_builder_prompt_yesno "Add Claude Code mounts? (~/.claude, ~/.claude.json)" "y"; then
-        # Check if they exist
-        local claude_dir="$HOME/.claude"
-        local claude_json="$HOME/.claude.json"
-        local need_create=()
+    if [ "$launch_cmd" = "claude" ]; then
+        if config_builder_prompt_yesno "Mount Claude Code's config? (~/.claude, ~/.gitconfig, etc.)" "y"; then
+            # Check if ~/.claude and ~/.claude.json exist
+            local claude_dir="$HOME/.claude"
+            local claude_json="$HOME/.claude.json"
+            local need_create=()
 
-        [ ! -d "$claude_dir" ] && need_create+=("$claude_dir (directory)")
-        [ ! -f "$claude_json" ] && need_create+=("$claude_json (file)")
+            [ ! -d "$claude_dir" ] && need_create+=("$claude_dir (directory)")
+            [ ! -f "$claude_json" ] && need_create+=("$claude_json (file)")
 
-        if [ ${#need_create[@]} -gt 0 ]; then
-            echo
-            echo "These don't exist yet:"
-            for item in "${need_create[@]}"; do
-                echo "  - $item"
-            done
-            if config_builder_prompt_yesno "Create them now?" "y"; then
-                [ ! -d "$claude_dir" ] && mkdir -p "$claude_dir" && echo "Created $claude_dir"
-                [ ! -f "$claude_json" ] && echo "{}" > "$claude_json" && echo "Created $claude_json"
+            if [ ${#need_create[@]} -gt 0 ]; then
+                echo
+                echo "Hold on, these don't exist yet:"
+                for item in "${need_create[@]}"; do
+                    echo "  - $item"
+                done
+                if config_builder_prompt_yesno "Want me to create 'em?" "y"; then
+                    [ ! -d "$claude_dir" ] && mkdir -p "$claude_dir" && echo "Created $claude_dir"
+                    [ ! -f "$claude_json" ] && echo "{}" > "$claude_json" && echo "Created $claude_json"
+                fi
             fi
-        fi
 
-        additional_mounts+=(
-            '{ source = "~/.claude", mode = "rw" }'
-            '{ source = "~/.claude.json", mode = "rw" }'
-        )
+            additional_mounts+=(
+                '"~/.local/bin/claude"'
+                '"~/.gitconfig"'
+                '{ source = "~/.claude", mode = "rw" }'
+                '{ source = "~/.claude.json", mode = "rw" }'
+            )
+        fi
+        echo
     fi
 
-    echo
-
     # 8. Other tool mounts
-    if config_builder_prompt_yesno "Add other read-only mounts? (e.g., ~/.gitconfig)" "n"; then
-        echo "Enter paths (comma-separated):"
+    if config_builder_prompt_yesno "Any other mounts? (read-only)" "n"; then
+        echo "Gimme the paths, comma-separated:"
         read -r other_mounts
         if [ -n "$other_mounts" ]; then
             IFS=',' read -ra mounts <<< "$other_mounts"
@@ -259,21 +259,21 @@ config_builder_run() {
     config_content+="\n}"
 
     echo "═══════════════════════════════════════════════════════════════"
-    echo "  Config preview:"
+    echo "  Here's what we got:"
     echo "═══════════════════════════════════════════════════════════════"
     echo
     echo -e "$config_content"
     echo
 
-    if config_builder_prompt_yesno "Write this config to $config_path?" "y"; then
+    if config_builder_prompt_yesno "Write this to $config_path?" "y"; then
         # Create directory if needed
         if [ $config_location -eq 0 ]; then
             mkdir -p "$user_config_dir"
         fi
         echo -e "$config_content" > "$config_path"
         echo
-        echo "Config saved to $config_path"
-        echo "You're all set. Run claude-cage again to get started."
+        echo "Saved to $config_path."
+        echo "You're good to go. Fire up claude-cage again when you're ready."
         return 0
     else
         echo "Alright, no config written. Come back when you're ready."

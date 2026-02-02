@@ -38,7 +38,7 @@ Create a config in your project:
 ```lua
 -- ~/myproject/.claude-cage
 claude_cage {
-    exclude = { ".env", "secrets/**", ".git/config" }
+    exclude = { ".env", "secrets/**", "application-*.properties" }
 }
 ```
 

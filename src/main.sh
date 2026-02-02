@@ -28,6 +28,12 @@ if [ "${1:-}" = "completion" ]; then
     esac
 fi
 
+# Handle install-completions subcommand early (doesn't need config)
+if [ "${1:-}" = "install-completions" ]; then
+    config_builder_install_completions
+    exit $?
+fi
+
 # Parse additional flags and subcommands
 # Arguments we don't recognize get passed through to the launch command
 test_mode=false

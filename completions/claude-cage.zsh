@@ -14,6 +14,7 @@ _claude_cage() {
         'clean:Remove cached branch (interactive selection)'
         'clean-all:Remove all cached branches for this project'
         'completion:Output shell completion script'
+        'install-completions:Install shell completions for current shell'
     )
 
     flags=(

@@ -67,10 +67,11 @@ claude-cage - A sandboxed git workflow for Claude Code
 Usage: claude-cage [options] [subcommand] [-- args...]
 
 Subcommands:
-  git-merge         Fetch refs from intermediary for manual merge
-  clean             Remove cached branch (interactive selection)
-  clean-all         Remove all cached branches for this project
-  completion SHELL  Output shell completion script (bash or zsh)
+  git-merge           Fetch refs from intermediary for manual merge
+  clean               Remove cached branch (interactive selection)
+  clean-all           Remove all cached branches for this project
+  completion SHELL    Output shell completion script (bash or zsh)
+  install-completions Install shell completions for current shell
 
 Options:
   --test          Drop into a shell for testing instead of launching
@@ -110,7 +111,7 @@ _claude_cage() {
     local cur prev words cword
     _init_completion 2>/dev/null || return
 
-    local subcommands="git-merge clean clean-all completion"
+    local subcommands="git-merge clean clean-all completion install-completions"
     local flags="--test --direct-mount --branch --dry-run --verbose -v --debug --help -h --version"
 
     case "$prev" in
@@ -149,6 +150,7 @@ _claude_cage() {
         'clean:Remove cached branch (interactive selection)'
         'clean-all:Remove all cached branches for this project'
         'completion:Output shell completion script'
+        'install-completions:Install shell completions for current shell'
     )
 
     flags=(

@@ -9,7 +9,7 @@ _claude_cage() {
     local cur prev words cword
     _init_completion 2>/dev/null || return
 
-    local subcommands="git-merge clean clean-all completion"
+    local subcommands="git-merge clean clean-all completion install-completions"
     local flags="--test --direct-mount --branch --dry-run --verbose -v --debug --help -h --version"
 
     case "$prev" in

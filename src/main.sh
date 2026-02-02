@@ -167,10 +167,12 @@ else
     echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
 fi
 
-# Show confirmation prompt with network info (unless hidden)
+# Always show network info
+echo ""
+echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
+
+# Show confirmation prompt (unless hidden)
 if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
-    echo ""
-    echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
     echo ""
     echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
     read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true

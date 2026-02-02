@@ -375,8 +375,8 @@ manual_git_merge() {
     intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
 
     if [ ! -d "$intermediary_dir" ]; then
-        echo "Ain't no cage here at $intermediary_dir"
-        echo "You gotta run claude-cage first, friend."
+        echo "Nothin' to merge on branch '$CLAUDE_CAGE_BRANCH'."
+        echo "Were you on a different branch when you started the cage?"
         exit 1
     fi
 

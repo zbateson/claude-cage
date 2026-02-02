@@ -165,6 +165,8 @@ local autoMerge = config.autoMerge
 if autoMerge == nil then autoMerge = false end
 local isolated = config.isolated
 if isolated == nil then isolated = false end
+local hideConfirmationPrompt = config.hideConfirmationPrompt
+if hideConfirmationPrompt == nil then hideConfirmationPrompt = false end
 
 -- Docker options
 local docker = config.docker or {}
@@ -213,6 +215,7 @@ print(tostring(isolated))
 print(docker_image)
 print(docker_container)
 print(launch)
+print(tostring(hideConfirmationPrompt))
 
 -- Output excludes by source for display
 local display_lines = {}
@@ -283,6 +286,7 @@ EOF
         read -r cfg_docker_image
         read -r cfg_docker_container
         read -r cfg_launch
+        read -r cfg_hideConfirmationPrompt
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do

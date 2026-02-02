@@ -204,6 +204,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
 | `isolated` | `false` | Only mount single project instead of all same-branch projects |
 | `showBanner` | `true` | Show ASCII banner |
+| `hideConfirmationPrompt` | `false` | Skip the auto-merge info message and key press when autoMerge is off |
 | `additionalMounts` | `{}` | Extra mounts for sandbox (see below) |
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |

@@ -17,12 +17,17 @@ done
 # Initialize and parse config
 init_config "$@"
 
-# Check if we're in a git repo
-non_git_mode=false
-if ! is_git_repo "$cfg_source"; then
+# Check for direct mount mode (explicit config or non-git directory)
+direct_mount_mode=false
+
+# Direct mount explicitly requested in config
+if [ "$cfg_directMount" = "true" ]; then
+    direct_mount_mode=true
+# Not a git repo - check allowNonGit setting
+elif ! is_git_repo "$cfg_source"; then
     case "$cfg_allowNonGit" in
         "true")
-            non_git_mode=true
+            direct_mount_mode=true
             ;;
         "false")
             echo "Hold on there. This ain't a git repository."
@@ -36,7 +41,7 @@ if ! is_git_repo "$cfg_source"; then
             echo ""
             if [ -t 0 ]; then
                 if config_builder_prompt_yesno "Mount it directly and continue?" "y"; then
-                    non_git_mode=true
+                    direct_mount_mode=true
                     echo ""
                     echo "To skip this prompt next time, add 'allowNonGit = true' to your config:"
                     echo "  /etc/claude-cage.conf           (system-wide)"
@@ -57,8 +62,8 @@ fi
 
 # Handle --git-merge early (doesn't need sandbox)
 if [ "$git_merge_mode" = true ]; then
-    if [ "$non_git_mode" = true ]; then
-        echo "Can't do git-merge in a non-git directory. Nothin' to merge."
+    if [ "$direct_mount_mode" = true ]; then
+        echo "Can't do git-merge in direct mount mode. Nothin' to merge."
         exit 1
     fi
     manual_git_merge "$cfg_source"
@@ -95,13 +100,13 @@ echo "  Project:       $cfg_project"
 echo "  Source:        $cfg_source"
 echo "  Mode:          $cfg_mode"
 echo "  Launch:        $cfg_launch"
-if [ "$non_git_mode" = false ]; then
+if [ "$direct_mount_mode" = false ]; then
     echo "  Auto-merge:    $cfg_autoMerge"
     echo "  Isolated:      $cfg_isolated"
 fi
 echo "  Network mode:  $cfg_networkMode"
 
-if [ "$non_git_mode" = false ] && [ ${#cfg_display_lines[@]} -gt 0 ]; then
+if [ "$direct_mount_mode" = false ] && [ ${#cfg_display_lines[@]} -gt 0 ]; then
     echo ""
     echo "Excludes by source:"
     for line in "${cfg_display_lines[@]}"; do
@@ -136,13 +141,12 @@ pipe_path=""
 state_path=""
 project_path="$cfg_source"
 
-if [ "$non_git_mode" = true ]; then
-    # Non-git mode: mount source directory directly
-    echo -e "${_cyan}Running in non-git mode. Changes go directly to source.${_reset}"
+if [ "$direct_mount_mode" = true ]; then
+    # Direct mount mode: mount source directory directly (no git sync)
+    echo -e "${_cyan}Direct mount mode. Changes go straight to source.${_reset}"
     echo ""
 
     # Use source path directly - no intermediary or work dir needed
-    # We'll mount the parent directory containing the project
     work_dir="$cfg_source"
     branch_work_root=$(dirname "$cfg_source")
 
@@ -230,13 +234,13 @@ echo "============================================"
 echo ""
 echo "Inside sandbox:"
 echo "  $project_path              (working dir)"
-if [ "$non_git_mode" = false ]; then
+if [ "$direct_mount_mode" = false ]; then
     echo "  /run$project_path          (git origin)"
 fi
 echo ""
 
 # Start pipe listener if autoMerge enabled (git mode only)
-if [ "$non_git_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
+if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
     start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
 fi
 
@@ -258,9 +262,9 @@ if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
 fi
 
 # Show info messages last, right before entering sandbox
-if [ "$non_git_mode" = true ]; then
+if [ "$direct_mount_mode" = true ]; then
     echo ""
-    echo -e "${_cyan}⚠️  Non-git mode: Changes are made directly to source files.${_reset}"
+    echo -e "${_cyan}⚠️  Direct mount: Changes are made directly to source files.${_reset}"
 elif [ "$cfg_autoMerge" != "true" ]; then
     echo ""
     echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
@@ -291,7 +295,7 @@ else
 fi
 
 # Stop pipe listener and clean up hooks (git mode only)
-if [ "$non_git_mode" = false ]; then
+if [ "$direct_mount_mode" = false ]; then
     if [ -n "$PIPE_LISTENER_PID" ]; then
         stop_pipe_listener "$PIPE_LISTENER_PID"
         cleanup_pipe "$pipe_path"

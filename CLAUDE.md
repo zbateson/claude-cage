@@ -236,6 +236,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
 | `allowNonGit` | unset | Allow running in non-git directories (see below) |
+| `directMount` | `false` | Mount source directly without git sync (see below) |
 | `isolated` | `false` | Only mount single project instead of all same-branch projects |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip the auto-merge info message and key press when autoMerge is off |
@@ -245,30 +246,39 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
 
-### Non-Git Directories
+### Direct Mount Mode
 
-By default, claude-cage is designed to work with git repositories, using git's machinery for syncing changes between the sandbox and your source files. But sometimes you just want to sandbox a plain directory without git.
+By default, claude-cage creates an intermediary clone and uses git to sync changes. But sometimes you just want to sandbox a directory directly - no cloning, no syncing.
 
-The `allowNonGit` option controls this behavior:
+**Two ways to trigger direct mount mode:**
 
-| Value | Behavior |
-|-------|----------|
-| `true` | Allow sandboxing non-git directories. Changes go directly to source. |
-| `false` | Require a git repository. Exit with error if not in a repo. |
-| unset | Prompt interactively when a non-git directory is detected. |
+1. **`directMount = true`** - Explicitly mount source directly (even for git repos)
+2. **`allowNonGit = true`** - Allow non-git directories (triggers direct mount automatically)
 
-**When running in non-git mode:**
+| Option | Default | Behavior |
+|--------|---------|----------|
+| `directMount` | `false` | When `true`, always mount source directly without git sync |
+| `allowNonGit` | unset | When `true`, allow non-git dirs. When `false`, require git. When unset, prompt. |
+
+**In direct mount mode:**
 - The source directory is mounted directly into the sandbox (read-write)
 - No intermediary or work directory is created
 - No git hooks or sync mechanism
 - Changes made inside the sandbox immediately affect the source files
-- `autoMerge` and `createCagedDir` are ignored
+- `autoMerge`, `createCagedDir`, and `exclude` are ignored
 
-**Example config:**
+**Example configs:**
 
 ```lua
+-- Skip git sync entirely, even for git repos
 claude_cage {
-    allowNonGit = true,  -- Let me sandbox anything
+    directMount = true,
+    mode = "bwrap"
+}
+
+-- Allow non-git directories (direct mount triggered automatically)
+claude_cage {
+    allowNonGit = true,
     mode = "bwrap"
 }
 ```

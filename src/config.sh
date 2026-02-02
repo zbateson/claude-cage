@@ -225,6 +225,10 @@ if createCagedDir == nil then createCagedDir = false end
 local allowNonGit = config.allowNonGit
 -- Keep as nil if not set (special handling for "unset" state)
 
+-- Direct mount mode - mount source directly without git clone/sync
+local directMount = config.directMount
+if directMount == nil then directMount = false end
+
 -- Docker options
 local docker = config.docker or {}
 local docker_image = docker.image or "node:lts-slim"
@@ -271,6 +275,7 @@ if allowNonGit == nil then
 else
     print(tostring(allowNonGit))
 end
+print(tostring(directMount))
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -344,6 +349,7 @@ LUAEOF
         read -r cfg_hideConfirmationPrompt
         read -r cfg_createCagedDir
         read -r cfg_allowNonGit
+        read -r cfg_directMount
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do

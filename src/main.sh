@@ -35,27 +35,18 @@ if ! is_git_repo "$cfg_source"; then
             echo "I can still sandbox it for you, but there won't be any git sync magic."
             echo ""
             if [ -t 0 ]; then
-                if config_builder_prompt_yesno "Want me to remember this choice? (allowNonGit = true)" "y"; then
-                    # Find the most appropriate config file to update
-                    local_cfg=".claude-cage"
-                    if [ -f "$local_cfg" ]; then
-                        # Append to existing local config
-                        echo "" >> "$local_cfg"
-                        echo "claude_cage { allowNonGit = true }" >> "$local_cfg"
-                        echo "Added allowNonGit = true to $local_cfg"
-                    elif [ -f "$user_config" ]; then
-                        # Append to user config
-                        echo "" >> "$user_config"
-                        echo "claude_cage { allowNonGit = true }" >> "$user_config"
-                        echo "Added allowNonGit = true to $user_config"
-                    else
-                        # Create a local config
-                        echo "claude_cage { allowNonGit = true }" > "$local_cfg"
-                        echo "Created $local_cfg with allowNonGit = true"
-                    fi
+                if config_builder_prompt_yesno "Mount it directly and continue?" "y"; then
+                    non_git_mode=true
                     echo ""
+                    echo "To skip this prompt next time, add 'allowNonGit = true' to your config:"
+                    echo "  /etc/claude-cage.conf           (system-wide)"
+                    echo "  ~/.config/claude-cage/config    (user)"
+                    echo "  .claude-cage                    (project)"
+                    echo ""
+                else
+                    echo "Alright, catch you later."
+                    exit 0
                 fi
-                non_git_mode=true
             else
                 echo "Run interactively to configure, or add allowNonGit = true to your config."
                 exit 1

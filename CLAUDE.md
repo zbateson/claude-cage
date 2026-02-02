@@ -273,7 +273,7 @@ claude_cage {
 }
 ```
 
-If `allowNonGit` is unset and you run claude-cage in a non-git directory, you'll be prompted to configure it. If you choose yes, the setting is saved to your config for next time.
+If `allowNonGit` is unset and you run claude-cage in a non-git directory, you'll be prompted to mount it directly. The setting isn't saved automatically - you'll see where to add `allowNonGit = true` in your config to skip the prompt next time.
 
 ### Additional Mounts
 

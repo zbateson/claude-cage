@@ -159,24 +159,7 @@ echo ""
 # Start pipe listener if autoMerge enabled
 PIPE_LISTENER_PID=""
 if [ "$cfg_autoMerge" = "true" ]; then
-    echo "Auto-merge enabled: pushes to intermediary will sync to source ($source_branch)"
     start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
-else
-    echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
-    echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
-    echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
-fi
-
-# Always show network info
-echo ""
-echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
-
-# Show confirmation prompt (unless hidden)
-if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
-    echo ""
-    echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
-    read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true
-    echo ""
 fi
 
 # Determine what to run
@@ -192,12 +175,34 @@ fi
 
 echo "$launch_msg"
 
+if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+    echo "Network filtering enabled (mode: $cfg_networkMode)"
+fi
+
+# Show info messages last, right before entering sandbox
+if [ "$cfg_autoMerge" != "true" ]; then
+    echo ""
+    echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
+    echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
+    echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
+fi
+
+echo ""
+echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
+
+# Show confirmation prompt (unless hidden)
+if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
+    echo ""
+    echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
+    read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true
+    echo ""
+fi
+
 if [ "$cfg_mode" = "docker" ]; then
     run_in_docker "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
 else
     # Use network-isolated bwrap if network filtering is enabled
     if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
-        echo "Network filtering enabled (mode: $cfg_networkMode)"
         run_in_bwrap_with_network "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
     else
         run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd

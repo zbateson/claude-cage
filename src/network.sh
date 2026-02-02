@@ -492,12 +492,6 @@ run_with_network_namespace() {
     export CLAUDE_CAGE_SCRIPT
     CLAUDE_CAGE_SCRIPT="$(realpath "$0")"
 
-    # Check if host loopback is accessible and warn if so
-    if is_host_loopback_accessible "$mode" "$allow_ips" "$allow_networks" "$block_ips" \
-                                   "$resolved_allow_domains" "$resolved_block_domains"; then
-        echo -e "${YELLOW}Note:${NC} Host loopback (127.0.0.1) is accessible from the sandbox as 10.0.2.2" >&2
-    fi
-
     # Start slirp4netns handler in background
     # This subshell waits for the namespace, starts slirp, signals ready, then waits
     (

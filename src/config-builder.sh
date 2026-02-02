@@ -185,10 +185,17 @@ config_builder_run() {
 
     echo
 
-    # 7. Tool-specific mounts (Claude Code)
+    # 7. Tool-specific mounts
     local additional_mounts=()
     if [ "$launch_cmd" = "claude" ]; then
-        if config_builder_prompt_yesno "Mount Claude Code's config? (~/.claude, ~/.gitconfig, etc.)" "y"; then
+        echo "Claude Code needs these mounted:"
+        echo
+        echo '    "~/.local/bin/claude",'
+        echo '    "~/.gitconfig",'
+        echo '    { source = "~/.claude", mode = "rw" },'
+        echo '    { source = "~/.claude.json", mode = "rw" },'
+        echo
+        if config_builder_prompt_yesno "Add these mounts?" "y"; then
             # Check if ~/.claude and ~/.claude.json exist
             local claude_dir="$HOME/.claude"
             local claude_json="$HOME/.claude.json"
@@ -217,10 +224,16 @@ config_builder_run() {
             )
         fi
         echo
+    else
+        # Not claude - offer just gitconfig
+        if config_builder_prompt_yesno "Mount ~/.gitconfig? (read-only)" "y"; then
+            additional_mounts+=('"~/.gitconfig"')
+        fi
+        echo
     fi
 
-    # 8. Other tool mounts
-    if config_builder_prompt_yesno "Any other mounts? (read-only)" "n"; then
+    # 8. Additional read-only mounts
+    if config_builder_prompt_yesno "Any other read-only mounts you want mounted?" "n"; then
         echo "Gimme the paths, comma-separated:"
         read -r other_mounts
         if [ -n "$other_mounts" ]; then
@@ -228,6 +241,21 @@ config_builder_run() {
             for mount in "${mounts[@]}"; do
                 mount=$(echo "$mount" | xargs)  # trim
                 [ -n "$mount" ] && additional_mounts+=("\"$mount\"")
+            done
+        fi
+    fi
+
+    echo
+
+    # 9. Additional read-write mounts
+    if config_builder_prompt_yesno "Any read-write mounts you need mounted?" "n"; then
+        echo "Gimme the paths, comma-separated:"
+        read -r rw_mounts
+        if [ -n "$rw_mounts" ]; then
+            IFS=',' read -ra mounts <<< "$rw_mounts"
+            for mount in "${mounts[@]}"; do
+                mount=$(echo "$mount" | xargs)  # trim
+                [ -n "$mount" ] && additional_mounts+=("{ source = \"$mount\", mode = \"rw\" }")
             done
         fi
     fi

@@ -8,17 +8,41 @@ fi
 # Arguments we don't recognize get passed through to the launch command
 test_mode=false
 git_merge_mode=false
+clean_mode=false
+clean_all_mode=false
+clean_branch=""
 cli_direct_mount=false
 passthrough_args=()
-for arg in "$@"; do
-    case "$arg" in
+skip_next=false
+for i in "$@"; do
+    if [ "$skip_next" = true ]; then
+        skip_next=false
+        continue
+    fi
+    case "$i" in
         --test) test_mode=true ;;
         --direct-mount) cli_direct_mount=true ;;
         --dry-run) ;; # handled by helpers.sh
         --verbose|-v) ;; # handled by helpers.sh
         --debug) ;; # handled by helpers.sh
         git-merge) git_merge_mode=true ;;
-        *) passthrough_args+=("$arg") ;;
+        clean) clean_mode=true ;;
+        clean-all) clean_all_mode=true ;;
+        --branch)
+            # Next arg is the branch name
+            skip_next=true
+            # Find the next argument
+            found_next=false
+            for j in "$@"; do
+                if [ "$found_next" = true ]; then
+                    clean_branch="$j"
+                    break
+                fi
+                [ "$j" = "--branch" ] && found_next=true
+            done
+            ;;
+        --branch=*) clean_branch="${i#--branch=}" ;;
+        *) passthrough_args+=("$i") ;;
     esac
 done
 
@@ -75,6 +99,118 @@ if [ "$git_merge_mode" = true ]; then
         exit 1
     fi
     manual_git_merge "$cfg_source"
+    exit 0
+fi
+
+# Handle clean-all mode
+if [ "$clean_all_mode" = true ]; then
+    echo "This will remove ALL cached branches for: $cfg_source"
+    echo ""
+
+    cached_branches=$(list_cached_branches "$cfg_source")
+    if [ -z "$cached_branches" ]; then
+        echo "No cached branches found. Nothin' to clean."
+        exit 0
+    fi
+
+    echo "Branches to be removed:"
+    while IFS= read -r branch; do
+        work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
+        if is_work_dirty "$work_dir"; then
+            echo "  $branch ${_yellow}(has uncommitted changes!)${_reset}"
+        else
+            echo "  $branch"
+        fi
+    done <<< "$cached_branches"
+    echo ""
+
+    if ! config_builder_prompt_yesno "Are you sure you want to delete all these?" "n"; then
+        echo "Alright, nothin' deleted."
+        exit 0
+    fi
+
+    while IFS= read -r branch; do
+        echo ""
+        echo "Cleaning branch: $branch"
+        clean_branch_cache "$cfg_source" "$branch"
+    done <<< "$cached_branches"
+
+    echo ""
+    echo "All clean."
+    exit 0
+fi
+
+# Handle clean mode (single branch)
+if [ "$clean_mode" = true ]; then
+    cached_branches=$(list_cached_branches "$cfg_source")
+    if [ -z "$cached_branches" ]; then
+        echo "No cached branches found. Nothin' to clean."
+        exit 0
+    fi
+
+    # If branch specified, use it; otherwise prompt
+    if [ -n "$clean_branch" ]; then
+        # Sanitize the provided branch name
+        clean_branch=$(sanitize_branch_name "$clean_branch")
+        if ! echo "$cached_branches" | grep -qx "$clean_branch"; then
+            echo "Branch '$clean_branch' not found in cache."
+            echo ""
+            echo "Available branches:"
+            echo "$cached_branches" | sed 's/^/  /'
+            exit 1
+        fi
+    else
+        # Interactive selection
+        echo "Which branch cache do you want to remove?"
+        echo ""
+        branch_array=()
+        idx=1
+        while IFS= read -r branch; do
+            branch_array+=("$branch")
+            work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
+            if is_work_dirty "$work_dir"; then
+                echo "  $idx) $branch ${_yellow}(has uncommitted changes!)${_reset}"
+            else
+                echo "  $idx) $branch"
+            fi
+            ((idx++))
+        done <<< "$cached_branches"
+        echo "  q) Cancel"
+        echo ""
+
+        while true; do
+            printf "Choice: "
+            read -r choice
+            if [ "$choice" = "q" ] || [ "$choice" = "Q" ]; then
+                echo "Alright, nothin' deleted."
+                exit 0
+            fi
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#branch_array[@]} ]; then
+                clean_branch="${branch_array[$((choice-1))]}"
+                break
+            fi
+            echo "Pick a number or 'q' to quit."
+        done
+    fi
+
+    work_dir="$CLAUDE_CAGE_CACHE/branches/$clean_branch/work$cfg_source"
+
+    echo ""
+    echo "This will remove the cache for branch: $clean_branch"
+    if is_work_dirty "$work_dir"; then
+        echo ""
+        echo -e "${_yellow}⚠️  WARNING: This branch has uncommitted changes that will be lost!${_reset}"
+    fi
+    echo ""
+
+    if ! config_builder_prompt_yesno "Are you sure?" "n"; then
+        echo "Alright, nothin' deleted."
+        exit 0
+    fi
+
+    clean_branch_cache "$cfg_source" "$clean_branch"
+    echo ""
+    echo "Done. Branch '$clean_branch' cleaned up."
     exit 0
 fi
 

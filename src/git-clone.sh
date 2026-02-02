@@ -80,6 +80,100 @@ is_git_repo() {
     git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
+# List all cached branches for a source directory
+# Returns sanitized branch names (one per line)
+list_cached_branches() {
+    local source_dir="$1"
+    local branches=()
+
+    # Check each branch directory in cache
+    if [ -d "$CLAUDE_CAGE_CACHE/branches" ]; then
+        for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
+            [ -d "$branch_dir" ] || continue
+            local branch_name
+            branch_name=$(basename "$branch_dir")
+            # Check if this branch has data for our source directory
+            if [ -d "$branch_dir/work$source_dir" ] || [ -d "$branch_dir/intermediary$source_dir" ]; then
+                echo "$branch_name"
+            fi
+        done
+    fi
+}
+
+# Check if a work directory has uncommitted changes
+# Returns 0 if dirty, 1 if clean
+is_work_dirty() {
+    local work_dir="$1"
+    [ -d "$work_dir/.git" ] || return 1
+    # Check for uncommitted changes
+    if [ -n "$(git -C "$work_dir" status --porcelain 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Clean up cache for a specific branch
+# Arguments: $1 = source directory, $2 = sanitized branch name
+clean_branch_cache() {
+    local source_dir="$1"
+    local branch_name="$2"
+    local branch_cache="$CLAUDE_CAGE_CACHE/branches/$branch_name"
+    local work_dir="$branch_cache/work$source_dir"
+    local intermediary_dir="$branch_cache/intermediary$source_dir"
+    local caged_link="$source_dir/.caged/$branch_name"
+
+    # Remove work directory
+    if [ -d "$work_dir" ]; then
+        run rm -rf "$work_dir"
+        echo "Removed work directory: $work_dir"
+    fi
+
+    # Remove intermediary directory
+    if [ -d "$intermediary_dir" ]; then
+        run rm -rf "$intermediary_dir"
+        echo "Removed intermediary directory: $intermediary_dir"
+    fi
+
+    # Remove state file
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    local state_file="$branch_cache/state-$path_hash"
+    if [ -f "$state_file" ]; then
+        run rm -f "$state_file"
+        echo "Removed state file: $state_file"
+    fi
+
+    # Remove .caged symlink for this branch
+    if [ -L "$caged_link/work" ] || [ -L "$caged_link/intermediary" ]; then
+        run rm -rf "$caged_link"
+        echo "Removed .caged symlink: $caged_link"
+    fi
+
+    # Clean up empty branch directory if no other projects use it
+    if [ -d "$branch_cache/work" ] && [ -z "$(ls -A "$branch_cache/work" 2>/dev/null)" ]; then
+        run rm -rf "$branch_cache/work"
+    fi
+    if [ -d "$branch_cache/intermediary" ] && [ -z "$(ls -A "$branch_cache/intermediary" 2>/dev/null)" ]; then
+        run rm -rf "$branch_cache/intermediary"
+    fi
+    if [ -d "$branch_cache" ] && [ -z "$(ls -A "$branch_cache" 2>/dev/null)" ]; then
+        run rm -rf "$branch_cache"
+        echo "Removed empty branch cache: $branch_cache"
+    fi
+
+    # Clean up empty .caged directory
+    local caged_dir="$source_dir/.caged"
+    if [ -d "$caged_dir" ]; then
+        # Only .gitignore left?
+        local remaining
+        remaining=$(ls -A "$caged_dir" 2>/dev/null | grep -v '^\.gitignore$')
+        if [ -z "$remaining" ]; then
+            run rm -rf "$caged_dir"
+            echo "Removed empty .caged directory"
+        fi
+    fi
+}
+
 # Get current branch from source project
 # Returns empty string and exits 1 if not on a branch (detached HEAD or no commits)
 get_source_branch() {

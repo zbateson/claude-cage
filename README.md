@@ -210,9 +210,16 @@ claude-cage --verbose
 
 # Manually merge Claude's changes (if autoMerge is off)
 claude-cage git-merge
+
+# Clean up cached branches for this project
+claude-cage clean                    # Interactive - pick which branch to remove
+claude-cage clean --branch main      # Remove specific branch cache
+claude-cage clean-all                # Remove all branch caches for this project
 ```
 
 **Note:** Arguments that aren't recognized by claude-cage are passed through to the launch command. So `claude-cage --resume` runs `claude --resume` inside the sandbox.
+
+**Cleanup:** The `clean` and `clean-all` commands remove cached work/intermediary directories and `.caged/` symlinks. You'll be warned if a branch has uncommitted changes, and asked to confirm before deletion.
 
 ## Network Filtering
 

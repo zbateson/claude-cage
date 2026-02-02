@@ -345,11 +345,23 @@ project/.caged/
 # Basic usage - creates intermediary + work, shows sandbox info
 ./claude-cage
 
+# Pass arguments through to launch command
+./claude-cage --resume
+./claude-cage --dangerously-skip-permissions
+
 # Drop into sandbox shell for testing
 ./claude-cage --test
 
+# Direct mount - skip git sync, mount source directly
+./claude-cage --direct-mount
+
 # Manual merge (fetch refs from intermediary)
 ./claude-cage git-merge
+
+# Clean up cached branches
+./claude-cage clean                    # Interactive selection
+./claude-cage clean --branch main      # Specific branch
+./claude-cage clean-all                # All branches for this project
 
 # Dry run (show commands without executing)
 ./claude-cage --dry-run

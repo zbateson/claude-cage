@@ -226,16 +226,18 @@ end
 local mounts = config.additionalMounts or {}
 local mount_entries = {}
 for _, entry in ipairs(mounts) do
-    local source, dest
+    local source, dest, mode
     if type(entry) == "string" then
         source = entry
         dest = entry
+        mode = "ro"
     elseif type(entry) == "table" then
         source = entry.source or entry[1]
         dest = entry["as"] or entry.dest or source
+        mode = entry.mode or "ro"
     end
     if source then
-        table.insert(mount_entries, source .. "|" .. dest)
+        table.insert(mount_entries, source .. "|" .. dest .. "|" .. mode)
     end
 end
 print(#mount_entries)

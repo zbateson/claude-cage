@@ -200,10 +200,36 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
 | `isolated` | `false` | Only mount single project instead of all same-branch projects |
 | `showBanner` | `true` | Show ASCII banner |
-| `additionalMounts` | `{}` | Extra read-only mounts for sandbox |
+| `additionalMounts` | `{}` | Extra mounts for sandbox (see below) |
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
+
+### Additional Mounts
+
+The `additionalMounts` option lets you mount extra paths into the sandbox. By default, mounts are read-only. Use `mode = "rw"` for writable mounts.
+
+```lua
+claude_cage {
+    additionalMounts = {
+        -- Simple string (read-only, same path inside sandbox)
+        "~/.gitconfig",
+
+        -- Object with source and destination
+        { source = "~/.ssh", as = "~/.ssh" },
+
+        -- Writable mount (required for Claude Code's ~/.claude directory)
+        { source = "~/.claude", mode = "rw" },
+        { source = "~/.claude.json", mode = "rw" },
+    }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `source` | Path on host (supports `~` expansion) |
+| `as` / `dest` | Path inside sandbox (defaults to source) |
+| `mode` | `"ro"` (default) or `"rw"` |
 
 ## CLI Usage
 

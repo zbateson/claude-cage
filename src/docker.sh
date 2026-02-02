@@ -336,12 +336,16 @@ run_in_docker() {
 
     # Additional mounts from config (before work dir so work can overlay)
     for mount_entry in "${cfg_mounts[@]}"; do
-        IFS='|' read -r mount_source mount_dest <<< "$mount_entry"
+        IFS='|' read -r mount_source mount_dest mount_mode <<< "$mount_entry"
         # Expand tilde to user home
         mount_source="${mount_source/#\~/$user_home}"
         mount_dest="${mount_dest/#\~/$user_home}"
         if [ -e "$mount_source" ]; then
-            docker_args+=(-v "$mount_source:$mount_dest:ro")
+            if [ "$mount_mode" = "rw" ]; then
+                docker_args+=(-v "$mount_source:$mount_dest:rw")
+            else
+                docker_args+=(-v "$mount_source:$mount_dest:ro")
+            fi
         fi
     done
 

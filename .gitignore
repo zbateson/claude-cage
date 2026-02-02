@@ -4,3 +4,5 @@ claude-cage.instances
 
 # Build output
 dist/
+
+.claude-cage

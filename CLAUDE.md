@@ -75,6 +75,7 @@ The intermediary repo serves as a buffer:
 
 | File | Purpose |
 |------|---------|
+| `src/header.sh` | Shebang and script header |
 | `src/helpers.sh` | `run`, `run_quiet`, color codes, dry-run support |
 | `src/banner.sh` | ASCII art banner (print_banner) |
 | `src/config-builder.sh` | Interactive config generator when no config exists |
@@ -83,13 +84,28 @@ The intermediary repo serves as a buffer:
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
 | `src/git-sync.sh` | `sync_to_source()`, pipe listener, manual merge |
+| `src/network.sh` | Network isolation via slirp4netns/iptables |
 | `src/bwrap.sh` | `run_in_bwrap()` - bubblewrap sandbox |
 | `src/docker.sh` | `run_in_docker()` - Docker container sandbox |
 | `src/main.sh` | Entry point - wires everything together |
 
 ### Build Output
 
-`dist/claude-cage` is the concatenated script (all src files in order).
+`dist/claude-cage` is the concatenated script. Files are concatenated in dependency order:
+
+1. `header.sh` - Shebang
+2. `helpers.sh` - Colors, run/run_quiet, help
+3. `banner.sh` - ASCII art
+4. `config-builder.sh` - Interactive config
+5. `config.sh` - Lua parsing
+6. `git-clone.sh` - Intermediary creation
+7. `git-hooks.sh` - Hook setup
+8. `git-patches.sh` - Patch recovery
+9. `git-sync.sh` - Manual merge
+10. `network.sh` - Network isolation
+11. `bwrap.sh` - Bwrap sandbox
+12. `docker.sh` - Docker sandbox
+13. `main.sh` - Orchestration
 
 ```bash
 make        # Build dist/claude-cage
@@ -245,6 +261,8 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
+| `docker.image` | `"node:lts-slim"` | Docker container image (docker mode only) |
+| `docker.container` | `claude-cage-$$` | Docker container name (docker mode only) |
 
 ### Direct Mount Mode
 
@@ -363,13 +381,32 @@ project/.caged/
 ./claude-cage clean --branch main      # Specific branch
 ./claude-cage clean-all                # All branches for this project
 
+# Shell completions
+./claude-cage completion bash          # Output bash completion script
+./claude-cage completion zsh           # Output zsh completion script
+./claude-cage install-completions      # Auto-install completions for current shell
+
 # Dry run (show commands without executing)
 ./claude-cage --dry-run
 
 # Verbose output
 ./claude-cage --verbose
 ./claude-cage -v
+
+# Debug mode (verbose + show command output)
+./claude-cage --debug
 ```
+
+### Shell Completions
+
+The `install-completions` command auto-detects your shell and installs completions:
+
+| Shell | Completion File |
+|-------|-----------------|
+| Bash | `~/.local/share/bash-completion/completions/claude-cage` |
+| Zsh | `~/.zsh/completions/_claude-cage` |
+
+For Zsh, the installer will offer to add the completions directory to your `fpath` in `~/.zshrc` if needed.
 
 ## Current State
 
@@ -391,22 +428,26 @@ project/.caged/
 - [x] Cleanup on exit
 - [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (131 tests across 9 files)
+- [x] Comprehensive test suite (155 tests across 12 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
 - [x] Sparse checkout support (only copies files that exist in working tree)
 - [x] Optional `.caged/` symlinks for easy cache access (`createCagedDir` option)
+- [x] Shell completions for bash and zsh (`completion` and `install-completions` commands)
+- [x] Cache cleanup commands (`clean`, `clean --branch`, `clean-all`)
+- [x] Direct mount mode for non-git directories or skipping git sync
 
 ### Known Issues / TODO
 
 - [x] Configurable launch command (defaults to `claude`, use `--test` for shell)
 - [x] Build script (`make`) - concatenates src/ to dist/
-- [ ] Header/shebang handling in dist needs verification
-- [ ] Testing on actual Claude Code workflow
-- [ ] Conflict resolution when git-am fails
 - [x] Instance tracking (multiple concurrent runs via session PIDs)
 - [x] Network filtering for Docker mode (uses iptables with privilege drop)
+- [x] Shell completions (bash and zsh)
+- [x] Clean commands for cache management
+- [ ] Testing on actual Claude Code workflow
+- [ ] More graceful conflict resolution when git-am fails
 
 ## Network Isolation
 
@@ -437,10 +478,13 @@ sudo sysctl --system
 
 ### How It Works
 
-1. Creates user+network namespace via `unshare --user --map-root-user --net`
-2. Attaches slirp4netns to provide network connectivity
-3. Configures iptables rules (we have CAP_NET_ADMIN inside the namespace)
-4. Drops into bwrap sandbox (which drops all capabilities)
+1. **Domain resolution on host** - Domains in `allow`/`block` are resolved to IPs before entering namespace (uses `getent ahosts`, supports `/etc/hosts`)
+2. Creates user+network namespace via `unshare --user --map-root-user --net`
+3. Attaches slirp4netns to provide network connectivity
+4. Configures iptables rules (we have CAP_NET_ADMIN inside the namespace)
+5. Drops into bwrap sandbox (which drops all capabilities)
+
+**Host loopback access:** Rules targeting `127.0.0.1` are automatically translated to `10.0.2.2` (slirp4netns host gateway) so you can allow access to services on your host machine.
 
 ### slirp4netns Address Mapping
 
@@ -550,10 +594,17 @@ With `isolated = true`, only the single project's work and intermediary are moun
 
 Branch names are sanitized for filesystem paths: `/` becomes `--`, other special chars become `-`.
 
-Environment variables for customization:
+### Environment Variables
+
+**User-configurable:**
 - `CLAUDE_CAGE_CACHE` - Override cache directory (default: `~/.cache/claude-cage`)
 - `CLAUDE_CAGE_RUNTIME` - Override runtime directory (default: `$XDG_RUNTIME_DIR/claude-cage`)
 - `CLAUDE_CAGE_BRANCH` - Override branch name for path construction (auto-detected from source)
+
+**Internal (set by claude-cage):**
+- `CLAUDE_CAGE_SOURCING` - Set to `1` when sourcing script for function definitions only
+- `SLIRP_NETWORK` - Set to `1` inside slirp4netns network namespace
+- `BWRAP_REAL_UID`, `BWRAP_REAL_GID`, `BWRAP_REAL_USER`, `BWRAP_REAL_HOME` - Capture real user info before entering network namespace
 
 ## Debugging
 
@@ -581,23 +632,23 @@ bash tests/run-all.sh
 | test-config.sh | config.sh | 12 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
-| test-git-hooks.sh | git-hooks.sh | 6 |
+| test-git-hooks.sh | git-hooks.sh | 10 |
 | test-git-patches.sh | git-patches.sh | 12 |
 | test-git-sync.sh | git-sync.sh | 14 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 17 |
+| test-clean.sh | clean commands | 11 |
+| test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 132 tests**
+**Total: 155 tests across 12 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 
 ## Next Steps
 
-1. Add Claude Code launch (not just `--test` mode)
-2. Add `--cleanup` flag for removing cache dirs and hooks
-3. Test full workflow with actual Claude Code session
-4. Handle git-am conflicts gracefully
+1. Test full workflow with actual Claude Code session
+2. Handle git-am conflicts more gracefully (currently saves to failed-patches)
 
 ## Gotchas / Technical Notes
 

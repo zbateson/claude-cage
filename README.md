@@ -228,7 +228,10 @@ claude-cage clean-all                # Remove all branch caches for this project
 
 ## Network Filtering
 
-When you enable network filtering, claude-cage uses slirp4netns to create an isolated network namespace, then configures iptables rules inside it. Runs as your regular user.
+Network filtering uses iptables to control what Claude can reach. Works in both modes:
+
+- **bwrap mode** — Uses slirp4netns to create an isolated network namespace. No sudo required.
+- **Docker mode** — Configures iptables inside the container, then drops privileges before running your command.
 
 **Allowlist mode** - Block everything except what you specify:
 ```lua

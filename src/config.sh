@@ -12,20 +12,66 @@ check_lua() {
     fi
 }
 
+# Walk from CWD up to filesystem root, collecting .claude-cage paths
+# Returns paths in root-to-leaf order (closer configs override farther)
+# Skips user config directory to avoid double-loading
+# Args: $1 = starting directory (CWD), $2 = user config directory to skip
+find_ancestor_configs() {
+    local current="$1"
+    local user_config_dir="$2"
+    local ancestors=()
+
+    # Walk up (excluding CWD itself - that's handled separately as local_config)
+    current=$(dirname "$current")
+    while [ "$current" != "/" ]; do
+        if [ -f "$current/.claude-cage" ]; then
+            # Skip if this is the user config directory
+            if [ "$current" != "$user_config_dir" ]; then
+                ancestors=("$current/.claude-cage" "${ancestors[@]}")
+            fi
+        fi
+        current=$(dirname "$current")
+    done
+
+    # Check root too
+    if [ -f "/.claude-cage" ]; then
+        ancestors=("/.claude-cage" "${ancestors[@]}")
+    fi
+
+    # Only output if we found something (avoid empty line)
+    if [ ${#ancestors[@]} -gt 0 ]; then
+        printf '%s\n' "${ancestors[@]}"
+    fi
+}
+
 
 # Parse config files using Lua
+# Args: $1 = derived_project, $2 = config_root_real, $3... = config file paths
 # Sets all cfg_* variables
 parse_config() {
-    local system_config="$1"
-    local user_config="$2"
-    local local_config="$3"
-    local derived_project="$4"
-    local config_root_real="$5"
+    local derived_project="$1"
+    local config_root_real="$2"
+    shift 2
+    local config_files_str=""
+    for cfg in "$@"; do
+        if [ -n "$config_files_str" ]; then
+            config_files_str="$config_files_str|$cfg"
+        else
+            config_files_str="$cfg"
+        fi
+    done
 
     local lua_output
-    lua_output=$(lua - "$derived_project" "$config_root_real" <<EOF 2>&1
+    lua_output=$(lua - "$derived_project" "$config_root_real" "$config_files_str" <<'LUAEOF' 2>&1
 local derived_project = arg[1] or ""
 local config_root = arg[2] or ""
+local config_files_str = arg[3] or ""
+
+-- Split config files string into table
+local config_files = {}
+for path in string.gmatch(config_files_str, "[^|]+") do
+    table.insert(config_files, path)
+end
 
 -- Merge two tables (later overrides earlier)
 local function merge_config(base, override)
@@ -78,17 +124,29 @@ function claude_cage(tbl)
     table.insert(configs, tbl)
 end
 
--- Track excludes by source for display
-local sources = {
-    { name = "system", path = "$system_config", excludes = {} },
-    { name = "user", path = "$user_config", excludes = {} },
-    { name = "local", path = "$local_config", excludes = {} }
-}
+-- Track excludes by source for display (dynamic based on loaded files)
+local sources = {}
 
-local function track_excludes(source_entry, cfg)
+local function get_source_name(filepath)
+    if filepath:match("/etc/claude%-cage%.conf$") then
+        return "system"
+    elseif filepath:match("%.config/claude%-cage/config$") then
+        return "user"
+    else
+        -- For ancestor and local configs, show relative path hint
+        local basename = filepath:match("([^/]+)/%.claude%-cage$") or filepath
+        return basename
+    end
+end
+
+local function track_excludes(filepath, cfg)
     if cfg.exclude and type(cfg.exclude) == "table" then
+        local name = get_source_name(filepath)
+        if not sources[filepath] then
+            sources[filepath] = { name = name, path = filepath, excludes = {} }
+        end
         for _, item in ipairs(cfg.exclude) do
-            table.insert(source_entry.excludes, item)
+            table.insert(sources[filepath].excludes, item)
         end
     end
 end
@@ -122,25 +180,19 @@ local function safe_load_config(filepath, config_handler)
     return true, nil
 end
 
--- Load configs in priority order
-local config_files = {
-    { idx = 1, path = "$system_config" },
-    { idx = 2, path = "$user_config" },
-    { idx = 3, path = "$local_config" }
-}
-
-for _, cf in ipairs(config_files) do
-    local f = io.open(cf.path, "r")
+-- Load configs in order (system, user, ancestors root-to-leaf, local)
+for _, filepath in ipairs(config_files) do
+    local f = io.open(filepath, "r")
     if f then
         f:close()
         local before_count = #configs
-        local success, err = safe_load_config(cf.path, claude_cage)
+        local success, err = safe_load_config(filepath, claude_cage)
         if not success then
-            io.stderr:write("Error loading config: " .. cf.path .. "\n" .. tostring(err) .. "\n")
+            io.stderr:write("Error loading config: " .. filepath .. "\n" .. tostring(err) .. "\n")
             os.exit(1)
         end
         for i = before_count + 1, #configs do
-            track_excludes(sources[cf.idx], configs[i])
+            track_excludes(filepath, configs[i])
         end
     end
 end
@@ -154,9 +206,8 @@ end
 -- Project name is the current directory name
 local project = derived_project
 
--- Set defaults
-local source = config.source or ""
-local mounted = config.mounted or ""
+-- Set defaults (source is always config_root/CWD)
+local source = config_root
 local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
 local networkMode = config.networkMode or "disabled"
@@ -176,15 +227,6 @@ local docker_container = docker.container or ""
 -- Launch command (what to run inside sandbox)
 local launch = config.launch or "claude"
 
--- Source defaults to current directory
-if source == "" then
-    source = config_root
-end
-
-if mounted == "" then
-    mounted = project ~= "" and project or "project"
-end
-
 -- Get exclude list
 local exclude = config.exclude or {}
 
@@ -197,8 +239,8 @@ local function array_to_string(arr)
     return table.concat(arr, "|")
 end
 
--- Output (pipe-delimited)
-print(source .. "|" .. mounted .. "|" .. tostring(showBanner))
+-- Output (pipe-delimited) - removed mounted from first line
+print(source .. "|" .. tostring(showBanner))
 print(array_to_string(exclude))
 print(networkMode)
 print(array_to_string(allow.domains))
@@ -217,11 +259,11 @@ print(docker_container)
 print(launch)
 print(tostring(hideConfirmationPrompt))
 
--- Output excludes by source for display
+-- Output excludes by source for display (in config file order)
 local display_lines = {}
-for _, src in ipairs(sources) do
-    if #src.excludes > 0 then
-        table.insert(display_lines, src.name .. "|" .. table.concat(src.excludes, ", "))
+for _, filepath in ipairs(config_files) do
+    if sources[filepath] and #sources[filepath].excludes > 0 then
+        table.insert(display_lines, sources[filepath].name .. "|" .. table.concat(sources[filepath].excludes, ", "))
     end
 end
 print(#display_lines)
@@ -233,25 +275,25 @@ end
 local mounts = config.additionalMounts or {}
 local mount_entries = {}
 for _, entry in ipairs(mounts) do
-    local source, dest, mode
+    local src, dest, mmode
     if type(entry) == "string" then
-        source = entry
+        src = entry
         dest = entry
-        mode = "ro"
+        mmode = "ro"
     elseif type(entry) == "table" then
-        source = entry.source or entry[1]
-        dest = entry["as"] or entry.dest or source
-        mode = entry.mode or "ro"
+        src = entry.source or entry[1]
+        dest = entry["as"] or entry.dest or src
+        mmode = entry.mode or "ro"
     end
-    if source then
-        table.insert(mount_entries, source .. "|" .. dest .. "|" .. mode)
+    if src then
+        table.insert(mount_entries, src .. "|" .. dest .. "|" .. mmode)
     end
 end
 print(#mount_entries)
 for _, entry in ipairs(mount_entries) do
     print(entry)
 end
-EOF
+LUAEOF
 )
     local lua_exit_code=$?
 
@@ -269,7 +311,7 @@ EOF
 
     # Parse the lua output
     {
-        IFS='|' read -r cfg_source cfg_mounted cfg_showBanner
+        IFS='|' read -r cfg_source cfg_showBanner
         read -r cfg_exclude
         read -r cfg_networkMode
         read -r cfg_allow_domains
@@ -318,52 +360,47 @@ init_config() {
     original_user="${SUDO_USER:-$USER}"
     system_config="/etc/claude-cage.conf"
     user_config="/home/${original_user}/.config/claude-cage/config"
+    user_config_dir="/home/${original_user}/.config/claude-cage"
 
-    # Parse --config flag
-    explicit_config=""
-    config_next=false
-    for arg in "$@"; do
-        if [ "$config_next" = true ]; then
-            explicit_config="$arg"
-            config_next=false
-        elif [ "$arg" = "--config" ]; then
-            config_next=true
-        fi
-    done
-
-    # Determine config file location
-    if [ -n "$explicit_config" ]; then
-        if [ ! -f "$explicit_config" ]; then
-            echo "Sorry friend, that config file '$explicit_config' ain't there."
-            exit 1
-        fi
-        local_config="$explicit_config"
-        config_root=$(dirname "$(realpath "$explicit_config")")
-    else
-        config_root=$(pwd)
-        local_config="$config_root/.claude-cage"
-        if [ ! -f "$local_config" ]; then
-            # No project config - check if any config exists at all
-            if [ ! -f "$system_config" ] && [ ! -f "$user_config" ]; then
-                # No config anywhere - run the builder (if interactive)
-                if [ -t 0 ]; then
-                    config_builder_run
-                    exit $?
-                else
-                    echo "No config found. Run interactively to set one up, or create:"
-                    echo "  ~/.config/claude-cage/config (user-level)"
-                    echo "  .claude-cage (project-level)"
-                    exit 1
-                fi
-            fi
-            # Have system or user config, proceed without project config
-            local_config=""
-        fi
-    fi
-
+    # Config root is always CWD
+    config_root=$(pwd)
     config_root_real=$(realpath "$config_root")
     derived_project=$(basename "$config_root_real")
 
-    parse_config "$system_config" "$user_config" "$local_config" \
-                 "$derived_project" "$config_root_real"
+    # Find ancestor configs (root-to-leaf order)
+    ancestor_configs=()
+    while IFS= read -r cfg; do
+        [ -n "$cfg" ] && ancestor_configs+=("$cfg")
+    done < <(find_ancestor_configs "$config_root_real" "$user_config_dir")
+
+    # Local config in CWD
+    local_config="$config_root/.claude-cage"
+    if [ ! -f "$local_config" ]; then
+        # No config in CWD - check if any config exists at all
+        if [ ! -f "$system_config" ] && [ ! -f "$user_config" ] && [ ${#ancestor_configs[@]} -eq 0 ]; then
+            # No config anywhere - run the builder (if interactive)
+            if [ -t 0 ]; then
+                config_builder_run
+                exit $?
+            else
+                echo "No config found. Run interactively to set one up, or create:"
+                echo "  ~/.config/claude-cage/config (user-level)"
+                echo "  .claude-cage (project-level or in any ancestor directory)"
+                exit 1
+            fi
+        fi
+        # Have system, user, or ancestor config - proceed without CWD config
+        local_config=""
+    fi
+
+    # Build config file list in order: system, user, ancestors (root-to-leaf), local
+    config_files=("$system_config" "$user_config")
+    for cfg in "${ancestor_configs[@]}"; do
+        config_files+=("$cfg")
+    done
+    if [ -n "$local_config" ]; then
+        config_files+=("$local_config")
+    fi
+
+    parse_config "$derived_project" "$config_root_real" "${config_files[@]}"
 }

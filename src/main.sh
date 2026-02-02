@@ -41,12 +41,16 @@ if [ "$cfg_showBanner" = "true" ]; then
     print_banner
 fi
 
-# Display parsed config
-echo "Configuration loaded from: $local_config"
+# Display parsed config - show config sources
+echo "Configuration loaded from:"
+for cfg in "${config_files[@]}"; do
+    if [ -f "$cfg" ]; then
+        echo "  $cfg"
+    fi
+done
 echo ""
 echo "  Project:       $cfg_project"
 echo "  Source:        $cfg_source"
-echo "  Mounted as:    $cfg_mounted"
 echo "  Mode:          $cfg_mode"
 echo "  Launch:        $cfg_launch"
 echo "  Auto-merge:    $cfg_autoMerge"

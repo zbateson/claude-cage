@@ -70,7 +70,7 @@ fi
 echo "  PASS: Found claude branch creation"
 
 echo "Test 3: Dry-run should show exclude patterns"
-if ! echo "$output" | grep -q "Exclude: .env"; then
+if ! echo "$output" | grep -q "\.env"; then
     echo "FAIL: Did not find .env in excludes"
     echo "Output was:"
     echo "$output"

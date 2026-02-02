@@ -78,7 +78,7 @@ The intermediary repo serves as a buffer:
 | `src/helpers.sh` | `run`, `run_quiet`, color codes, dry-run support |
 | `src/banner.sh` | ASCII art banner (print_banner) |
 | `src/config-builder.sh` | Interactive config generator when no config exists |
-| `src/config.sh` | Lua-based config parsing (system, user, project levels) |
+| `src/config.sh` | Lua-based config parsing (system, user, ancestors, local) |
 | `src/git-clone.sh` | `create_intermediary_clone()` - archives source with excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
@@ -165,7 +165,25 @@ Config files are loaded and merged in order (later values override, arrays merge
 |-------|------|-----------|
 | System | `/etc/claude-cage.conf` | No |
 | User | `~/.config/claude-cage/config` | No |
-| Project | `.claude-cage` (current directory) | No |
+| Ancestors | `.claude-cage` in any ancestor directory | No |
+| Local | `.claude-cage` (current directory) | No |
+
+### Hierarchical Config Resolution
+
+Config walks from the filesystem root down to your current directory, loading any `.claude-cage` files found along the way. This lets you set up shared config for all projects under a directory.
+
+Example for CWD = `/home/user/projects/public/my-app/`:
+```
+/etc/claude-cage.conf                              (system)
+~/.config/claude-cage/config                       (user)
+/.claude-cage                                      (if exists)
+/home/.claude-cage                                 (if exists)
+/home/user/projects/.claude-cage                   (if exists)
+/home/user/projects/public/.claude-cage            (if exists)
+/home/user/projects/public/my-app/.claude-cage     (local/CWD)
+```
+
+Closer configs override farther ones for scalar values. Arrays (like `exclude`) merge across all levels.
 
 **No config?** If no config exists at any level, an interactive builder walks you through creating one. It prompts for sandbox mode, common excludes, auto-merge, and optional tool-specific mounts (e.g., Claude Code's `~/.claude`).
 
@@ -449,17 +467,17 @@ bash tests/run-all.sh
 | Test File | Component | Tests |
 |-----------|-----------|-------|
 | test-helpers.sh | helpers.sh | 7 |
-| test-config.sh | config.sh | 13 |
+| test-config.sh | config.sh | 12 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 13 |
-| test-git-hooks.sh | git-hooks.sh | 12 |
+| test-git-hooks.sh | git-hooks.sh | 6 |
 | test-git-patches.sh | git-patches.sh | 12 |
 | test-git-sync.sh | git-sync.sh | 14 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 17 |
 
-**Total: 138 tests**
+**Total: 131 tests**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

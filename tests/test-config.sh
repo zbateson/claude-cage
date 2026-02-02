@@ -43,7 +43,7 @@ claude_cage {
 EOF
 
 output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
-if ! echo "$output" | grep -q "Configuration loaded from:.*project1/.claude-cage"; then
+if ! echo "$output" | grep -q "project1/.claude-cage"; then
     echo "FAIL: Should find config in current directory"
     echo "Output was:"
     echo "$output"
@@ -79,13 +79,13 @@ EOF
 
 cd "$TEST_TMP/project4"
 output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
-if ! echo "$output" | grep -q "Exclude: .env"; then
+if ! echo "$output" | grep -q "\.env"; then
     echo "FAIL: Should show .env exclude"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-if ! echo "$output" | grep -q "Exclude: secrets"; then
+if ! echo "$output" | grep -q "secrets"; then
     echo "FAIL: Should show secrets exclude"
     echo "Output was:"
     echo "$output"
@@ -165,40 +165,96 @@ fi
 echo "  PASS: Derived project name"
 
 echo ""
-echo "=== Testing --config flag ==="
+echo "=== Testing hierarchical config ==="
 
-echo "Test 8: Should accept explicit config path"
-setup_git_repo "$TEST_TMP/explicit-test"
-cat > "$TEST_TMP/my-custom.config" << 'EOF'
+echo "Test 8: Should find config in parent directory"
+mkdir -p "$TEST_TMP/parent-test/child"
+setup_git_repo "$TEST_TMP/parent-test"
+cat > "$TEST_TMP/parent-test/.claude-cage" << 'EOF'
 claude_cage {
-    showBanner = false
+    showBanner = false,
+    exclude = { "parent-exclude" }
 }
 EOF
 
-cd "$TEST_TMP/explicit-test"
-output=$("$CAGE_DIR/dist/claude-cage" --config "$TEST_TMP/my-custom.config" --dry-run 2>&1)
-if ! echo "$output" | grep -q "Configuration loaded from:.*my-custom.config"; then
-    echo "FAIL: Should use explicit config path"
-    echo "Output was:"
-    echo "$output"
-    exit 1
-fi
-echo "  PASS: Used explicit config path"
+cd "$TEST_TMP/parent-test/child"
+git init -q
+git config user.email "test@example.com"
+git config user.name "Test User"
+echo "content" > file.txt
+git add .
+git commit -q -m "Initial"
 
-echo "Test 9: Should error on invalid explicit config path"
-output=$("$CAGE_DIR/dist/claude-cage" --config "/nonexistent/config" --dry-run 2>&1) || true
-if ! echo "$output" | grep -qi "ain't there\|not found\|no such"; then
-    echo "FAIL: Should error on invalid config path"
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
+if ! echo "$output" | grep -q "parent-test/.claude-cage"; then
+    echo "FAIL: Should find config in parent directory"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Errors on invalid config path"
+if ! echo "$output" | grep -q "parent-exclude"; then
+    echo "FAIL: Should apply excludes from parent config"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Found config in parent directory"
+
+echo "Test 9: Should merge ancestor and local configs (local overrides)"
+cat > "$TEST_TMP/parent-test/child/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    exclude = { "child-exclude" },
+    autoMerge = true
+}
+EOF
+
+cd "$TEST_TMP/parent-test/child"
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
+# Should have both excludes (arrays merge)
+if ! echo "$output" | grep -q "parent-exclude"; then
+    echo "FAIL: Should include parent excludes"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q "child-exclude"; then
+    echo "FAIL: Should include child excludes"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+# autoMerge from child should override (scalar)
+if ! echo "$output" | grep -q "Auto-merge:.*true"; then
+    echo "FAIL: Child config should override scalar values"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Merged ancestor and local configs correctly"
+
+echo "Test 10: Should show multiple config sources"
+cd "$TEST_TMP/parent-test/child"
+output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
+# Should list both config files
+if ! echo "$output" | grep -q "parent-test/.claude-cage"; then
+    echo "FAIL: Should list parent config in sources"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q "child/.claude-cage"; then
+    echo "FAIL: Should list child config in sources"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Shows multiple config sources"
 
 echo ""
 echo "=== Testing Lua syntax errors ==="
 
-echo "Test 10: Should report Lua syntax errors"
+echo "Test 11: Should report Lua syntax errors"
 setup_git_repo "$TEST_TMP/syntax-error"
 cat > "$TEST_TMP/syntax-error/.claude-cage" << 'EOF'
 claude_cage {
@@ -219,7 +275,7 @@ echo "  PASS: Reports Lua syntax errors"
 echo ""
 echo "=== Testing additionalMounts ==="
 
-echo "Test 11: Should parse additionalMounts"
+echo "Test 12: Should parse additionalMounts"
 setup_git_repo "$TEST_TMP/mounts-test"
 cat > "$TEST_TMP/mounts-test/.claude-cage" << 'EOF'
 claude_cage {

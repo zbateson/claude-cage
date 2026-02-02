@@ -242,6 +242,71 @@ claude_cage {
 
 Network filtering works in Docker mode too—uses iptables with privilege drop after setup.
 
+## Direct Mount Mode
+
+Not every project needs the full git sync workflow. Maybe you're working on open source with no secrets to hide. Maybe you just want to sandbox a directory and protect your network.
+
+**Direct mount** skips the intermediary clone and mounts your source directly:
+
+```bash
+# One-off direct mount
+claude-cage --direct-mount
+
+# Or set it in config
+claude_cage {
+    directMount = true
+}
+```
+
+**What you still get:**
+- Filesystem isolation (Claude can't see your home directory, SSH keys, etc.)
+- Network filtering (allowlist/blocklist mode)
+- Additional mounts you configure
+
+**What you skip:**
+- The intermediary/work directory clone
+- Git sync and hooks
+- File exclusion (everything is mounted directly)
+
+### Use Case: Open Source Projects
+
+Got a directory full of open source projects? No secrets, no problem:
+
+```lua
+-- ~/.config/claude-cage/config (user-level)
+claude_cage {
+    directMount = true,
+    networkMode = "allowlist",
+    allow = {
+        domains = { "github.com:443", "api.anthropic.com:443" }
+    }
+}
+```
+
+Claude gets the files, the network is locked down, and your private stuff stays private.
+
+### Use Case: Hybrid Mode
+
+Want git workflow for your main project but also let Claude browse your other repos? Use `isolated = true` with `additionalMounts`:
+
+```lua
+claude_cage {
+    -- Git sync for this project only
+    isolated = true,
+    autoMerge = true,
+
+    -- But mount the whole open source directory read-only
+    additionalMounts = {
+        { source = "~/projects/open-source", mode = "ro" }
+    }
+}
+```
+
+Now you get:
+- Full git workflow with parallel agents on your main project
+- Read-only access to reference code from other projects
+- Claude can look but not touch the other repos
+
 ## Parallel Agents
 
 Want multiple Claude instances workin' on different features? Each branch gets its own isolated sandbox:

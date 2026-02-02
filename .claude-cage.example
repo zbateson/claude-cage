@@ -54,6 +54,11 @@ claude_cage {
 
     autoMerge = true,
 
+    -- Allow running in non-git directories. When true, directories without
+    -- a git repo are mounted directly (no sync, changes go straight to source).
+    -- When false, claude-cage requires a git repo. When unset, prompts.
+    allowNonGit = true,
+
     -- Isolated mode mounts only this project. When false (default), all
     -- projects on the same git branch are visible inside the sandbox.
     -- isolated = false,

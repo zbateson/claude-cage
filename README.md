@@ -157,6 +157,9 @@ claude_cage {
     -- Auto-sync commits back to source
     autoMerge = true,
 
+    -- Allow sandboxing non-git directories (mounts directly, no sync)
+    allowNonGit = true,
+
     -- Required mounts for Claude Code to work inside the sandbox
     additionalMounts = {
         "~/.local/bin/claude",   -- Claude Code binary

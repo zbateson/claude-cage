@@ -2,7 +2,7 @@
 
 You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe more than you should be givin' out.
 
-**claude-cage** locks things down with multiple layers of security. Your filesystem, your network, your sensitive files—protected. Your code stays on your machine, not shipped off to some cloud sandbox. That's data sovereignty. That's how you do things right.
+**claude-cage** locks things down with multiple layers of security. Your filesystem, your network, your sensitive files—protected. The sandbox runs locally, not on some third-party cloud. Your secrets stay home while your code does the traveling.
 
 ## Three Layers of Protection
 
@@ -16,7 +16,7 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 
 - **Auto-sync on push** — Claude's commits flow back to your source branch automatically
 - **Parallel agents** — One agent per branch, each with isolated cache directories
-- **Runs locally** — Your code never leaves your machine. No cloud. No third-party access.
+- **Runs locally** — The sandbox runs on your machine. No third-party cloud sandbox access to your filesystem.
 - **Flexible** — Bubblewrap or Docker on Linux/WSL 2, Docker on macOS
 
 ## How It Works

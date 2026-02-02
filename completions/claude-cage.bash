@@ -1,53 +1,35 @@
 # Bash completion for claude-cage
-# Put this file in /etc/bash_completion.d/ or source it from ~/.bashrc
+#
+# Install options:
+#   1. Run: eval "$(claude-cage completion bash)"
+#   2. Or copy this file to ~/.local/share/bash-completion/completions/claude-cage
+#   3. Or source from ~/.bashrc: source /path/to/claude-cage.bash
 
 _claude_cage() {
     local cur prev words cword
-    _init_completion || return
+    _init_completion 2>/dev/null || return
 
-    local subcommands="git-merge clean clean-all"
+    local subcommands="git-merge clean clean-all completion"
     local flags="--test --direct-mount --branch --dry-run --verbose -v --debug --help -h --version"
 
     case "$prev" in
         --branch)
-            # Complete with cached branches
             local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
             if [ -d "$cache_dir/branches" ]; then
-                local branches=$(ls -1 "$cache_dir/branches" 2>/dev/null)
-                COMPREPLY=($(compgen -W "$branches" -- "$cur"))
+                COMPREPLY=($(compgen -W "$(ls -1 "$cache_dir/branches" 2>/dev/null)" -- "$cur"))
             fi
+            return
+            ;;
+        completion)
+            COMPREPLY=($(compgen -W "bash zsh" -- "$cur"))
             return
             ;;
     esac
 
-    # If first non-option argument, offer subcommands
-    local has_subcommand=false
-    for word in "${words[@]:1:$cword-1}"; do
-        case "$word" in
-            git-merge|clean|clean-all)
-                has_subcommand=true
-                break
-                ;;
-        esac
-    done
-
-    if [ "$has_subcommand" = false ]; then
-        if [[ "$cur" == -* ]]; then
-            COMPREPLY=($(compgen -W "$flags" -- "$cur"))
-        else
-            COMPREPLY=($(compgen -W "$subcommands $flags" -- "$cur"))
-        fi
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
     else
-        # After subcommand, only offer relevant flags
-        case "${words[1]}" in
-            clean)
-                COMPREPLY=($(compgen -W "--branch" -- "$cur"))
-                ;;
-            *)
-                COMPREPLY=($(compgen -W "$flags" -- "$cur"))
-                ;;
-        esac
+        COMPREPLY=($(compgen -W "$subcommands $flags" -- "$cur"))
     fi
 }
-
 complete -F _claude_cage claude-cage

@@ -15,6 +15,19 @@ if [ "$show_version" = true ]; then
     exit 0
 fi
 
+# Handle completion subcommand early (doesn't need config)
+if [ "${1:-}" = "completion" ]; then
+    case "${2:-}" in
+        bash) output_bash_completion; exit 0 ;;
+        zsh) output_zsh_completion; exit 0 ;;
+        *)
+            echo "Usage: claude-cage completion [bash|zsh]"
+            echo "Output shell completion script for the specified shell."
+            exit 1
+            ;;
+    esac
+fi
+
 # Parse additional flags and subcommands
 # Arguments we don't recognize get passed through to the launch command
 test_mode=false

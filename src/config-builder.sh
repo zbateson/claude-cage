@@ -141,16 +141,21 @@ config_builder_install_completions() {
     mkdir -p "$(dirname "$install_path")"
 
     if [ "$shell_name" = "bash" ]; then
-        cat > "$install_path" << 'BASH_COMPLETION'
-@@BASH_COMPLETION@@
-BASH_COMPLETION
+        cat > "$install_path" << 'BASH_WRAPPER'
+# claude-cage bash completion (auto-generated wrapper)
+# Loads completions dynamically from claude-cage
+eval "$(claude-cage completion bash 2>/dev/null)"
+BASH_WRAPPER
         echo "Installed to: $install_path"
         echo "Completions will be available in new bash sessions."
 
     elif [ "$shell_name" = "zsh" ]; then
-        cat > "$install_path" << 'ZSH_COMPLETION'
-@@ZSH_COMPLETION@@
-ZSH_COMPLETION
+        cat > "$install_path" << 'ZSH_WRAPPER'
+#compdef claude-cage
+# claude-cage zsh completion (auto-generated wrapper)
+# Loads completions dynamically from claude-cage
+eval "$(claude-cage completion zsh 2>/dev/null)"
+ZSH_WRAPPER
         echo "Installed to: $install_path"
 
         # Check if fpath includes this directory

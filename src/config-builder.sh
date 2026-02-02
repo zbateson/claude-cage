@@ -101,6 +101,86 @@ config_builder_prompt_text() {
     echo "${answer:-$default}"
 }
 
+# Offer to install shell completions
+config_builder_install_completions() {
+    local shell_name=""
+    local install_path=""
+    local completion_content=""
+
+    # Detect shell
+    if [ -n "$BASH_VERSION" ]; then
+        shell_name="bash"
+        install_path="$HOME/.local/share/bash-completion/completions/claude-cage"
+    elif [ -n "$ZSH_VERSION" ]; then
+        shell_name="zsh"
+        install_path="$HOME/.zsh/completions/_claude-cage"
+    else
+        # Try to detect from $SHELL
+        case "$SHELL" in
+            */bash) shell_name="bash"; install_path="$HOME/.local/share/bash-completion/completions/claude-cage" ;;
+            */zsh) shell_name="zsh"; install_path="$HOME/.zsh/completions/_claude-cage" ;;
+        esac
+    fi
+
+    if [ -z "$shell_name" ]; then
+        return 0  # Can't detect shell, skip
+    fi
+
+    # Check if already installed
+    if [ -f "$install_path" ]; then
+        return 0  # Already installed
+    fi
+
+    echo
+    echo "Want tab-completion for claude-cage commands and flags?"
+    if ! config_builder_prompt_yesno "Install $shell_name completions?" "y"; then
+        return 0
+    fi
+
+    # Create directory
+    mkdir -p "$(dirname "$install_path")"
+
+    if [ "$shell_name" = "bash" ]; then
+        cat > "$install_path" << 'BASH_COMPLETION'
+@@BASH_COMPLETION@@
+BASH_COMPLETION
+        echo "Installed to: $install_path"
+        echo "Completions will be available in new bash sessions."
+
+    elif [ "$shell_name" = "zsh" ]; then
+        cat > "$install_path" << 'ZSH_COMPLETION'
+@@ZSH_COMPLETION@@
+ZSH_COMPLETION
+        echo "Installed to: $install_path"
+
+        # Check if fpath includes this directory
+        local zshrc="$HOME/.zshrc"
+        local fpath_line='fpath=(~/.zsh/completions $fpath)'
+        if [ -f "$zshrc" ] && grep -q '\.zsh/completions' "$zshrc" 2>/dev/null; then
+            echo "Completions will be available in new zsh sessions."
+        else
+            echo
+            echo "Add this line to your ~/.zshrc (before compinit):"
+            echo "  $fpath_line"
+            echo
+            if config_builder_prompt_yesno "Add it automatically?" "y"; then
+                # Prepend to .zshrc so it's before any compinit
+                if [ -f "$zshrc" ]; then
+                    local tmp_zshrc
+                    tmp_zshrc=$(mktemp)
+                    echo "$fpath_line" > "$tmp_zshrc"
+                    cat "$zshrc" >> "$tmp_zshrc"
+                    mv "$tmp_zshrc" "$zshrc"
+                else
+                    echo "$fpath_line" > "$zshrc"
+                fi
+                echo "Added to ~/.zshrc"
+            fi
+            echo "Completions will be available in new zsh sessions."
+        fi
+    fi
+}
+
 config_builder_run() {
     local user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-cage"
     local user_config="$user_config_dir/config"
@@ -339,6 +419,11 @@ config_builder_run() {
         echo -e "$config_content" > "$config_path"
         echo
         echo "Saved to $config_path."
+
+        # Offer to install shell completions
+        config_builder_install_completions
+
+        echo
         echo "You're good to go. Fire up claude-cage again when you're ready."
         return 0
     else

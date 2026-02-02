@@ -208,6 +208,7 @@ claude_cage {
     exclude = { ".env", "secrets/**", "application-*.properties" },
     mode = "bwrap",  -- or "docker"
     autoMerge = true,  -- enable real-time sync
+    allowNonGit = true,  -- allow non-git directories
     showBanner = true,
 
     -- Network filtering
@@ -234,6 +235,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `exclude` | `{}` | Patterns to exclude from archive |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
+| `allowNonGit` | unset | Allow running in non-git directories (see below) |
 | `isolated` | `false` | Only mount single project instead of all same-branch projects |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip the auto-merge info message and key press when autoMerge is off |
@@ -242,6 +244,36 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
+
+### Non-Git Directories
+
+By default, claude-cage is designed to work with git repositories, using git's machinery for syncing changes between the sandbox and your source files. But sometimes you just want to sandbox a plain directory without git.
+
+The `allowNonGit` option controls this behavior:
+
+| Value | Behavior |
+|-------|----------|
+| `true` | Allow sandboxing non-git directories. Changes go directly to source. |
+| `false` | Require a git repository. Exit with error if not in a repo. |
+| unset | Prompt interactively when a non-git directory is detected. |
+
+**When running in non-git mode:**
+- The source directory is mounted directly into the sandbox (read-write)
+- No intermediary or work directory is created
+- No git hooks or sync mechanism
+- Changes made inside the sandbox immediately affect the source files
+- `autoMerge` and `createCagedDir` are ignored
+
+**Example config:**
+
+```lua
+claude_cage {
+    allowNonGit = true,  -- Let me sandbox anything
+    mode = "bwrap"
+}
+```
+
+If `allowNonGit` is unset and you run claude-cage in a non-git directory, you'll be prompted to configure it. If you choose yes, the setting is saved to your config for next time.
 
 ### Additional Mounts
 

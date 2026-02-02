@@ -349,9 +349,14 @@ run_in_docker() {
         fi
     done
 
-    # In non-isolated mode: mount branch roots for work (/) and intermediary (/run)
-    # This makes all same-branch projects and intermediaries visible at original paths
-    if [ "$cfg_isolated" != "true" ]; then
+    # Mount strategy depends on mode:
+    # - Non-git mode (empty intermediary_dir): mount source directly, no intermediary
+    # - Non-isolated git mode: mount branch roots at / and /run
+    # - Isolated git mode: mount specific work dir and intermediary
+    if [ -z "$intermediary_dir" ]; then
+        # Non-git mode: mount source directory directly at its original path
+        docker_args+=(-v "$work_dir:$project_path")
+    elif [ "$cfg_isolated" != "true" ]; then
         # Mount work directories at /
         for dir in "$branch_work_root"/*; do
             if [ -d "$dir" ]; then
@@ -374,9 +379,10 @@ run_in_docker() {
         docker_args+=(-v "$intermediary_dir:/run$project_path")
     fi
 
-    # Mount pipe for git hook communication (if it exists)
+    # Mount pipe for git hook communication (if it exists and we have an intermediary)
     # Use /tmp/claude-cage/pipe since /run is now used for intermediaries
-    if [ -p "$pipe_path" ]; then
+    # Skip in non-git mode (no pipe needed)
+    if [ -n "$intermediary_dir" ] && [ -p "$pipe_path" ]; then
         docker_args+=(-v "$pipe_path:/tmp/claude-cage/pipe")
     fi
 

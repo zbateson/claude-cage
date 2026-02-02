@@ -221,6 +221,10 @@ if hideConfirmationPrompt == nil then hideConfirmationPrompt = false end
 local createCagedDir = config.createCagedDir
 if createCagedDir == nil then createCagedDir = false end
 
+-- Non-git directory support (nil = unset, true = allow, false = disallow)
+local allowNonGit = config.allowNonGit
+-- Keep as nil if not set (special handling for "unset" state)
+
 -- Docker options
 local docker = config.docker or {}
 local docker_image = docker.image or "node:lts-slim"
@@ -261,6 +265,12 @@ print(docker_container)
 print(launch)
 print(tostring(hideConfirmationPrompt))
 print(tostring(createCagedDir))
+-- allowNonGit: nil = "unset", true = "true", false = "false"
+if allowNonGit == nil then
+    print("unset")
+else
+    print(tostring(allowNonGit))
+end
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -333,6 +343,7 @@ LUAEOF
         read -r cfg_launch
         read -r cfg_hideConfirmationPrompt
         read -r cfg_createCagedDir
+        read -r cfg_allowNonGit
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do

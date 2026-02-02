@@ -49,10 +49,15 @@ run_in_bwrap() {
     # Build bwrap arguments as an array
     local -a bwrap_args=()
 
-    # In non-isolated mode: mount branch work root at / FIRST
-    # This makes all same-branch projects visible at their original paths
-    # System mounts below will overlay on top
-    if [ "$cfg_isolated" != "true" ]; then
+    # Mount strategy depends on mode:
+    # - Non-git mode (empty intermediary_dir): mount source directly
+    # - Non-isolated git mode: mount branch work root at /
+    # - Isolated git mode: mount specific work dir (handled later)
+    if [ -z "$intermediary_dir" ]; then
+        # Non-git mode: mount source directory directly at its original path
+        # We need to create the parent structure first
+        : # Handled in the work_dir mount section below
+    elif [ "$cfg_isolated" != "true" ]; then
         bwrap_args+=(--bind "$branch_work_root" /)
     fi
 
@@ -122,10 +127,15 @@ run_in_bwrap() {
     # Temp filesystem
     bwrap_args+=(--tmpfs /tmp)
 
-    # In non-isolated mode: mount branch intermediary root at /run
-    # This makes all same-branch intermediaries accessible at /run<project-path>
-    # In isolated mode: use tmpfs /run and mount specific intermediary
-    if [ "$cfg_isolated" != "true" ]; then
+    # Mount intermediary and work directories
+    # - Non-git mode (empty intermediary_dir): mount source directly, no intermediary
+    # - Non-isolated git mode: mount branch roots at / and /run
+    # - Isolated git mode: mount specific dirs at their paths
+    if [ -z "$intermediary_dir" ]; then
+        # Non-git mode: mount source directory directly (read-write)
+        bwrap_args+=(--tmpfs /run)
+        bwrap_args+=(--bind "$work_dir" "$project_path")
+    elif [ "$cfg_isolated" != "true" ]; then
         bwrap_args+=(--bind "$branch_intermediary_root" /run)
     else
         bwrap_args+=(--tmpfs /run)
@@ -133,9 +143,10 @@ run_in_bwrap() {
         bwrap_args+=(--bind "$work_dir" "$project_path")
     fi
 
-    # Mount pipe for git hook communication (if it exists)
+    # Mount pipe for git hook communication (if it exists and we have an intermediary)
     # Use /tmp/claude-cage/pipe since /run is now used for intermediaries
-    if [ -p "$pipe_path" ]; then
+    # Skip in non-git mode (no pipe needed)
+    if [ -n "$intermediary_dir" ] && [ -p "$pipe_path" ]; then
         bwrap_args+=(--bind "$pipe_path" /tmp/claude-cage/pipe)
     fi
 

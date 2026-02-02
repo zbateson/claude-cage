@@ -179,7 +179,17 @@ config_builder_run() {
 
     echo
 
-    # 6. Caged directory symlinks
+    # 6. Allow non-git directories
+    echo "Normally I work with git repos so I can sync changes back and forth."
+    echo "But if you point me at a plain directory, I can still sandbox it - just no git magic."
+    config_builder_prompt_yesno "Allow runnin' in non-git directories?" "y"
+    local allow_non_git=$?
+    local allow_non_git_str="false"
+    [ $allow_non_git -eq 0 ] && allow_non_git_str="true"
+
+    echo
+
+    # 8. Caged directory symlinks
     echo "The .caged/ directory puts shortcuts to your sandbox branches right in your project."
     echo "Makes it easy to poke around and see what's happenin' in there."
     local create_caged_str="false"
@@ -205,13 +215,13 @@ config_builder_run() {
 
     echo
 
-    # 7. Launch command
+    # 9. Launch command
     local launch_cmd
     launch_cmd=$(config_builder_prompt_text "What're we runnin' in there" "claude")
 
     echo
 
-    # 8. Tool-specific mounts
+    # 10. Tool-specific mounts
     local additional_mounts=()
     if [ "$launch_cmd" = "claude" ]; then
         echo "Claude Code needs these mounted:"
@@ -258,7 +268,7 @@ config_builder_run() {
         echo
     fi
 
-    # 9. Additional read-only mounts
+    # 11. Additional read-only mounts
     if config_builder_prompt_yesno "Any other read-only mounts you want mounted?" "n"; then
         echo "Gimme the paths, comma-separated:"
         read -r other_mounts
@@ -273,7 +283,7 @@ config_builder_run() {
 
     echo
 
-    # 10. Additional read-write mounts
+    # 12. Additional read-write mounts
     if config_builder_prompt_yesno "Any read-write mounts you need mounted?" "n"; then
         echo "Gimme the paths, comma-separated:"
         read -r rw_mounts
@@ -293,6 +303,7 @@ config_builder_run() {
     config_content+="\n    launch = \"$launch_cmd\","
     config_content+="\n    mode = \"$mode\","
     config_content+="\n    autoMerge = $auto_merge_str,"
+    config_content+="\n    allowNonGit = $allow_non_git_str,"
     config_content+="\n    createCagedDir = $create_caged_str,"
 
     if [ ${#exclude_patterns[@]} -gt 0 ]; then

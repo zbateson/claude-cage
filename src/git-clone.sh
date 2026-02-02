@@ -73,6 +73,13 @@ get_git_root() {
     git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null
 }
 
+# Check if a directory is inside a git repository
+# Returns 0 (success) if it is, 1 (failure) if not
+is_git_repo() {
+    local source_dir="$1"
+    git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
 # Get current branch from source project
 # Returns empty string and exits 1 if not on a branch (detached HEAD or no commits)
 get_source_branch() {

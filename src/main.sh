@@ -95,8 +95,10 @@ echo "  Project:       $cfg_project"
 echo "  Source:        $cfg_source"
 echo "  Mode:          $cfg_mode"
 echo "  Launch:        $cfg_launch"
-echo "  Auto-merge:    $cfg_autoMerge"
-echo "  Isolated:      $cfg_isolated"
+if [ "$non_git_mode" = false ]; then
+    echo "  Auto-merge:    $cfg_autoMerge"
+    echo "  Isolated:      $cfg_isolated"
+fi
 echo "  Network mode:  $cfg_networkMode"
 
 if [ ${#cfg_display_lines[@]} -gt 0 ]; then

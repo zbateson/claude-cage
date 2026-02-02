@@ -190,6 +190,10 @@ claude_cage {
 # Basic usage - launches claude inside the sandbox
 claude-cage
 
+# Pass arguments through to claude (--continue, --resume, etc.)
+claude-cage --continue
+claude-cage --resume
+
 # Drop into a shell inside the sandbox (instead of launching claude)
 claude-cage --test
 
@@ -205,6 +209,8 @@ claude-cage --verbose
 # Manually merge Claude's changes (if autoMerge is off)
 claude-cage git-merge
 ```
+
+**Note:** Arguments that aren't recognized by claude-cage are passed through to the launch command. So `claude-cage --resume` runs `claude --resume` inside the sandbox.
 
 ## Network Filtering
 

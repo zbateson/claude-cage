@@ -5,14 +5,20 @@ if [ "${CLAUDE_CAGE_SOURCING:-}" = "1" ]; then
 fi
 
 # Parse additional flags and subcommands
+# Arguments we don't recognize get passed through to the launch command
 test_mode=false
 git_merge_mode=false
 cli_direct_mount=false
+passthrough_args=()
 for arg in "$@"; do
     case "$arg" in
         --test) test_mode=true ;;
         --direct-mount) cli_direct_mount=true ;;
+        --dry-run) ;; # handled by helpers.sh
+        --verbose|-v) ;; # handled by helpers.sh
+        --debug) ;; # handled by helpers.sh
         git-merge) git_merge_mode=true ;;
+        *) passthrough_args+=("$arg") ;;
     esac
 done
 
@@ -252,9 +258,14 @@ if [ "$test_mode" = true ]; then
     launch_msg="Droppin' you into a shell for testing..."
     launch_cmd=""
 else
-    # Normal mode: run the configured launch command
-    launch_msg="Launchin': $cfg_launch"
-    launch_cmd="$cfg_launch"
+    # Normal mode: run the configured launch command with any passthrough args
+    if [ ${#passthrough_args[@]} -gt 0 ]; then
+        launch_cmd="$cfg_launch ${passthrough_args[*]}"
+        launch_msg="Launchin': $launch_cmd"
+    else
+        launch_cmd="$cfg_launch"
+        launch_msg="Launchin': $cfg_launch"
+    fi
 fi
 
 echo "$launch_msg"

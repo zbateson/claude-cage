@@ -250,15 +250,18 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 
 By default, claude-cage creates an intermediary clone and uses git to sync changes. But sometimes you just want to sandbox a directory directly - no cloning, no syncing.
 
-**Two ways to trigger direct mount mode:**
+**Three ways to trigger direct mount mode:**
 
-1. **`directMount = true`** - Explicitly mount source directly (even for git repos)
-2. **`allowNonGit = true`** - Allow non-git directories (triggers direct mount automatically)
+1. **`--direct-mount` flag** - CLI option for one-off direct mount
+2. **`directMount = true`** - Config option to always mount source directly (even for git repos)
+3. **`allowNonGit = true`** - Allow non-git directories (triggers direct mount automatically)
 
 | Option | Default | Behavior |
 |--------|---------|----------|
 | `directMount` | `false` | When `true`, always mount source directly without git sync |
 | `allowNonGit` | unset | When `true`, allow non-git dirs. When `false`, require git. When unset, prompt. |
+
+**Note:** `allowNonGit` only applies when you're truly outside a git repo. Subdirectories inside a git repo are still detected as git repos and run in normal git mode. Use `directMount` or `--direct-mount` if you want direct mount inside a git repo.
 
 **In direct mount mode:**
 - The source directory is mounted directly into the sandbox (read-write)

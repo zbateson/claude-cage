@@ -193,6 +193,9 @@ claude-cage
 # Drop into a shell inside the sandbox (instead of launching claude)
 claude-cage --test
 
+# Direct mount - skip git sync, mount source directly
+claude-cage --direct-mount
+
 # Preview what would happen (no changes)
 claude-cage --dry-run
 

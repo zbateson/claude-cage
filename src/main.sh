@@ -7,9 +7,11 @@ fi
 # Parse additional flags and subcommands
 test_mode=false
 git_merge_mode=false
+cli_direct_mount=false
 for arg in "$@"; do
     case "$arg" in
         --test) test_mode=true ;;
+        --direct-mount) cli_direct_mount=true ;;
         git-merge) git_merge_mode=true ;;
     esac
 done
@@ -17,11 +19,11 @@ done
 # Initialize and parse config
 init_config "$@"
 
-# Check for direct mount mode (explicit config or non-git directory)
+# Check for direct mount mode (CLI flag, config, or non-git directory)
 direct_mount_mode=false
 
-# Direct mount explicitly requested in config
-if [ "$cfg_directMount" = "true" ]; then
+# Direct mount explicitly requested via CLI or config
+if [ "$cli_direct_mount" = true ] || [ "$cfg_directMount" = "true" ]; then
     direct_mount_mode=true
 # Not a git repo - check allowNonGit setting
 elif ! is_git_repo "$cfg_source"; then

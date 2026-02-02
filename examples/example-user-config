@@ -10,11 +10,30 @@ claude_cage {
     -- PERSONAL PREFERENCES
     -- =========================================================================
 
+    -- Command to run inside the sandbox (can include arguments)
+    -- launch = "claude",
+    -- launch = "claude --dangerously-skip-permissions",
+
     -- Sandbox mode: "bwrap" (default) or "docker"
     -- mode = "bwrap",
 
+    -- Auto-sync commits back to source in real-time
+    -- autoMerge = true,
+
+    -- Allow non-git directories (mounts directly without git sync)
+    -- allowNonGit = true,
+
+    -- Direct mount mode - skip git clone/sync even for git repos
+    -- directMount = false,
+
     -- Show ASCII art banner
     -- showBanner = true,
+
+    -- Skip the "press any key" confirmation prompt
+    -- hideConfirmationPrompt = false,
+
+    -- Create .caged/ directory with symlinks to cache directories
+    -- createCagedDir = false,
 
     -- =========================================================================
     -- PERSONAL FILE EXCLUSIONS

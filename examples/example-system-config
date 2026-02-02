@@ -10,8 +10,17 @@ claude_cage {
     -- ORGANIZATIONAL DEFAULTS
     -- =========================================================================
 
+    -- Command to run inside the sandbox (can include arguments)
+    -- launch = "claude",
+
     -- Default sandbox mode: "bwrap" or "docker"
     -- mode = "bwrap",
+
+    -- Allow non-git directories (mounts directly without git sync)
+    -- allowNonGit = true,
+
+    -- Direct mount mode - skip git clone/sync even for git repos
+    -- directMount = false,
 
     -- =========================================================================
     -- ORGANIZATION-WIDE FILE EXCLUSIONS

@@ -2,6 +2,152 @@
 # Git hooks and communication pipe
 # ============================================================================
 
+# ============================================================================
+# Session tracking (prevents cleanup race conditions with multiple sessions)
+# ============================================================================
+
+# Get the session directory for a source/branch combo
+# Sessions are tracked in runtime dir (cleared on reboot)
+get_session_dir() {
+    local source_dir="$1"
+    local branch="$2"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$branch")
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    echo "$CLAUDE_CAGE_RUNTIME/sessions/$sanitized_branch/$path_hash"
+}
+
+# Register this session (create PID file)
+register_session() {
+    local source_dir="$1"
+    local branch="$2"
+    local session_dir
+    session_dir=$(get_session_dir "$source_dir" "$branch")
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] register session at $session_dir/$$"
+    else
+        mkdir -p "$session_dir"
+        echo $$ > "$session_dir/$$"
+    fi
+}
+
+# Unregister this session (remove PID file)
+unregister_session() {
+    local source_dir="$1"
+    local branch="$2"
+    local session_dir
+    session_dir=$(get_session_dir "$source_dir" "$branch")
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] unregister session at $session_dir/$$"
+    else
+        rm -f "$session_dir/$$"
+        # Clean up empty directories
+        rmdir "$session_dir" 2>/dev/null || true
+        rmdir "$(dirname "$session_dir")" 2>/dev/null || true
+    fi
+}
+
+# Check if other sessions exist for this source/branch
+# Returns 0 (true) if other sessions exist, 1 (false) if not
+has_other_sessions() {
+    local source_dir="$1"
+    local branch="$2"
+    local session_dir
+    session_dir=$(get_session_dir "$source_dir" "$branch")
+
+    if [ ! -d "$session_dir" ]; then
+        return 1  # no sessions at all
+    fi
+
+    # Check for other PID files (not ours)
+    local count=0
+    for pidfile in "$session_dir"/*; do
+        [ -f "$pidfile" ] || continue
+        local pid
+        pid=$(basename "$pidfile")
+        if [ "$pid" != "$$" ]; then
+            # Check if process is still running
+            if kill -0 "$pid" 2>/dev/null; then
+                count=$((count + 1))
+            else
+                # Stale PID file, clean it up
+                rm -f "$pidfile"
+            fi
+        fi
+    done
+
+    [ $count -gt 0 ]
+}
+
+# ============================================================================
+# Hook dispatcher (allows multiple hooks to coexist)
+# ============================================================================
+
+# Ensure the hook dispatcher exists for a given hook type
+# The dispatcher runs all scripts in <hook>.d/
+ensure_hook_dispatcher() {
+    local source_dir="$1"
+    local hook_type="$2"  # e.g., "post-commit" or "pre-commit"
+    local hook_path="$source_dir/.git/hooks/$hook_type"
+    local hook_dir="$source_dir/.git/hooks/${hook_type}.d"
+
+    # Create the .d directory
+    mkdir -p "$hook_dir"
+
+    # If hook doesn't exist or isn't our dispatcher, set it up
+    if [ ! -f "$hook_path" ] || ! grep -q "claude-cage-dispatcher" "$hook_path" 2>/dev/null; then
+        # If existing hook, preserve it
+        if [ -f "$hook_path" ] && [ ! -L "$hook_path" ]; then
+            mv "$hook_path" "$hook_dir/00-original"
+            chmod +x "$hook_dir/00-original"
+        fi
+
+        # Create dispatcher
+        cat > "$hook_path" << 'DISPATCHER'
+#!/bin/bash
+# claude-cage-dispatcher: runs all hooks in <hook>.d/
+HOOK_DIR="$(dirname "$0")/$(basename "$0").d"
+if [ -d "$HOOK_DIR" ]; then
+    for hook in "$HOOK_DIR"/*; do
+        [ -x "$hook" ] && "$hook" "$@"
+    done
+fi
+DISPATCHER
+        chmod +x "$hook_path"
+    fi
+}
+
+# Remove dispatcher if no hooks remain in .d directory
+maybe_remove_dispatcher() {
+    local source_dir="$1"
+    local hook_type="$2"
+    local hook_path="$source_dir/.git/hooks/$hook_type"
+    local hook_dir="$source_dir/.git/hooks/${hook_type}.d"
+
+    if [ -d "$hook_dir" ]; then
+        # Check if only original hook remains or directory is empty
+        local remaining
+        remaining=$(ls -A "$hook_dir" 2>/dev/null | wc -l)
+
+        if [ "$remaining" -eq 0 ]; then
+            # Empty, remove dispatcher
+            rm -f "$hook_path"
+            rmdir "$hook_dir"
+        elif [ "$remaining" -eq 1 ] && [ -f "$hook_dir/00-original" ]; then
+            # Only original remains, restore it
+            mv "$hook_dir/00-original" "$hook_path"
+            rmdir "$hook_dir"
+        fi
+    fi
+}
+
+# ============================================================================
+# Named pipe and intermediary hooks
+# ============================================================================
+
 # Set up named pipe and git hooks for cage communication
 # Arguments:
 #   $1 - source_dir: The original source directory
@@ -57,23 +203,45 @@ cleanup_pipe() {
 }
 
 # Clean up source repo hooks
+# Only removes hooks if no other sessions are using them
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - target_branch: The branch that was active when cage started
 cleanup_source_hooks() {
     local source_dir="$1"
-    local pre_commit="$source_dir/.git/hooks/pre-commit"
-    local post_commit="$source_dir/.git/hooks/post-commit"
+    local target_branch="$2"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$target_branch")
 
-    if [ -f "$pre_commit" ]; then
-        run rm -f "$pre_commit"
+    # Unregister this session first
+    unregister_session "$source_dir" "$target_branch"
+
+    # Check if other sessions still need the hooks
+    if has_other_sessions "$source_dir" "$target_branch"; then
         if [ "$verbose" = true ]; then
-            echo "  Removed hook: $pre_commit"
+            echo "  Other sessions active, keepin' hooks for branch: $target_branch"
         fi
+        return 0
     fi
 
-    if [ -f "$post_commit" ]; then
-        run rm -f "$post_commit"
+    # No other sessions, safe to remove our branch-specific hooks
+    local pre_commit_hook="$source_dir/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
+    local post_commit_hook="$source_dir/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+
+    if [ -f "$pre_commit_hook" ]; then
+        run rm -f "$pre_commit_hook"
         if [ "$verbose" = true ]; then
-            echo "  Removed hook: $post_commit"
+            echo "  Removed hook: $pre_commit_hook"
         fi
+        maybe_remove_dispatcher "$source_dir" "pre-commit"
+    fi
+
+    if [ -f "$post_commit_hook" ]; then
+        run rm -f "$post_commit_hook"
+        if [ "$verbose" = true ]; then
+            echo "  Removed hook: $post_commit_hook"
+        fi
+        maybe_remove_dispatcher "$source_dir" "post-commit"
     fi
 }
 
@@ -86,9 +254,16 @@ setup_source_pre_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
     local target_branch="$3"
-    local hook_path="$source_dir/.git/hooks/pre-commit"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$target_branch")
+    local hook_path="$source_dir/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
     local work_dir
     work_dir=$(get_cage_path "$source_dir" "work")
+
+    # Ensure dispatcher exists
+    if [ "$dry_run" != true ]; then
+        ensure_hook_dispatcher "$source_dir" "pre-commit"
+    fi
 
     # Create pre-commit hook
     # We need to pass exclude patterns into the hook
@@ -179,7 +354,17 @@ setup_source_post_commit() {
     local intermediary_dir="$3"
     local target_branch="$4"
     local state_path="$5"
-    local hook_path="$source_dir/.git/hooks/post-commit"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$target_branch")
+    local hook_path="$source_dir/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+
+    # Ensure dispatcher exists
+    if [ "$dry_run" != true ]; then
+        ensure_hook_dispatcher "$source_dir" "post-commit"
+    fi
+
+    # Register this session
+    register_session "$source_dir" "$target_branch"
 
     # Convert exclude patterns to pathspec format
     # Use :(exclude,glob) for proper ** matching (** means zero or more dirs with glob)

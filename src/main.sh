@@ -219,5 +219,5 @@ if [ -n "$PIPE_LISTENER_PID" ]; then
     cleanup_pipe "$pipe_path"
 fi
 if [ "$cfg_autoMerge" = "true" ]; then
-    cleanup_source_hooks "$cfg_source"
+    cleanup_source_hooks "$cfg_source" "$source_branch"
 fi

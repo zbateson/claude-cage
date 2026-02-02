@@ -127,6 +127,20 @@ If commit only contains excluded files, shows: "Only excluded files in this comm
 
 `pre-commit` hook on source prevents mixing excluded and included files in the same commit. This ensures patches can be cleanly created without sensitive data.
 
+### Multiple Sessions
+
+Multiple claude-cage sessions can run concurrently on the same project (even on different branches). Session tracking prevents cleanup race conditions:
+
+1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<branch>/<path-hash>/`
+2. **Hook dispatcher** - Source hooks use a dispatcher pattern (`.git/hooks/post-commit` runs all scripts in `post-commit.d/`)
+3. **Branch-specific hooks** - Each branch gets its own hook file: `post-commit.d/claude-cage-<branch>`
+4. **Safe cleanup** - Hooks are only removed when no other sessions need them
+
+This means:
+- Two sessions on `main` branch share the same hook (safe, content is identical)
+- One session on `main`, another on `feature` → separate hooks, no conflict
+- Exiting one session doesn't break another session's hooks
+
 ### Failed Patch Recovery
 
 When patches fail to apply (conflicts, user switched branches, etc.):
@@ -305,7 +319,7 @@ claude_cage {
 - [ ] Header/shebang handling in dist needs verification
 - [ ] Testing on actual Claude Code workflow
 - [ ] Conflict resolution when git-am fails
-- [ ] Instance tracking (multiple concurrent runs)
+- [x] Instance tracking (multiple concurrent runs via session PIDs)
 - [x] Network filtering for Docker mode (uses iptables with privilege drop)
 
 ## Network Isolation
@@ -414,13 +428,19 @@ claude_cage {
         └── state-<path-hash>             # Last processed source commit ID (12-char md5)
 
 $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
-└── pipes/<branch>/<project-path>       # Named pipe for communication
+├── pipes/<branch>/<project-path>       # Named pipe for communication
+└── sessions/<branch>/<path-hash>/      # Session tracking (PID files)
+    └── <pid>                           # One file per active session
 
 project/
-├── .claude-cage                        # Project config file (required)
+├── .claude-cage                        # Project config file (optional with ancestors)
 └── .git/hooks/
-    ├── pre-commit                      # Prevents mixed commits (autoMerge)
-    └── post-commit                     # Syncs to intermediary, updates state file (autoMerge)
+    ├── pre-commit                      # Dispatcher (runs all in pre-commit.d/)
+    ├── pre-commit.d/
+    │   └── claude-cage-<branch>        # Branch-specific hook
+    ├── post-commit                     # Dispatcher (runs all in post-commit.d/)
+    └── post-commit.d/
+        └── claude-cage-<branch>        # Branch-specific hook
 ```
 
 ### Sandbox Mount Structure

@@ -52,7 +52,7 @@ cd "$TEST_TMP/source"
 echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
 
 # Fix origin path for testing outside sandbox
-# (inside sandbox, intermediary is mounted at /run/claude-cage/intermediary)
+# (inside sandbox, intermediary is mounted at /run<project-path>)
 git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
 
 echo ""

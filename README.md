@@ -9,8 +9,8 @@ Listen up. `claude-cage` creates a sanitized copy of your project usin' git, the
 **Three-Repository Model:**
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`.caged/intermediary/`) - Fresh git repo with excluded files stripped out. No history of your secrets.
-3. **Work** (`.caged/work/`) - Where Claude operates. Pushes go to intermediary, then sync back to source.
+2. **Intermediary** (`~/.cache/claude-cage/...`) - Fresh git repo with excluded files stripped out. No history of your secrets.
+3. **Work** (`~/.cache/claude-cage/...`) - Where Claude operates. Pushes go to intermediary, then sync back to source.
 
 Your `.env` files, credentials, and secrets? They never make it into the cage. Not in the files. Not in the git history. Claude don't even know they exist.
 
@@ -160,7 +160,7 @@ claude_cage {
 ## How It Works
 
 ```
-Source Project                    .caged/intermediary              .caged/work
+Source Project                    ~/.cache/.../intermediary        ~/.cache/.../work
 (your actual repo)                (sanitized, fresh git)           (Claude's workspace)
        │                                   │                              │
        │  git ls-files + tar               │     git clone                │
@@ -220,12 +220,13 @@ Note: Network filtering in Docker mode uses a different approach (coming soon).
 
 **On your machine:**
 ```
+~/.cache/claude-cage/
+└── branches/<branch>/
+    ├── intermediary/<project-path>/  # Sanitized repo (git origin)
+    └── work/<project-path>/          # Claude's working copy
+
 your-project/
 ├── .claude-cage            # Your config
-├── .caged/                 # Created by claude-cage
-│   ├── intermediary/       # Sanitized repo
-│   ├── work/               # Claude's working copy
-│   └── .pipe               # Communication pipe (autoMerge)
 └── .git/hooks/             # Hooks added when autoMerge=true
     ├── pre-commit          # Prevents mixing excluded/included files
     └── post-commit         # Syncs your commits to intermediary
@@ -234,8 +235,8 @@ your-project/
 **Inside the sandbox:**
 ```
 /home/you/your-project/           # Working directory (same path as yours)
-/run/claude-cage/intermediary/    # Git origin for pushing
-/run/claude-cage/.pipe            # Hook communication pipe
+/run/home/you/your-project/       # Git origin for pushing
+/tmp/claude-cage/pipe             # Hook communication pipe
 ```
 
 ## Troubleshooting

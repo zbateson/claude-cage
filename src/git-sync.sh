@@ -380,8 +380,10 @@ manual_git_merge() {
         exit 1
     fi
 
-    # Add intermediary as a remote if not already
-    if ! git -C "$source_dir" remote | grep -q "^intermediary$"; then
+    # Add or update intermediary remote
+    if git -C "$source_dir" remote | grep -q "^intermediary$"; then
+        run git -C "$source_dir" remote set-url intermediary "$intermediary_dir"
+    else
         run git -C "$source_dir" remote add intermediary "$intermediary_dir"
     fi
 

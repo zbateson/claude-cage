@@ -140,7 +140,7 @@ First time you run `claude-cage`, it'll walk you through creatin' a config file.
 ```lua
 claude_cage {
     -- Command to run inside the sandbox (can include arguments)
-    launch = "claude",  -- or "aider", "cursor", "claude --resume", etc.
+    launch = "claude",  -- or "claude --dangerously-skip-permissions", "aider", etc.
 
     -- Files to exclude (never enter the cage)
     exclude = {
@@ -179,7 +179,7 @@ claude_cage {
 
 **Note:** The `additionalMounts` for Claude Code files are required for Claude to run inside the sandbox. Put these in your user config (`~/.config/claude-cage/config`) so they apply to all projects.
 
-**Tip:** The `launch` command can include arguments (e.g., `launch = "claude --resume"`), or you can pass them on the command line: `claude-cage --resume`. CLI arguments are appended to the launch command.
+**Tip:** The `launch` command can include arguments (e.g., `launch = "claude --dangerously-skip-permissions"`), or you can pass them on the command line. CLI arguments are appended to the launch command.
 
 **Config layering:** Configs are loaded and merged in order—system (`/etc/claude-cage.conf`), user (`~/.config/claude-cage/config`), project (`.claude-cage`). Arrays like `exclude` and `additionalMounts` combine across levels. Scalars like `mode` override.
 

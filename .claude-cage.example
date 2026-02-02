@@ -12,6 +12,14 @@
 
 claude_cage {
     -- =========================================================================
+    -- LAUNCH COMMAND
+    -- =========================================================================
+    -- What to run inside the sandbox. Defaults to "claude".
+    -- Can be any command: "aider", "cursor", a custom script, etc.
+
+    launch = "claude",
+
+    -- =========================================================================
     -- FILE EXCLUSION
     -- =========================================================================
     -- Files matching these patterns are stripped at archive time.
@@ -112,8 +120,16 @@ claude_cage {
     -- },
 
     -- =========================================================================
-    -- DISPLAY
+    -- DISPLAY & CONVENIENCE
     -- =========================================================================
 
+    -- Show the ASCII art banner on startup
     showBanner = true,
+
+    -- Skip the "press any key" confirmation prompt before entering sandbox
+    -- hideConfirmationPrompt = false,
+
+    -- Create .caged/ directory with symlinks to cache directories.
+    -- Gives you easy access to work/ and intermediary/ for each branch.
+    -- createCagedDir = false,
 }

@@ -181,6 +181,8 @@ claude_cage {
 
 **Config layering:** Configs are loaded and merged in order—system (`/etc/claude-cage.conf`), user (`~/.config/claude-cage/config`), project (`.claude-cage`). Arrays like `exclude` and `additionalMounts` combine across levels. Scalars like `mode` override.
 
+**More options:** See [`.claude-cage.example`](.claude-cage.example) for the full list of configuration options including `hideConfirmationPrompt`, `createCagedDir`, and Docker-specific settings.
+
 
 ## Usage
 

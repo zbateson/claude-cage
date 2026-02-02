@@ -1,24 +1,58 @@
 # ![claude-cage](https://zbateson.github.io/claude-cage/claude-cage-lo.png)
 
-Now I'm gonna tell you about `claude-cage`. It's a bash script that's gonna keep your files locked down tight and your network traffic under control while lettin' Claude Code do its work. Two modes of operation. Multiple layers of protection. Optional network isolation. Multiple barriers between Claude and your personal files, credentials, and secrets. That's how we do this right.
+You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe more than you should be givin' out.
 
-## What This Thing Does
+**claude-cage** locks things down with multiple layers of security. Your filesystem, your network, your sensitive files—protected. Your code stays on your machine, not shipped off to some cloud sandbox. That's data sovereignty. That's how you do things right.
 
-Listen up. `claude-cage` creates a sanitized copy of your project usin' git, then runs Claude Code inside a bwrap sandbox. Here's how it works:
+## Three Layers of Protection
 
-**Three-Repository Model:**
+1. **File Exclusion** — Sensitive files aren't copied into the sandbox. Not blocked from reading—*never there in the first place*. No `.env`, no credentials, no git history of secrets.
+
+2. **Filesystem Isolation** — The sandbox can't see your home directory, SSH keys, or AWS credentials. Claude works in a clean room.
+
+3. **Network Filtering** — Control what Claude can reach. Allowlist mode for lockdown. Blocklist mode to block your internal infrastructure. No sudo required.
+
+## What You Get
+
+- **Auto-sync on push** — Claude's commits flow back to your source branch automatically
+- **Parallel agents** — One agent per branch, each with isolated cache directories
+- **Runs locally** — Your code never leaves your machine. No cloud. No third-party access.
+- **Flexible** — Bubblewrap or Docker on Linux/WSL 2, Docker on macOS
+
+## How It Works
+
+```
+Source Project                    Intermediary                      Work (Sandbox)
+(your actual repo)                (sanitized, fresh git)            (where Claude operates)
+       │                                   │                              │
+       │  git archive + tar                │     git clone                │
+       │  (secrets excluded)               │                              │
+       └──────────────────────────────────>│─────────────────────────────>│
+                                           │                              │
+       │<──── format-patch/git-am ─────────│<────── git push ─────────────┤
+       │     (auto on push)                │     (Claude commits)         │
+                                           │                              │
+       ├──── post-commit ─────────────────>│       git pull ─────────────>│
+       │     (your commits)                │     (Claude pulls when ready)│
+```
+
+**Three repositories, one purpose:**
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`~/.cache/claude-cage/...`) - Fresh git repo with excluded files stripped out. No history of your secrets.
-3. **Work** (`~/.cache/claude-cage/...`) - Where Claude operates. Pushes go to intermediary, then sync back to source.
+2. **Intermediary** - Fresh git repo with excluded files stripped out. No history of your secrets.
+3. **Work** - Where Claude operates inside the sandbox. Pushes sync back to source.
 
-Your `.env` files, credentials, and secrets? They never make it into the cage. Not in the files. Not in the git history. Claude don't even know they exist.
+**Git hooks make it work:**
 
-**Network Isolation** (optional) - Keep Claude's network access under control:
+| Hook | Location | What It Does |
+|------|----------|--------------|
+| `post-receive` | Intermediary | When Claude pushes, generates patches and applies them to the original branch |
+| `post-commit` | Source | When you commit, syncs changes to intermediary for Claude to pull |
+| `pre-commit` | Source | **Blocks commits that mix excluded and non-excluded files** |
 
-- **Allowlist mode**: Only approved connections get through
-- **Blocklist mode**: Block specific destinations (like your internal infrastructure)
-- Uses slirp4netns for unprivileged network namespaces
+That last one's important. If you try to commit both `.env` and `app.js` together, the hook stops you. Why? Because we can't create a clean patch from a commit that contains secrets. Keep 'em separate.
+
+**Plus optional network isolation** - Allowlist or blocklist mode using iptables. No sudo required.
 
 ## Quick Start
 
@@ -51,7 +85,7 @@ claude-cage
 
 ## ⚠️ Now Listen to Me Very Carefully
 
-**This tool syncs changes back to your source repo.** When Claude commits and pushes, those changes come home. You understand what I'm tellin' you?
+**This tool syncs changes back to your source repo.** When Claude commits and pushes, those changes come back to the branch you started on. You understand what I'm tellin' you?
 
 **Before you run this:**
 - ✅ **Commit and push everything to git** - That's your backup right there
@@ -99,10 +133,13 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
 ## Configuration
 
-Create `.claude-cage` in your project root:
+First time you run `claude-cage`, it'll walk you through creatin' a config file. Or create `.claude-cage` in your project root yourself:
 
 ```lua
 claude_cage {
+    -- Command to run inside the sandbox
+    launch = "claude",  -- or "aider", "cursor", a custom script, etc.
+
     -- Files to exclude (never enter the cage)
     exclude = {
         ".env",
@@ -137,48 +174,27 @@ claude_cage {
 
 **Note:** The `additionalMounts` for Claude Code files are required for Claude to run inside the sandbox. Put these in your user config (`~/.config/claude-cage/config`) so they apply to all projects.
 
+**Config layering:** Configs are loaded and merged in order—system (`/etc/claude-cage.conf`), user (`~/.config/claude-cage/config`), project (`.claude-cage`). Arrays like `exclude` and `additionalMounts` combine across levels. Scalars like `mode` override.
+
 
 ## Usage
 
 ```bash
-# Basic usage - creates cage and shows info
-./claude-cage
+# Basic usage - launches claude inside the sandbox
+claude-cage
 
-# Drop into sandbox shell for testing
-./claude-cage --test
+# Drop into a shell inside the sandbox (instead of launching claude)
+claude-cage --test
 
 # Preview what would happen (no changes)
-./claude-cage --dry-run
+claude-cage --dry-run
 
 # Verbose output
-./claude-cage --verbose
+claude-cage --verbose
 
-# Manually merge Claude's changes
-./claude-cage git-merge
+# Manually merge Claude's changes (if autoMerge is off)
+claude-cage git-merge
 ```
-
-## How It Works
-
-```
-Source Project                    ~/.cache/.../intermediary        ~/.cache/.../work
-(your actual repo)                (sanitized, fresh git)           (Claude's workspace)
-       │                                   │                              │
-       │  git ls-files + tar               │     git clone                │
-       │  (excludes applied)               │                              │
-       └──────────────────────────────────>│──────────────────────────────>
-                                           │                              │
-                                           │<────── git push ─────────────┤
-                                           │     (Claude commits)         │
-                                           │                              │
-       │<──── format-patch/git-am ─────────┤                              │
-       │     (auto-sync if enabled)        │                              │
-```
-
-**Key points:**
-- Excluded files are stripped at archive time - no history leaks
-- Fresh git init means no trace of secrets in any commit
-- Changes sync back via git patches when `autoMerge = true`
-- The bwrap sandbox can't see your home directory, SSH keys, or AWS credentials
 
 ## Network Filtering
 
@@ -205,7 +221,7 @@ block = {
 
 ## Docker Mode
 
-Don't have bwrap? Use Docker instead:
+Prefer Docker, or on macOS where bwrap isn't available:
 
 ```lua
 claude_cage {
@@ -214,7 +230,27 @@ claude_cage {
 }
 ```
 
-Note: Network filtering in Docker mode uses a different approach (coming soon).
+Network filtering works in Docker mode too—uses iptables with privilege drop after setup.
+
+## Parallel Agents
+
+Want multiple Claude instances workin' on different features? Each branch gets its own isolated sandbox:
+
+```bash
+# Terminal 1: Agent working on feature-a
+git checkout -b feature-a
+claude-cage
+
+# Terminal 2: Agent working on feature-b
+git checkout -b feature-b
+claude-cage
+```
+
+**Commits go back to the branch you started on.** Switch branches in your source repo all you want—Claude's work still lands on the original branch.
+
+Each branch maintains separate cache directories (`~/.cache/claude-cage/branches/<branch>/`), so agents can't interfere with each other.
+
+**Multi-project visibility:** If you have multiple projects on the same branch, they can see each other inside the sandbox. Useful for monorepos or related projects. Set `isolated = true` in your config to disable this and only mount the single project.
 
 ## File Locations
 
@@ -238,6 +274,27 @@ your-project/
 /run/home/you/your-project/       # Git origin for pushing
 /tmp/claude-cage/pipe             # Hook communication pipe
 ```
+
+## Failed Patch Recovery
+
+Sometimes patches fail to apply—merge conflicts happen. No sweat. Failed patches are saved to `claude-cage-failed-patches/<branch>/` in your project.
+
+Next time you run `claude-cage`, you'll get an interactive prompt:
+
+```
+Hold up. You've got failed patches waitin' to be applied:
+
+  main: 2 patch(es)
+  feature/login: 1 patch(es)
+
+What do you wanna do?
+  1) Apply patches one-by-one
+  2) Delete all pending patches
+  3) Continue without applyin'
+  q) Quit
+```
+
+If there's a conflict during apply, you get a shell to resolve it manually.
 
 ## Troubleshooting
 

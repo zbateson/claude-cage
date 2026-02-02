@@ -172,8 +172,7 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
     echo ""
     echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
     echo ""
-    echo "   To skip this prompt, set hideConfirmationPrompt = true in your config."
-    echo ""
+    echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
     read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true
     echo ""
 fi

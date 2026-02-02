@@ -147,7 +147,7 @@ if [ "$clean_all_mode" = true ]; then
     while IFS= read -r branch; do
         work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
         if is_work_dirty "$work_dir"; then
-            echo "  $branch ${_yellow}(has uncommitted changes!)${_reset}"
+            echo -e "  $branch ${_yellow}(has uncommitted changes!)${_reset}"
         else
             echo "  $branch"
         fi
@@ -202,7 +202,7 @@ if [ "$clean_mode" = true ]; then
             branch_array+=("$branch")
             work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
             if is_work_dirty "$work_dir"; then
-                echo "  $idx) $branch ${_yellow}(has uncommitted changes!)${_reset}"
+                echo -e "  $idx) $branch ${_yellow}(has uncommitted changes!)${_reset}"
             else
                 echo "  $idx) $branch"
             fi

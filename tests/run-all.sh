@@ -43,10 +43,13 @@ run_test "$SCRIPT_DIR/test-config.sh"
 run_test "$SCRIPT_DIR/test-banner.sh"
 run_test "$SCRIPT_DIR/test-git-clone.sh"
 run_test "$SCRIPT_DIR/test-git-hooks.sh"
+run_test "$SCRIPT_DIR/test-git-patches.sh"
 run_test "$SCRIPT_DIR/test-git-sync.sh"
 run_test "$SCRIPT_DIR/test-network.sh"
 run_test "$SCRIPT_DIR/test-bwrap.sh"
 run_test "$SCRIPT_DIR/test-docker.sh"
+run_test "$SCRIPT_DIR/test-clean.sh"
+run_test "$SCRIPT_DIR/test-direct-mount.sh"
 
 # Summary
 echo "========================================"

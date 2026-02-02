@@ -1,0 +1,218 @@
+.TH CLAUDE-CAGE 1 "February 2026" "claude-cage 0.1.0" "User Commands"
+.SH NAME
+claude-cage \- a sandboxed git workflow for Claude Code
+.SH SYNOPSIS
+.B claude-cage
+[\fIOPTIONS\fR] [\fISUBCOMMAND\fR] [\fB\-\-\fR \fIARGS\fR...]
+.SH DESCRIPTION
+.B claude-cage
+creates an isolated sandbox for Claude Code using git-based file isolation.
+It creates a sanitized copy of your project (excluding sensitive files) and
+uses git to sync changes back to your source repository.
+.PP
+Key features:
+.IP \(bu 2
+No sudo required \- runs as current user
+.IP \(bu 2
+Git-based sync \- uses git archive + fresh init
+.IP \(bu 2
+File exclusion at archive time (no history of excluded files)
+.IP \(bu 2
+Network filtering via iptables (optional)
+.SH SUBCOMMANDS
+.TP
+.B git-merge
+Fetch refs from intermediary repository for manual merge. Use this when
+autoMerge is disabled and you want to bring Claude's changes back to source.
+.TP
+.B clean
+Remove cached branch data. With no arguments, presents interactive selection.
+Use \fB\-\-branch\fR to specify a branch directly.
+.TP
+.B clean-all
+Remove all cached branches for the current project. Prompts for confirmation.
+.SH OPTIONS
+.TP
+.B \-\-test
+Drop into an interactive shell for testing instead of launching the
+configured command.
+.TP
+.B \-\-direct-mount
+Mount the source directory directly into the sandbox without git sync.
+Changes made inside the sandbox immediately affect source files.
+.TP
+.B \-\-branch \fINAME\fR
+Specify branch for the \fBclean\fR command. The branch name is automatically
+sanitized for filesystem compatibility.
+.TP
+.B \-\-dry-run
+Show commands without executing them. Useful for understanding what
+claude-cage will do.
+.TP
+.B \-v\fR, \fB\-\-verbose
+Show commands as they execute. Helpful for debugging.
+.TP
+.B \-\-debug
+Show full command output (implies \fB\-\-verbose\fR).
+.TP
+.B \-h\fR, \fB\-\-help
+Display help message and exit.
+.TP
+.B \-\-version
+Display version number and exit.
+.SH CONFIGURATION
+Configuration files are loaded and merged in order (later values override,
+arrays merge):
+.PP
+.RS 4
+.nf
+/etc/claude-cage.conf              System-wide
+~/.config/claude-cage/config       User
+<ancestors>/.claude-cage           Ancestor directories
+.claude-cage                       Project (current directory)
+.fi
+.RE
+.PP
+Configuration uses Lua syntax:
+.PP
+.RS 4
+.nf
+claude_cage {
+    launch = "claude",
+    mode = "bwrap",
+    autoMerge = true,
+    exclude = { ".env", "secrets/**" },
+    networkMode = "allowlist",
+    allow = {
+        domains = { "github.com:443" }
+    }
+}
+.fi
+.RE
+.SS Configuration Options
+.TP
+.B launch
+Command to run inside sandbox (default: "claude")
+.TP
+.B mode
+Sandbox mode: "bwrap" or "docker" (default: "bwrap")
+.TP
+.B autoMerge
+Enable real-time sync via named pipe (default: false)
+.TP
+.B exclude
+Array of patterns to exclude from archive
+.TP
+.B directMount
+Mount source directly without git sync (default: false)
+.TP
+.B allowNonGit
+Allow running in non-git directories (default: unset, prompts)
+.TP
+.B isolated
+Only mount single project instead of all same-branch projects (default: false)
+.TP
+.B showBanner
+Show ASCII banner on startup (default: true)
+.TP
+.B hideConfirmationPrompt
+Skip the startup confirmation prompt (default: false)
+.TP
+.B createCagedDir
+Create .caged/ symlinks to branch caches (default: false)
+.TP
+.B additionalMounts
+Extra mounts for sandbox
+.TP
+.B networkMode
+Network filtering: "disabled", "allowlist", or "blocklist" (default: "disabled")
+.TP
+.B allow
+Allowed destinations when networkMode is "allowlist"
+.TP
+.B block
+Blocked destinations when networkMode is "blocklist"
+.SH ENVIRONMENT
+.TP
+.B CLAUDE_CAGE_CACHE
+Override cache directory (default: ~/.cache/claude-cage)
+.TP
+.B CLAUDE_CAGE_RUNTIME
+Override runtime directory (default: $XDG_RUNTIME_DIR/claude-cage)
+.TP
+.B CLAUDE_CAGE_BRANCH
+Override branch name for path construction (auto-detected from source)
+.SH FILES
+.TP
+.I ~/.cache/claude-cage/branches/<branch>/work/
+Clone of intermediary where Claude works
+.TP
+.I ~/.cache/claude-cage/branches/<branch>/intermediary/
+Sanitized repo (git origin for work)
+.TP
+.I ~/.cache/claude-cage/branches/<branch>/state-*
+Last processed source commit ID
+.TP
+.I $XDG_RUNTIME_DIR/claude-cage/pipes/
+Named pipes for communication
+.TP
+.I $XDG_RUNTIME_DIR/claude-cage/sessions/
+Session tracking (PID files)
+.SH EXAMPLES
+Start sandbox with configured launch command:
+.PP
+.RS 4
+.nf
+claude-cage
+.fi
+.RE
+.PP
+Drop into a shell for testing:
+.PP
+.RS 4
+.nf
+claude-cage --test
+.fi
+.RE
+.PP
+Pass arguments through to launch command:
+.PP
+.RS 4
+.nf
+claude-cage --resume
+.fi
+.RE
+.PP
+Clean up cache for a specific branch:
+.PP
+.RS 4
+.nf
+claude-cage clean --branch main
+.fi
+.RE
+.PP
+Fetch intermediary refs for manual merge:
+.PP
+.RS 4
+.nf
+claude-cage git-merge
+.fi
+.RE
+.SH PLATFORM SUPPORT
+.TP
+.B Linux
+Both bwrap and docker modes supported
+.TP
+.B Windows (WSL 2)
+Both bwrap and docker modes supported
+.TP
+.B macOS
+Docker mode only (bwrap requires Linux kernel features)
+.SH SEE ALSO
+.BR bwrap (1),
+.BR docker (1),
+.BR git (1)
+.SH BUGS
+Report bugs at https://github.com/zbateson/claude-cage/issues
+.SH AUTHOR
+Written by Zachary Bateson.

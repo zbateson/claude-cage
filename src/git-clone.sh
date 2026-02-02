@@ -112,6 +112,88 @@ is_work_dirty() {
     return 1
 }
 
+# Clean up stale state files (state files with no corresponding work/intermediary dirs)
+# Arguments: $1 = source directory (optional, if not provided cleans all)
+clean_stale_state_files() {
+    local source_dir="$1"
+    local cleaned=0
+
+    if [ ! -d "$CLAUDE_CAGE_CACHE/branches" ]; then
+        return 0
+    fi
+
+    for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
+        [ -d "$branch_dir" ] || continue
+
+        for state_file in "$branch_dir"/state-*; do
+            [ -f "$state_file" ] || continue
+
+            local path_hash
+            path_hash=$(basename "$state_file" | sed 's/^state-//')
+
+            # Check if there's a corresponding work or intermediary dir
+            local has_work=false
+            local has_intermediary=false
+
+            # If source_dir specified, only check that path's hash
+            if [ -n "$source_dir" ]; then
+                local expected_hash
+                expected_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+                if [ "$path_hash" != "$expected_hash" ]; then
+                    continue
+                fi
+            fi
+
+            # Look for any directory that would correspond to this state file
+            # State file hash is based on source path, so check work/* and intermediary/*
+            if [ -d "$branch_dir/work" ]; then
+                for work_path in "$branch_dir/work"/*; do
+                    if [ -d "$work_path" ]; then
+                        local work_hash
+                        # Reconstruct the source path and hash it
+                        # work_path is: branch_dir/work/<source_path>
+                        local reconstructed_source="${work_path#"$branch_dir/work"}"
+                        work_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
+                        if [ "$work_hash" = "$path_hash" ]; then
+                            has_work=true
+                            break
+                        fi
+                    fi
+                done
+            fi
+
+            if [ -d "$branch_dir/intermediary" ]; then
+                for inter_path in "$branch_dir/intermediary"/*; do
+                    if [ -d "$inter_path" ]; then
+                        local inter_hash
+                        local reconstructed_source="${inter_path#"$branch_dir/intermediary"}"
+                        inter_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
+                        if [ "$inter_hash" = "$path_hash" ]; then
+                            has_intermediary=true
+                            break
+                        fi
+                    fi
+                done
+            fi
+
+            # If no corresponding directories, remove the state file
+            if [ "$has_work" = false ] && [ "$has_intermediary" = false ]; then
+                if [ "$verbose" = true ]; then
+                    echo "Removing stale state file: $state_file"
+                fi
+                run rm -f "$state_file"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+    done
+
+    if [ "$cleaned" -gt 0 ] && [ "$verbose" = true ]; then
+        echo "Cleaned up $cleaned stale state file(s)"
+    fi
+
+    return 0
+}
+
 # Clean up cache for a specific branch
 # Arguments: $1 = source directory, $2 = sanitized branch name
 clean_branch_cache() {
@@ -121,6 +203,26 @@ clean_branch_cache() {
     local work_dir="$branch_cache/work$source_dir"
     local intermediary_dir="$branch_cache/intermediary$source_dir"
     local caged_link="$source_dir/.caged/$branch_name"
+
+    # Remove source hooks for this branch
+    local git_root
+    git_root=$(get_git_root "$source_dir" 2>/dev/null)
+    if [ -n "$git_root" ]; then
+        local pre_commit_hook="$git_root/.git/hooks/pre-commit.d/claude-cage-$branch_name"
+        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$branch_name"
+
+        if [ -f "$pre_commit_hook" ]; then
+            run rm -f "$pre_commit_hook"
+            echo "Removed pre-commit hook: $pre_commit_hook"
+            maybe_remove_dispatcher "$git_root" "pre-commit"
+        fi
+
+        if [ -f "$post_commit_hook" ]; then
+            run rm -f "$post_commit_hook"
+            echo "Removed post-commit hook: $post_commit_hook"
+            maybe_remove_dispatcher "$git_root" "post-commit"
+        fi
+    fi
 
     # Remove work directory
     if [ -d "$work_dir" ]; then
@@ -272,7 +374,9 @@ create_intermediary_clone() {
     run_quiet git -C "$intermediary_dir" checkout -b "claude"
 
     # Allow pushing to checked-out branch (updates working tree automatically)
-    run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead
+    if ! run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead; then
+        echo "Warning: Failed to set receive.denyCurrentBranch config"
+    fi
 
     # Create work directory by cloning from intermediary
     echo ""
@@ -284,7 +388,9 @@ create_intermediary_clone() {
     run_quiet git -C "$work_dir" remote set-url origin "/run$source_dir"
 
     # Configure push to auto-setup upstream tracking
-    run_quiet git -C "$work_dir" config push.autoSetupRemote true
+    if ! run_quiet git -C "$work_dir" config push.autoSetupRemote true; then
+        echo "Warning: Failed to set push.autoSetupRemote config"
+    fi
 
     echo ""
     echo "Workspace is good to go: $work_dir"

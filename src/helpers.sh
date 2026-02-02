@@ -2,15 +2,19 @@
 # Helper functions
 # ============================================================================
 
-# Parse --dry-run, --verbose, --debug early
+# Parse --dry-run, --verbose, --debug, --help, --version early
 dry_run=false
 verbose=false
 debug=false
+show_help=false
+show_version=false
 for arg in "$@"; do
     case "$arg" in
         --dry-run) dry_run=true ;;
         --verbose|-v) verbose=true ;;
         --debug) debug=true ;;
+        --help|-h) show_help=true ;;
+        --version) show_version=true ;;
     esac
 done
 
@@ -53,4 +57,46 @@ run_quiet() {
     else
         "$@" >/dev/null 2>&1
     fi
+}
+
+# Display help message
+show_help() {
+    cat << 'EOF'
+claude-cage - A sandboxed git workflow for Claude Code
+
+Usage: claude-cage [options] [subcommand] [-- args...]
+
+Subcommands:
+  git-merge       Fetch refs from intermediary for manual merge
+  clean           Remove cached branch (interactive selection)
+  clean-all       Remove all cached branches for this project
+
+Options:
+  --test          Drop into a shell for testing instead of launching
+  --direct-mount  Mount source directly without git sync
+  --branch NAME   Specify branch for clean command
+  --dry-run       Show commands without executing
+  --verbose, -v   Show commands as they execute
+  --debug         Show command output (implies --verbose)
+  --help, -h      Show this help message
+  --version       Show version number
+
+Arguments after -- are passed through to the launch command.
+
+Config files (loaded in order, later values override):
+  /etc/claude-cage.conf              System-wide config
+  ~/.config/claude-cage/config       User config
+  <ancestors>/.claude-cage           Ancestor directory configs
+  .claude-cage                       Project config
+
+Examples:
+  claude-cage                    Start sandbox with configured launch command
+  claude-cage --test             Drop into a shell for testing
+  claude-cage --resume           Pass --resume to the launch command
+  claude-cage clean              Interactively select branch cache to remove
+  claude-cage clean --branch main  Remove cache for 'main' branch
+  claude-cage git-merge          Fetch intermediary refs for manual merge
+
+For more info, see: https://github.com/zbateson/claude-cage
+EOF
 }

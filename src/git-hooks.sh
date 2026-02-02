@@ -83,6 +83,69 @@ has_other_sessions() {
 }
 
 # ============================================================================
+# Orphaned hook cleanup
+# ============================================================================
+
+# Clean up orphaned hooks (hooks pointing to non-existent cages)
+# This handles the case where a crash/SIGKILL prevented normal cleanup
+# Arguments: $1 = source directory (git root)
+cleanup_orphaned_hooks() {
+    local source_dir="$1"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+
+    if [ -z "$git_root" ] || [ ! -d "$git_root/.git/hooks" ]; then
+        return 0
+    fi
+
+    local cleaned=0
+
+    # Check pre-commit hooks
+    if [ -d "$git_root/.git/hooks/pre-commit.d" ]; then
+        for hook in "$git_root/.git/hooks/pre-commit.d"/claude-cage-*; do
+            [ -f "$hook" ] || continue
+
+            # Extract WORK_DIR from the hook
+            local work_dir
+            work_dir=$(grep '^WORK_DIR=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
+
+            if [ -n "$work_dir" ] && [ ! -d "$work_dir" ]; then
+                if [ "$verbose" = true ]; then
+                    echo "Removing orphaned hook: $hook"
+                fi
+                rm -f "$hook"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+        maybe_remove_dispatcher "$git_root" "pre-commit"
+    fi
+
+    # Check post-commit hooks
+    if [ -d "$git_root/.git/hooks/post-commit.d" ]; then
+        for hook in "$git_root/.git/hooks/post-commit.d"/claude-cage-*; do
+            [ -f "$hook" ] || continue
+
+            # Extract INTERMEDIARY from the hook
+            local intermediary_dir
+            intermediary_dir=$(grep '^INTERMEDIARY=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
+
+            if [ -n "$intermediary_dir" ] && [ ! -d "$intermediary_dir" ]; then
+                if [ "$verbose" = true ]; then
+                    echo "Removing orphaned hook: $hook"
+                fi
+                rm -f "$hook"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+        maybe_remove_dispatcher "$git_root" "post-commit"
+    fi
+
+    if [ "$cleaned" -gt 0 ]; then
+        echo "Cleaned up $cleaned orphaned hook(s) from previous session."
+    fi
+}
+
+# ============================================================================
 # Hook dispatcher (allows multiple hooks to coexist)
 # ============================================================================
 

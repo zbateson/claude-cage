@@ -134,4 +134,105 @@ fi
 echo "  PASS: No post-commit hook"
 
 echo ""
+echo "=== Testing orphaned hook cleanup ==="
+
+# Clean up previous test state
+rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
+rm -rf "$TEST_TMP/source/.git/hooks/pre-commit.d" "$TEST_TMP/source/.git/hooks/post-commit.d"
+rm -f "$TEST_TMP/source/.git/hooks/pre-commit" "$TEST_TMP/source/.git/hooks/post-commit"
+
+# Create orphaned hooks (hooks pointing to non-existent work/intermediary dirs)
+mkdir -p "$TEST_TMP/source/.git/hooks/pre-commit.d"
+mkdir -p "$TEST_TMP/source/.git/hooks/post-commit.d"
+
+# Create dispatcher hooks
+cat > "$TEST_TMP/source/.git/hooks/pre-commit" << 'DISPATCHER'
+#!/bin/bash
+# claude-cage-dispatcher: runs all hooks in <hook>.d/
+HOOK_DIR="$(dirname "$0")/$(basename "$0").d"
+if [ -d "$HOOK_DIR" ]; then
+    for hook in "$HOOK_DIR"/*; do
+        [ -x "$hook" ] && "$hook" "$@"
+    done
+fi
+DISPATCHER
+chmod +x "$TEST_TMP/source/.git/hooks/pre-commit"
+
+cat > "$TEST_TMP/source/.git/hooks/post-commit" << 'DISPATCHER'
+#!/bin/bash
+# claude-cage-dispatcher: runs all hooks in <hook>.d/
+HOOK_DIR="$(dirname "$0")/$(basename "$0").d"
+if [ -d "$HOOK_DIR" ]; then
+    for hook in "$HOOK_DIR"/*; do
+        [ -x "$hook" ] && "$hook" "$@"
+    done
+fi
+DISPATCHER
+chmod +x "$TEST_TMP/source/.git/hooks/post-commit"
+
+# Create orphaned pre-commit hook (pointing to non-existent work dir)
+cat > "$TEST_TMP/source/.git/hooks/pre-commit.d/claude-cage-orphaned" << EOF
+#!/bin/bash
+WORK_DIR="/nonexistent/path/that/does/not/exist"
+TARGET_BRANCH="orphaned"
+if [ ! -d "\$WORK_DIR" ]; then
+    exit 0
+fi
+EOF
+chmod +x "$TEST_TMP/source/.git/hooks/pre-commit.d/claude-cage-orphaned"
+
+# Create orphaned post-commit hook (pointing to non-existent intermediary)
+cat > "$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-orphaned" << EOF
+#!/bin/bash
+INTERMEDIARY="/nonexistent/intermediary/path"
+TARGET_BRANCH="orphaned"
+if [ ! -d "\$INTERMEDIARY" ]; then
+    exit 0
+fi
+EOF
+chmod +x "$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-orphaned"
+
+echo "Test 13: Should detect and remove orphaned pre-commit hook"
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    autoMerge = false,
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+# Run claude-cage which should clean up orphaned hooks on startup
+output=$(echo "exit" | "$CAGE_DIR/dist/claude-cage" --test 2>&1) || true
+
+if [ -f "$TEST_TMP/source/.git/hooks/pre-commit.d/claude-cage-orphaned" ]; then
+    echo "FAIL: Orphaned pre-commit hook should have been removed"
+    exit 1
+fi
+echo "  PASS: Orphaned pre-commit hook removed"
+
+echo "Test 14: Should detect and remove orphaned post-commit hook"
+if [ -f "$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-orphaned" ]; then
+    echo "FAIL: Orphaned post-commit hook should have been removed"
+    exit 1
+fi
+echo "  PASS: Orphaned post-commit hook removed"
+
+echo "Test 15: Should report cleanup in output"
+if ! echo "$output" | grep -q -i "orphaned"; then
+    echo "FAIL: Should report orphaned hook cleanup"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Reports orphaned hook cleanup"
+
+echo "Test 16: Should clean up dispatcher when no hooks remain"
+# The dispatchers should be removed since no hooks remain in .d directories
+if [ -f "$TEST_TMP/source/.git/hooks/pre-commit" ] && grep -q "claude-cage-dispatcher" "$TEST_TMP/source/.git/hooks/pre-commit"; then
+    echo "FAIL: pre-commit dispatcher should have been removed"
+    exit 1
+fi
+echo "  PASS: Empty dispatchers cleaned up"
+
+echo ""
 echo "=== All git-hooks tests passed! ==="

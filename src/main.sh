@@ -4,6 +4,17 @@ if [ "${CLAUDE_CAGE_SOURCING:-}" = "1" ]; then
     return 0 2>/dev/null || exit 0
 fi
 
+# Handle --help and --version early (before config loading)
+if [ "$show_help" = true ]; then
+    show_help
+    exit 0
+fi
+
+if [ "$show_version" = true ]; then
+    echo "claude-cage $CLAUDE_CAGE_VERSION"
+    exit 0
+fi
+
 # Parse additional flags and subcommands
 # Arguments we don't recognize get passed through to the launch command
 test_mode=false
@@ -135,6 +146,9 @@ if [ "$clean_all_mode" = true ]; then
         clean_branch_cache "$cfg_source" "$branch"
     done <<< "$cached_branches"
 
+    # Clean up any stale state files
+    clean_stale_state_files "$cfg_source"
+
     echo ""
     echo "All clean."
     exit 0
@@ -225,6 +239,11 @@ else
         check_slirp4netns
         check_iptables
     fi
+fi
+
+# Clean up any orphaned hooks from crashed sessions (git mode only)
+if [ "$direct_mount_mode" = false ] && is_git_repo "$cfg_source"; then
+    cleanup_orphaned_hooks "$cfg_source"
 fi
 
 # Show banner if enabled
@@ -388,6 +407,23 @@ if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
     start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
 fi
 
+# Set up cleanup handler for signals
+cleanup_on_exit() {
+    local exit_code=$?
+    # Only run cleanup for git mode
+    if [ "$direct_mount_mode" = false ]; then
+        if [ -n "$PIPE_LISTENER_PID" ]; then
+            stop_pipe_listener "$PIPE_LISTENER_PID"
+            cleanup_pipe "$pipe_path"
+        fi
+        if [ "$cfg_autoMerge" = "true" ] && [ -n "$source_branch" ]; then
+            cleanup_source_hooks "$cfg_source" "$source_branch"
+        fi
+    fi
+    exit $exit_code
+}
+trap cleanup_on_exit EXIT INT TERM
+
 # Determine what to run
 if [ "$test_mode" = true ]; then
     # Test mode: drop into interactive shell
@@ -443,13 +479,4 @@ else
     fi
 fi
 
-# Stop pipe listener and clean up hooks (git mode only)
-if [ "$direct_mount_mode" = false ]; then
-    if [ -n "$PIPE_LISTENER_PID" ]; then
-        stop_pipe_listener "$PIPE_LISTENER_PID"
-        cleanup_pipe "$pipe_path"
-    fi
-    if [ "$cfg_autoMerge" = "true" ]; then
-        cleanup_source_hooks "$cfg_source" "$source_branch"
-    fi
-fi
+# Cleanup is handled by the trap (cleanup_on_exit)

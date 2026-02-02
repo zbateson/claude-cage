@@ -20,6 +20,7 @@ done
 # ANSI color codes
 _yellow='\033[33m'
 _cyan='\033[1;36m'
+_white='\033[1;37m'
 _reset='\033[0m'
 
 # Wrapper function for commands that modify the system

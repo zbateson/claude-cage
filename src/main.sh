@@ -163,7 +163,7 @@ if [ "$cfg_autoMerge" = "true" ]; then
     start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
 else
     echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
-    echo -e "${_cyan}   To bring changes back to source, run: claude-cage git-merge${_reset}"
+    echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
     echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
 fi
 
@@ -172,7 +172,7 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
     echo ""
     echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
     echo ""
-    echo -e "${_cyan}   To skip this prompt, set hideConfirmationPrompt = true in your config.${_reset}"
+    echo "   To skip this prompt, set hideConfirmationPrompt = true in your config."
     echo ""
     read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true
     echo ""

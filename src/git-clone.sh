@@ -131,14 +131,6 @@ create_intermediary_clone() {
     fi
 
     # Extract files using git ls-files + tar (ignores .gitattributes export-ignore)
-    echo "  Pullin' out the good stuff..."
-    if [ -n "$cfg_exclude" ]; then
-        IFS='|' read -ra excludes <<< "$cfg_exclude"
-        for pattern in "${excludes[@]}"; do
-            echo "    Exclude: $pattern"
-        done
-    fi
-
     if [ "$dry_run" = true ]; then
         echo "[dry-run] git -C $source_dir ls-files -z | tar -C $source_dir --null -T - -cf - | tar -x ${tar_excludes[*]} -C $intermediary_dir"
     else
@@ -150,8 +142,8 @@ create_intermediary_clone() {
 
     # Initialize fresh git repo (no history of excluded files)
     echo "  Startin' fresh, clean slate..."
-    run git -C "$intermediary_dir" init
-    run git -C "$intermediary_dir" add .
+    run_quiet git -C "$intermediary_dir" init
+    run_quiet git -C "$intermediary_dir" add .
     if [ "$dry_run" = true ]; then
         echo "[dry-run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'"
     else
@@ -166,30 +158,29 @@ create_intermediary_clone() {
 
     # Create claude branch in intermediary (this is where source commits land)
     echo "  Settin' up the claude branch..."
-    run git -C "$intermediary_dir" checkout -b "claude"
+    run_quiet git -C "$intermediary_dir" checkout -b "claude"
 
     # Allow pushing to checked-out branch (updates working tree automatically)
-    run git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead
+    run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead
 
     # Create work directory by cloning from intermediary
     echo ""
     echo "Settin' up your workspace..."
-    run git clone "$intermediary_dir" "$work_dir"
+    run_quiet git clone "$intermediary_dir" "$work_dir"
 
     # Update origin to use the path as it appears inside the cage
     # Intermediary is mounted at /run, so origin is /run<source_dir>
-    echo "  Setting origin to cage path: /run$source_dir"
-    run git -C "$work_dir" remote set-url origin "/run$source_dir"
+    run_quiet git -C "$work_dir" remote set-url origin "/run$source_dir"
 
     # Configure push to auto-setup upstream tracking
-    run git -C "$work_dir" config push.autoSetupRemote true
+    run_quiet git -C "$work_dir" config push.autoSetupRemote true
 
     echo ""
     echo "Workspace is good to go: $work_dir"
     echo "  Branch: claude"
 
-    # Show what files are in work (skip in dry-run)
-    if [ "$dry_run" != true ]; then
+    # Show what files are in work (verbose only)
+    if [ "$verbose" = true ] && [ "$dry_run" != true ]; then
         echo ""
         echo "Here's what we're workin' with:"
         local file_count
@@ -198,8 +189,10 @@ create_intermediary_clone() {
         if [ "$file_count" -gt 20 ]; then
             echo "  ... plus $((file_count - 20)) more where that came from"
         fi
+    fi
 
-        # Initialize state file with current source HEAD
+    # Initialize state file with current source HEAD (skip in dry-run)
+    if [ "$dry_run" != true ]; then
         local state_path
         state_path=$(get_state_path "$source_dir")
         git -C "$source_dir" rev-parse HEAD > "$state_path"

@@ -179,7 +179,14 @@ claude_cage {
 
 **Tip:** The `launch` command can include arguments (e.g., `launch = "claude --dangerously-skip-permissions"`), or you can pass them on the command line. CLI arguments are appended to the launch command.
 
-**Config layering:** Configs are loaded and merged in order—system (`/etc/claude-cage.conf`), user (`~/.config/claude-cage/config`), project (`.claude-cage`). Arrays like `exclude` and `additionalMounts` combine across levels. Scalars like `mode` override.
+**Config layering:** Configs are loaded and merged in order:
+
+1. `/etc/claude-cage.conf` (system)
+2. `~/.config/claude-cage/config` (user)
+3. `.claude-cage` in ancestor directories (root → current, for shared team/project configs)
+4. `.claude-cage` in current directory (project)
+
+Arrays like `exclude` and `additionalMounts` combine across all levels. Scalars like `mode` override (closer configs win).
 
 **More options:** See [`.claude-cage.example`](.claude-cage.example) for the full list of configuration options including `hideConfirmationPrompt`, `createCagedDir`, and Docker-specific settings.
 

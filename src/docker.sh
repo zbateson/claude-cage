@@ -28,55 +28,35 @@ generate_docker_iptables_script() {
 
     cat << 'IPTABLES_HEADER'
 # Set up iptables rules (running as root)
+debug_echo() { [ "$CAGE_DEBUG" = "1" ] && echo "$@" >&2 || true; }
 
 # Check if iptables is available, try to install if not
 if ! command -v iptables >/dev/null 2>&1; then
-    echo "iptables not found, attempting to install..." >&2
-    install_failed=""
+    echo "Installing iptables..." >&2
     if command -v apt-get >/dev/null 2>&1; then
-        echo "  Running apt-get update..." >&2
-        if ! apt-get update 2>&1; then
-            install_failed="apt-get update failed"
-            echo "  apt-get update failed" >&2
-        else
-            echo "  Running apt-get install iptables..." >&2
-            if ! apt-get install -y iptables 2>&1; then
-                install_failed="apt-get install iptables failed"
-                echo "  apt-get install failed" >&2
-            fi
-        fi
+        debug_echo "  Running apt-get update && install..."
+        apt-get update -qq && apt-get install -qq -y iptables || true
     elif command -v apk >/dev/null 2>&1; then
-        echo "  Running apk add iptables..." >&2
-        if ! apk add iptables 2>&1; then
-            install_failed="apk add iptables failed"
-        fi
+        debug_echo "  Running apk add..."
+        apk add --quiet iptables || true
     elif command -v yum >/dev/null 2>&1; then
-        echo "  Running yum install iptables..." >&2
-        if ! yum install -y iptables 2>&1; then
-            install_failed="yum install iptables failed"
-        fi
-    else
-        install_failed="no package manager found (apt-get, apk, yum)"
-        echo "  No package manager found" >&2
+        debug_echo "  Running yum install..."
+        yum install -q -y iptables || true
     fi
 
     if ! command -v iptables >/dev/null 2>&1; then
-        echo "" >&2
         echo "Network filtering requires iptables, but it ain't in this image and I couldn't install it." >&2
-        [ -n "$install_failed" ] && echo "Reason: $install_failed" >&2
         echo "Either set networkMode = \"disabled\" or use an image with iptables installed." >&2
         exit 1
     fi
-    echo "iptables installed successfully" >&2
+    debug_echo "  iptables installed successfully"
 fi
 
-echo "Configuring iptables rules..." >&2
+debug_echo "Configuring iptables rules..."
 
 # Default policy: DROP everything
-echo "  Setting default policies..." >&2
 if ! iptables -P INPUT DROP 2>&1; then
-    echo "ERROR: iptables -P INPUT DROP failed" >&2
-    echo "This usually means the container lacks NET_ADMIN capability or kernel modules" >&2
+    echo "ERROR: iptables failed - container may lack NET_ADMIN capability" >&2
     exit 1
 fi
 iptables -P OUTPUT DROP
@@ -85,7 +65,7 @@ iptables -P FORWARD DROP
 set -e
 
 # Allow loopback
-echo "  Allowing loopback..." >&2
+debug_echo "  Allowing loopback..."
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 
@@ -93,15 +73,12 @@ iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 # Allow Docker's internal DNS (127.0.0.11)
-echo "  Allowing Docker DNS..." >&2
+debug_echo "  Allowing Docker DNS..."
 iptables -A OUTPUT -d 127.0.0.11 -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -d 127.0.0.11 -p tcp --dport 53 -j ACCEPT
 
-echo "  Adding network rules..." >&2
+debug_echo "  Adding network rules..."
 IPTABLES_HEADER
-
-    # Add trace message
-    echo 'echo "  Finished adding rules" >&2'
 
     if [ "$mode" = "allowlist" ]; then
         # Allowlist: add ACCEPT rules for allowed destinations
@@ -422,6 +399,7 @@ run_in_docker() {
     docker_args+=(-e "HOME=$user_home")
     docker_args+=(-e "TERM=${TERM:-xterm-256color}")
     docker_args+=(-e "LANG=${LANG:-C.UTF-8}")
+    [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")
 
     # Image
     docker_args+=("$image")
@@ -436,12 +414,11 @@ run_in_docker() {
 
         if [ $# -eq 0 ]; then
             # Interactive shell with network filtering
-            # Use heredoc to embed the iptables script
             docker_args+=(/bin/bash -c "
 $iptables_script
 
 # Create user with matching UID for privilege drop
-echo \"Creating sandbox user (uid=${user_uid})...\" >&2
+debug_echo \"Creating sandbox user (uid=${user_uid}, gid=${user_gid})...\"
 groupadd -g ${user_gid} -o cage 2>/dev/null || true
 useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cage 2>/dev/null || true
 
@@ -455,7 +432,7 @@ PS1=\"\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\\\$ \"
 RCEOF
 
 # Drop privileges and run shell
-echo \"Launching shell...\" >&2
+debug_echo \"Launching shell...\"
 exec su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - cage
 ")
         else
@@ -464,12 +441,12 @@ exec su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - cage
 $iptables_script
 
 # Create user with matching UID for privilege drop
-echo \"Creating sandbox user (uid=${user_uid})...\" >&2
+debug_echo \"Creating sandbox user (uid=${user_uid}, gid=${user_gid})...\"
 groupadd -g ${user_gid} -o cage 2>/dev/null || true
 useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cage 2>/dev/null || true
 
 # Drop privileges and run command
-echo \"Running: $*\" >&2
+debug_echo \"Running: $*\"
 exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' - cage
 ")
         fi

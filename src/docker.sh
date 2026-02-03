@@ -70,14 +70,22 @@ if ! command -v iptables >/dev/null 2>&1; then
     echo "iptables installed successfully" >&2
 fi
 
-set -e
+echo "Configuring iptables rules..." >&2
 
 # Default policy: DROP everything
-iptables -P INPUT DROP
+echo "  Setting default policies..." >&2
+if ! iptables -P INPUT DROP 2>&1; then
+    echo "ERROR: iptables -P INPUT DROP failed" >&2
+    echo "This usually means the container lacks NET_ADMIN capability or kernel modules" >&2
+    exit 1
+fi
 iptables -P OUTPUT DROP
 iptables -P FORWARD DROP
 
+set -e
+
 # Allow loopback
+echo "  Allowing loopback..." >&2
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 
@@ -85,6 +93,7 @@ iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 # Allow Docker's internal DNS (127.0.0.11)
+echo "  Allowing Docker DNS..." >&2
 iptables -A OUTPUT -d 127.0.0.11 -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -d 127.0.0.11 -p tcp --dport 53 -j ACCEPT
 

@@ -37,13 +37,35 @@ echo "SECRET_KEY=abc123" > .env
 mkdir -p config
 echo "prod: true" > config/prod.yml
 echo "dev: true" > config/dev.yml
+
+# Add files to test glob patterns
+echo "temporary" > test.tmp
+echo "another temp" > data.tmp
+echo "log content" > app.log
+mkdir -p src/utils
+echo "cache" > src/utils/__pycache__
+mkdir -p deep/nested/path
+echo "deep cache" > deep/nested/path/__pycache__
+echo "keep this" > deep/nested/path/keep.txt
+mkdir -p secrets
+echo "secret stuff" > secrets/api-key.txt
+echo "more secrets" > secrets/credentials.json
+
 git add .
 git commit -m "Initial commit"
 
 # Create config with excludes (flat array format for git version)
+# Tests: literal paths, wildcards, recursive globs
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
-    exclude = { ".env", "config/prod.yml" },
+    exclude = {
+        ".env",              -- literal filename
+        "config/prod.yml",   -- literal path
+        "*.tmp",             -- wildcard extension
+        "*.log",             -- another wildcard
+        "**/__pycache__",    -- recursive glob (anywhere)
+        "secrets/**"         -- directory and all contents
+    },
     autoMerge = false,
     showBanner = false,
     hideConfirmationPrompt = true
@@ -151,7 +173,7 @@ if [ "$config_val" != "true" ]; then
 fi
 echo "  PASS: receive.denyNonFastForwards is set correctly"
 
-echo "Test 10: Excluded files should NOT be in intermediary"
+echo "Test 10: Excluded literal files should NOT be in intermediary"
 if [ -f "$INTERMEDIARY_DIR/.env" ]; then
     echo "FAIL: .env should be excluded from intermediary"
     exit 1
@@ -164,7 +186,53 @@ if [ -f "$INTERMEDIARY_DIR/config/prod.yml" ]; then
 fi
 echo "  PASS: config/prod.yml is excluded"
 
-echo "Test 11: Included files SHOULD be in intermediary"
+echo "Test 11: Wildcard patterns (*.tmp, *.log) should exclude files"
+if [ -f "$INTERMEDIARY_DIR/test.tmp" ]; then
+    echo "FAIL: test.tmp should be excluded by *.tmp pattern"
+    exit 1
+fi
+echo "  PASS: test.tmp is excluded"
+
+if [ -f "$INTERMEDIARY_DIR/data.tmp" ]; then
+    echo "FAIL: data.tmp should be excluded by *.tmp pattern"
+    exit 1
+fi
+echo "  PASS: data.tmp is excluded"
+
+if [ -f "$INTERMEDIARY_DIR/app.log" ]; then
+    echo "FAIL: app.log should be excluded by *.log pattern"
+    exit 1
+fi
+echo "  PASS: app.log is excluded"
+
+echo "Test 12: Recursive glob (**/__pycache__) should exclude at any depth"
+if [ -f "$INTERMEDIARY_DIR/src/utils/__pycache__" ]; then
+    echo "FAIL: src/utils/__pycache__ should be excluded by **/__pycache__ pattern"
+    exit 1
+fi
+echo "  PASS: src/utils/__pycache__ is excluded"
+
+if [ -f "$INTERMEDIARY_DIR/deep/nested/path/__pycache__" ]; then
+    echo "FAIL: deep/nested/path/__pycache__ should be excluded by **/__pycache__ pattern"
+    exit 1
+fi
+echo "  PASS: deep/nested/path/__pycache__ is excluded"
+
+echo "Test 13: Directory glob (secrets/**) should exclude entire directory"
+if [ -d "$INTERMEDIARY_DIR/secrets" ]; then
+    echo "FAIL: secrets/ directory should be excluded by secrets/** pattern"
+    exit 1
+fi
+echo "  PASS: secrets/ directory is excluded"
+
+echo "Test 14: Files near excluded paths should still be included"
+if [ ! -f "$INTERMEDIARY_DIR/deep/nested/path/keep.txt" ]; then
+    echo "FAIL: deep/nested/path/keep.txt should NOT be excluded"
+    exit 1
+fi
+echo "  PASS: deep/nested/path/keep.txt is included"
+
+echo "Test 15: Included files SHOULD be in intermediary"
 if [ ! -f "$INTERMEDIARY_DIR/public.txt" ]; then
     echo "FAIL: public.txt should be in intermediary"
     exit 1
@@ -177,7 +245,7 @@ if [ ! -f "$INTERMEDIARY_DIR/config/dev.yml" ]; then
 fi
 echo "  PASS: config/dev.yml is included"
 
-echo "Test 12: Work directory should match intermediary"
+echo "Test 16: Work directory should match intermediary"
 if [ ! -f "$WORK_DIR/public.txt" ]; then
     echo "FAIL: public.txt should be in work"
     exit 1
@@ -190,7 +258,7 @@ if [ -f "$WORK_DIR/.env" ]; then
 fi
 echo "  PASS: Work directory excludes sensitive files"
 
-echo "Test 13: Work origin should point to cage intermediary path"
+echo "Test 17: Work origin should point to cage intermediary path"
 origin=$(git -C "$WORK_DIR" remote get-url origin)
 expected_origin="/run$SOURCE_PATH"
 if [ "$origin" != "$expected_origin" ]; then
@@ -199,7 +267,7 @@ if [ "$origin" != "$expected_origin" ]; then
 fi
 echo "  PASS: Work origin points to /run\$SOURCE_PATH"
 
-echo "Test 14: Intermediary should have clean git history (no excluded file history)"
+echo "Test 18: Intermediary should have clean git history (no excluded file history)"
 # Check that .env was never in the git history
 history_check=$(git -C "$INTERMEDIARY_DIR" log --all --oneline -- .env 2>&1 || true)
 if [ -n "$history_check" ]; then

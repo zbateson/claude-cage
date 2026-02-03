@@ -48,11 +48,8 @@ claude_cage {
 
     mode = "bwrap",
 
-    -- Docker-specific options (only used when mode = "docker")
-    -- docker = {
-    --     image = "node:lts-slim",      -- Base image
-    --     container = "my-container",   -- Custom container name
-    -- },
+    -- Docker image (only used when mode = "docker")
+    -- dockerImage = "node:lts-slim",
 
     -- =========================================================================
     -- SYNC OPTIONS

@@ -429,7 +429,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Cleanup on exit
 - [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (155 tests across 12 files)
+- [x] Comprehensive test suite (154 tests across 12 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
@@ -645,11 +645,11 @@ bash tests/run-all.sh
 | test-git-sync.sh | git-sync.sh | 14 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
-| test-docker.sh | docker.sh | 17 |
+| test-docker.sh | docker.sh | 16 |
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 155 tests across 12 files**
+**Total: 154 tests across 12 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

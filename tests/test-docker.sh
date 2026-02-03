@@ -117,9 +117,7 @@ echo "Test 7: Should accept custom image"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
-    docker = {
-        image = "ubuntu:22.04"
-    },
+    dockerImage = "ubuntu:22.04",
     showBanner = false,
     hideConfirmationPrompt = true
 }
@@ -136,29 +134,6 @@ if ! echo "$output" | grep -q "ubuntu:22.04"; then
 fi
 echo "  PASS: Uses custom image"
 
-echo "Test 8: Should accept custom container name"
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    mode = "docker",
-    docker = {
-        container = "my-test-container"
-    },
-    showBanner = false,
-    hideConfirmationPrompt = true
-}
-EOF
-
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
-    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
-if ! echo "$output" | grep -q "my-test-container"; then
-    echo "FAIL: Should use custom container name"
-    echo "Output was:"
-    echo "$output"
-    exit 1
-fi
-echo "  PASS: Uses custom container name"
-
 echo ""
 echo "=== Testing docker with additionalMounts ==="
 
@@ -173,7 +148,7 @@ claude_cage {
 }
 EOF
 
-echo "Test 9: Should include additional mounts"
+echo "Test 8: Should include additional mounts"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
@@ -189,7 +164,7 @@ echo "  PASS: Includes additional mounts"
 echo ""
 echo "=== Testing docker run with --rm ==="
 
-echo "Test 10: Should use --rm for cleanup"
+echo "Test 9: Should use --rm for cleanup"
 if ! echo "$output" | grep -q "\-\-rm"; then
     echo "FAIL: Should include --rm for auto cleanup"
     echo "Output was:"
@@ -201,7 +176,7 @@ echo "  PASS: Uses --rm for cleanup"
 echo ""
 echo "=== Testing docker user mapping ==="
 
-echo "Test 11: Should run as current user"
+echo "Test 10: Should run as current user"
 if ! echo "$output" | grep -q "\-\-user"; then
     echo "FAIL: Should specify --user for UID mapping"
     echo "Output was:"
@@ -217,7 +192,7 @@ echo "=== Testing docker network filtering ==="
 export CLAUDE_CAGE_SOURCING=1
 source "$CAGE_DIR/dist/claude-cage"
 
-echo "Test 12: generate_docker_iptables_script should generate allowlist rules"
+echo "Test 11: generate_docker_iptables_script should generate allowlist rules"
 script=$(generate_docker_iptables_script "allowlist" "1.2.3.4:443" "" "" "")
 if ! echo "$script" | grep -q "iptables -A OUTPUT -p tcp -d 1.2.3.4 --dport 443 -j ACCEPT"; then
     echo "FAIL: Should generate ACCEPT rule for IP:port"
@@ -227,14 +202,14 @@ if ! echo "$script" | grep -q "iptables -A OUTPUT -p tcp -d 1.2.3.4 --dport 443 
 fi
 echo "  PASS: Generates allowlist rules"
 
-echo "Test 13: generate_docker_iptables_script should allow Docker DNS"
+echo "Test 12: generate_docker_iptables_script should allow Docker DNS"
 if ! echo "$script" | grep -q "127.0.0.11"; then
     echo "FAIL: Should allow Docker DNS (127.0.0.11)"
     exit 1
 fi
 echo "  PASS: Allows Docker DNS"
 
-echo "Test 14: generate_docker_iptables_script should generate blocklist rules"
+echo "Test 13: generate_docker_iptables_script should generate blocklist rules"
 script=$(generate_docker_iptables_script "blocklist" "" "" "10.0.0.1" "")
 if ! echo "$script" | grep -q "iptables -A OUTPUT -d 10.0.0.1 -j REJECT"; then
     echo "FAIL: Should generate REJECT rule for blocked IP"
@@ -244,7 +219,7 @@ if ! echo "$script" | grep -q "iptables -A OUTPUT -d 10.0.0.1 -j REJECT"; then
 fi
 echo "  PASS: Generates blocklist rules"
 
-echo "Test 15: blocklist should end with catch-all ACCEPT"
+echo "Test 14: blocklist should end with catch-all ACCEPT"
 if ! echo "$script" | grep -q "iptables -A OUTPUT -j ACCEPT"; then
     echo "FAIL: Blocklist should have catch-all ACCEPT at end"
     exit 1
@@ -254,7 +229,7 @@ echo "  PASS: Blocklist has catch-all ACCEPT"
 # Need to unset again after sourcing the script above
 unset CLAUDE_CAGE_SOURCING
 
-echo "Test 16: Docker with networkMode should add NET_ADMIN capability"
+echo "Test 15: Docker with networkMode should add NET_ADMIN capability"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
@@ -279,7 +254,7 @@ if ! echo "$output" | grep -q "\-\-cap-add=NET_ADMIN"; then
 fi
 echo "  PASS: Adds NET_ADMIN capability"
 
-echo "Test 17: Docker with networkMode should NOT have --user (starts as root)"
+echo "Test 16: Docker with networkMode should NOT have --user (starts as root)"
 if echo "$output" | grep -q "\-\-user"; then
     echo "FAIL: Should NOT have --user when network filtering enabled"
     echo "Output was:"

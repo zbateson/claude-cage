@@ -34,21 +34,30 @@ if ! command -v iptables >/dev/null 2>&1; then
     echo "iptables not found, attempting to install..." >&2
     install_failed=""
     if command -v apt-get >/dev/null 2>&1; then
-        if ! apt-get update -qq 2>&1; then
+        echo "  Running apt-get update..." >&2
+        if ! apt-get update 2>&1; then
             install_failed="apt-get update failed"
-        elif ! apt-get install -qq -y iptables 2>&1; then
-            install_failed="apt-get install iptables failed"
+            echo "  apt-get update failed" >&2
+        else
+            echo "  Running apt-get install iptables..." >&2
+            if ! apt-get install -y iptables 2>&1; then
+                install_failed="apt-get install iptables failed"
+                echo "  apt-get install failed" >&2
+            fi
         fi
     elif command -v apk >/dev/null 2>&1; then
-        if ! apk add --quiet iptables 2>&1; then
+        echo "  Running apk add iptables..." >&2
+        if ! apk add iptables 2>&1; then
             install_failed="apk add iptables failed"
         fi
     elif command -v yum >/dev/null 2>&1; then
-        if ! yum install -q -y iptables 2>&1; then
+        echo "  Running yum install iptables..." >&2
+        if ! yum install -y iptables 2>&1; then
             install_failed="yum install iptables failed"
         fi
     else
         install_failed="no package manager found (apt-get, apk, yum)"
+        echo "  No package manager found" >&2
     fi
 
     if ! command -v iptables >/dev/null 2>&1; then

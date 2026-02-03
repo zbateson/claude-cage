@@ -326,40 +326,51 @@ create_intermediary_clone() {
         run rm -rf "$work_dir"
     fi
 
-    run mkdir -p "$intermediary_dir"
+    # Ensure parent directory exists
+    run mkdir -p "$(dirname "$intermediary_dir")"
 
-    # Build tar exclude flags (--exclude=pattern)
-    local -a tar_excludes=()
+    # Build sparse-checkout patterns: include everything, then exclude configured patterns
+    # Format: /* (include all), then !pattern for each exclude
+    local -a sparse_patterns=("/*")
     if [ -n "$cfg_exclude" ]; then
         IFS='|' read -ra excludes <<< "$cfg_exclude"
         for pattern in "${excludes[@]}"; do
-            # Convert gitignore-style ** to tar glob
-            # Remove leading **/ for tar compatibility
-            local tar_pattern="${pattern#\*\*/}"
-            tar_excludes+=("--exclude=$tar_pattern")
+            sparse_patterns+=("!$pattern")
         done
     fi
 
-    # Extract files using git ls-files + tar (ignores .gitattributes export-ignore)
-    # Filter to only existing files to support sparse checkouts
+    # Clone from committed state using sparse checkout
+    # --depth 1: shallow clone (only latest commit)
+    # --sparse: enable sparse checkout
+    # --filter=blob:none: don't fetch blobs until needed (partial clone)
+    # --no-checkout: don't populate working directory yet
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] (cd $source_dir && git ls-files -z | filter-existing) | tar ... -C $intermediary_dir"
+        echo "[dry-run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir"
+        echo "[dry-run] git sparse-checkout init --no-cone"
+        echo "[dry-run] git sparse-checkout set ${sparse_patterns[*]}"
+        echo "[dry-run] git checkout"
     else
         if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] (cd $source_dir && git ls-files -z | filter-existing) | tar ... -C $intermediary_dir${_reset}" >&2
+            echo -e "${_yellow}[run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir${_reset}" >&2
         fi
-        (cd "$source_dir" && git ls-files -z | while IFS= read -r -d '' f; do
-            [ -e "$f" ] && printf '%s\0' "$f"
-        done) | tar -C "$source_dir" --null -T - -cf - | tar -x "${tar_excludes[@]}" -C "$intermediary_dir"
+        git clone --depth 1 --sparse --filter=blob:none --no-checkout "$source_dir" "$intermediary_dir" 2>/dev/null
+
+        # Set up sparse checkout with gitignore-style patterns (no-cone mode)
+        git -C "$intermediary_dir" sparse-checkout init --no-cone
+        git -C "$intermediary_dir" sparse-checkout set "${sparse_patterns[@]}"
+
+        # Now checkout - only non-excluded files will appear in working directory
+        git -C "$intermediary_dir" checkout 2>/dev/null
     fi
 
-    # Initialize fresh git repo (no history of excluded files)
+    # Remove the cloned .git and reinitialize fresh (no history of excluded files)
     echo "  Startin' fresh, clean slate..."
-    run_quiet git -C "$intermediary_dir" init
-    run_quiet git -C "$intermediary_dir" add .
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'"
+        echo "[dry-run] rm -rf $intermediary_dir/.git && git init && git add . && git commit"
     else
+        rm -rf "$intermediary_dir/.git"
+        git -C "$intermediary_dir" init --quiet
+        git -C "$intermediary_dir" add .
         if [ "$verbose" = true ]; then
             echo -e "${_yellow}[run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'${_reset}" >&2
         fi

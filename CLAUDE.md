@@ -517,9 +517,12 @@ Docker mode supports network filtering using iptables. Works everywhere Docker r
 ### How It Works
 
 1. Container starts as root with `--cap-add=NET_ADMIN`
-2. Configures iptables rules (same allowlist/blocklist logic as bwrap)
-3. Drops to unprivileged user via `su`
-4. User cannot modify iptables rules (no root, no NET_ADMIN)
+2. If iptables is missing, attempts to install it (apt/apk/yum)
+3. Configures iptables rules (same allowlist/blocklist logic as bwrap)
+4. Drops to unprivileged user via `su`
+5. User cannot modify iptables rules (no root, no NET_ADMIN)
+
+If iptables cannot be installed, you'll see an error suggesting to either disable network filtering or use an image with iptables pre-installed.
 
 ### Security Model
 
@@ -527,6 +530,10 @@ Docker mode supports network filtering using iptables. Works everywhere Docker r
 - Container cannot modify host's iptables
 - After privilege drop, the running user has no way to change the rules
 - Same effective security as bwrap mode
+
+### Docker Host Access
+
+To reach services running on the host machine from inside the Docker sandbox, use `host.docker.internal`. This works on Docker Desktop (macOS/Windows) and Linux Docker 20.10+.
 
 ### Docker DNS
 

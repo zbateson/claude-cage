@@ -476,8 +476,14 @@ elif [ "$cfg_autoMerge" != "true" ]; then
     echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
 fi
 
-echo ""
-echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
+# Show host loopback info (mode-specific)
+if [ "$cfg_mode" = "docker" ]; then
+    echo ""
+    echo -e "${_cyan}⚠️  Inside the sandbox, use host.docker.internal to reach host services${_reset}"
+else
+    echo ""
+    echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
+fi
 
 # Show confirmation prompt (unless hidden)
 if [ "$cfg_hideConfirmationPrompt" != "true" ]; then

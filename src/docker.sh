@@ -30,6 +30,25 @@ generate_docker_iptables_script() {
 # Set up iptables rules (running as root)
 set -e
 
+# Check if iptables is available, try to install if not
+if ! command -v iptables >/dev/null 2>&1; then
+    echo "iptables not found, attempting to install..." >&2
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -qq -y iptables >/dev/null 2>&1
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --quiet iptables >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -q -y iptables >/dev/null 2>&1
+    fi
+
+    if ! command -v iptables >/dev/null 2>&1; then
+        echo "" >&2
+        echo "Network filtering requires iptables, but it ain't in this image and I couldn't install it." >&2
+        echo "Either set networkMode = \"disabled\" or use an image with iptables installed." >&2
+        exit 1
+    fi
+fi
+
 # Default policy: DROP everything
 iptables -P INPUT DROP
 iptables -P OUTPUT DROP
@@ -324,6 +343,7 @@ run_in_docker() {
     docker_args+=(run --rm -it)
     docker_args+=(--name "$container_name")
     docker_args+=(--hostname "$hostname")
+    docker_args+=(--add-host=host.docker.internal:host-gateway)
 
     if [ "$network_enabled" = true ]; then
         # Network filtering: start as root, add NET_ADMIN capability

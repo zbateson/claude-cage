@@ -6,3 +6,4 @@ claude-cage.instances
 dist/
 
 .claude-cage
+.caged

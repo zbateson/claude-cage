@@ -535,8 +535,8 @@ run_with_network_namespace() {
     ) &
     local slirp_handler_pid=$!
 
-    # Clean up handler and temp files on exit
-    trap 'kill $slirp_handler_pid 2>/dev/null; rm -f "$ready_pipe" "$sandbox_pid_file"' EXIT
+    # Note: We don't set an EXIT trap here because it would overwrite the
+    # cleanup_on_exit trap from main.sh. Cleanup is done inline below instead.
 
     # Run unshare in foreground - this makes it receive terminal signals directly
     unshare --user --map-root-user --net -- bash -c '
@@ -565,8 +565,7 @@ run_with_network_namespace() {
 
     local exit_code=$?
 
-    # Cleanup (trap will handle killing slirp_handler)
-    trap - EXIT
+    # Cleanup slirp handler and temp files
     kill $slirp_handler_pid 2>/dev/null
     wait $slirp_handler_pid 2>/dev/null
     rm -f "$ready_pipe" "$sandbox_pid_file"

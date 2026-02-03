@@ -398,6 +398,42 @@ project/.caged/
 ./claude-cage --debug
 ```
 
+### Testing Your Setup
+
+Use `--test` to drop into a shell inside the sandbox to verify your configuration:
+
+```bash
+# Enter sandbox shell
+./claude-cage --test
+
+# Inside the sandbox, verify mounts
+ls -la ~/                    # Check home directory mounts
+ls -la ~/.local/bin/         # Verify claude binary is accessible
+cat /etc/resolv.conf         # Check DNS configuration
+
+# Test network filtering (if enabled)
+curl -I https://api.anthropic.com  # Should work if allowed
+curl -I https://blocked-site.com   # Should fail if blocked/not allowed
+
+# Check environment
+echo $HOME
+echo $PATH
+env | grep CLAUDE
+
+# Test git access to intermediary
+git remote -v                # Should show origin at /run/...
+git fetch origin             # Test push/pull works
+
+# Exit when done
+exit
+```
+
+Use `--dry-run` to see what would be executed without actually running:
+
+```bash
+./claude-cage --dry-run      # Show docker/bwrap command that would run
+```
+
 ### Shell Completions
 
 The `install-completions` command auto-detects your shell and installs completions:

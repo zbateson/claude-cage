@@ -28,26 +28,40 @@ generate_docker_iptables_script() {
 
     cat << 'IPTABLES_HEADER'
 # Set up iptables rules (running as root)
-set -e
 
 # Check if iptables is available, try to install if not
 if ! command -v iptables >/dev/null 2>&1; then
     echo "iptables not found, attempting to install..." >&2
+    install_failed=""
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -qq && apt-get install -qq -y iptables >/dev/null 2>&1
+        if ! apt-get update -qq 2>&1; then
+            install_failed="apt-get update failed"
+        elif ! apt-get install -qq -y iptables 2>&1; then
+            install_failed="apt-get install iptables failed"
+        fi
     elif command -v apk >/dev/null 2>&1; then
-        apk add --quiet iptables >/dev/null 2>&1
+        if ! apk add --quiet iptables 2>&1; then
+            install_failed="apk add iptables failed"
+        fi
     elif command -v yum >/dev/null 2>&1; then
-        yum install -q -y iptables >/dev/null 2>&1
+        if ! yum install -q -y iptables 2>&1; then
+            install_failed="yum install iptables failed"
+        fi
+    else
+        install_failed="no package manager found (apt-get, apk, yum)"
     fi
 
     if ! command -v iptables >/dev/null 2>&1; then
         echo "" >&2
         echo "Network filtering requires iptables, but it ain't in this image and I couldn't install it." >&2
+        [ -n "$install_failed" ] && echo "Reason: $install_failed" >&2
         echo "Either set networkMode = \"disabled\" or use an image with iptables installed." >&2
         exit 1
     fi
+    echo "iptables installed successfully" >&2
 fi
+
+set -e
 
 # Default policy: DROP everything
 iptables -P INPUT DROP

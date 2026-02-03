@@ -442,8 +442,8 @@ $iptables_script
 
 # Create user with matching UID for privilege drop
 echo \"Creating sandbox user (uid=${user_uid})...\" >&2
-groupadd -g ${user_gid} -o cageuser 2>/dev/null || true
-useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cageuser 2>/dev/null || true
+groupadd -g ${user_gid} -o cage 2>/dev/null || true
+useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cage 2>/dev/null || true
 
 # Create bashrc with cage prompt
 cat > /tmp/.cage-bashrc << 'RCEOF'
@@ -456,7 +456,7 @@ RCEOF
 
 # Drop privileges and run shell
 echo \"Launching shell...\" >&2
-exec su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - cageuser
+exec su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - cage
 ")
         else
             # Command with network filtering
@@ -465,12 +465,12 @@ $iptables_script
 
 # Create user with matching UID for privilege drop
 echo \"Creating sandbox user (uid=${user_uid})...\" >&2
-groupadd -g ${user_gid} -o cageuser 2>/dev/null || true
-useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cageuser 2>/dev/null || true
+groupadd -g ${user_gid} -o cage 2>/dev/null || true
+useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cage 2>/dev/null || true
 
 # Drop privileges and run command
 echo \"Running: $*\" >&2
-exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' - cageuser
+exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' - cage
 ")
         fi
     else

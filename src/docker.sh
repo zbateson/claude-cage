@@ -440,44 +440,37 @@ run_in_docker() {
             docker_args+=(/bin/bash -c "
 $iptables_script
 
-echo 'Launching shell...' >&2
+# Create user with matching UID for privilege drop
+echo \"Creating sandbox user (uid=${user_uid})...\" >&2
+groupadd -g ${user_gid} -o cageuser 2>/dev/null || true
+useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cageuser 2>/dev/null || true
 
 # Create bashrc with cage prompt
 cat > /tmp/.cage-bashrc << 'RCEOF'
 [ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
 [ -f ~/.bashrc ] 2>/dev/null && . ~/.bashrc
+export PATH=\"\$HOME/.local/bin:\$PATH\"
 # Cage prompt - red user@caged with bunny (Con Air style)
 PS1=\"\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\\\$ \"
 RCEOF
 
 # Drop privileges and run shell
-echo \"Dropping to user ${user_uid}...\" >&2
-if su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - \"#${user_uid}\"; then
-    exit 0
-fi
-echo \"Failed to su to UID ${user_uid}, trying nobody...\" >&2
-if su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' nobody; then
-    exit 0
-fi
-echo \"Failed to launch shell\" >&2
-exit 1
+echo \"Launching shell...\" >&2
+exec su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - cageuser
 ")
         else
             # Command with network filtering
             docker_args+=(/bin/bash -c "
 $iptables_script
 
+# Create user with matching UID for privilege drop
+echo \"Creating sandbox user (uid=${user_uid})...\" >&2
+groupadd -g ${user_gid} -o cageuser 2>/dev/null || true
+useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cageuser 2>/dev/null || true
+
 # Drop privileges and run command
-echo \"Running command as user ${user_uid}: $*\" >&2
-if su -s /bin/bash -c '$*' - \"#${user_uid}\"; then
-    exit 0
-fi
-echo \"su to UID ${user_uid} failed, trying nobody...\" >&2
-if su -s /bin/bash -c '$*' nobody; then
-    exit 0
-fi
-echo \"Failed to run command\" >&2
-exit 1
+echo \"Running: $*\" >&2
+exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' - cageuser
 ")
         fi
     else

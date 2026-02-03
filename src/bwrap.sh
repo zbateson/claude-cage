@@ -49,17 +49,9 @@ run_in_bwrap() {
     # Build bwrap arguments as an array
     local -a bwrap_args=()
 
-    # Mount strategy depends on mode:
-    # - Non-git mode (empty intermediary_dir): mount source directly
-    # - Non-isolated git mode: mount branch work root at /
-    # - Isolated git mode: mount specific work dir (handled later)
-    if [ -z "$intermediary_dir" ]; then
-        # Non-git mode: mount source directory directly at its original path
-        # We need to create the parent structure first
-        : # Handled in the work_dir mount section below
-    elif [ "$cfg_isolated" != "true" ]; then
-        bwrap_args+=(--bind "$branch_work_root" /)
-    fi
+    # Enumerate projects and build mount specs using shared functions
+    enumerate_projects "$branch_work_root" "$branch_intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
+    build_mount_specs "$intermediary_dir" "$work_dir" "$project_path" "$pipe_path" "$user_home"
 
     # System binaries (read-only) - overlays the / mount
     bwrap_args+=(--ro-bind /usr /usr)
@@ -110,45 +102,32 @@ run_in_bwrap() {
     bwrap_args+=(--ro-bind-try "$user_home/.gitconfig" "$user_home/.gitconfig")
     bwrap_args+=(--ro-bind-try "$user_home/.config/git" "$user_home/.config/git")
 
-    # Additional mounts from config
-    # These come before work dir so work can overlay if needed
-    for mount_entry in "${cfg_mounts[@]}"; do
-        IFS='|' read -r mount_source mount_dest mount_mode <<< "$mount_entry"
-        # Expand tilde to user home
-        mount_source="${mount_source/#\~/$user_home}"
-        mount_dest="${mount_dest/#\~/$user_home}"
-        if [ "$mount_mode" = "rw" ]; then
-            bwrap_args+=(--bind-try "$mount_source" "$mount_dest")
-        else
-            bwrap_args+=(--ro-bind-try "$mount_source" "$mount_dest")
-        fi
+    # Apply mounts from shared CAGE_MOUNTS array
+    # This includes: additional config mounts, tmpfs, project mounts, pipe
+    for spec in "${CAGE_MOUNTS[@]}"; do
+        IFS='|' read -r type source dest mode <<< "$spec"
+        case "$type" in
+            bind)
+                # Additional mounts use -try (may not exist), project mounts are required
+                if [ "$mode" = "ro" ]; then
+                    bwrap_args+=(--ro-bind-try "$source" "$dest")
+                else
+                    # Project mounts should exist (or we're in dry-run)
+                    if [ -e "$source" ] || [ "$dry_run" = true ]; then
+                        bwrap_args+=(--bind "$source" "$dest")
+                    else
+                        bwrap_args+=(--bind-try "$source" "$dest")
+                    fi
+                fi
+                ;;
+            tmpfs)
+                bwrap_args+=(--tmpfs "$dest")
+                ;;
+            pipe)
+                bwrap_args+=(--bind "$source" "$dest")
+                ;;
+        esac
     done
-
-    # Temp filesystem
-    bwrap_args+=(--tmpfs /tmp)
-
-    # Mount intermediary and work directories
-    # - Non-git mode (empty intermediary_dir): mount source directly, no intermediary
-    # - Non-isolated git mode: mount branch roots at / and /run
-    # - Isolated git mode: mount specific dirs at their paths
-    if [ -z "$intermediary_dir" ]; then
-        # Non-git mode: mount source directory directly (read-write)
-        bwrap_args+=(--tmpfs /run)
-        bwrap_args+=(--bind "$work_dir" "$project_path")
-    elif [ "$cfg_isolated" != "true" ]; then
-        bwrap_args+=(--bind "$branch_intermediary_root" /run)
-    else
-        bwrap_args+=(--tmpfs /run)
-        bwrap_args+=(--bind "$intermediary_dir" "/run$project_path")
-        bwrap_args+=(--bind "$work_dir" "$project_path")
-    fi
-
-    # Mount pipe for git hook communication (if it exists and we have an intermediary)
-    # Use /tmp/claude-cage/pipe since /run is now used for intermediaries
-    # Skip in non-git mode (no pipe needed)
-    if [ -n "$intermediary_dir" ] && [ -p "$pipe_path" ]; then
-        bwrap_args+=(--bind "$pipe_path" /tmp/claude-cage/pipe)
-    fi
 
     # Special filesystems
     bwrap_args+=(--proc /proc)

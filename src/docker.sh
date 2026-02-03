@@ -334,57 +334,30 @@ run_in_docker() {
         docker_args+=(--user "${user_uid}:${user_gid}")
     fi
 
-    # Additional mounts from config (before work dir so work can overlay)
-    for mount_entry in "${cfg_mounts[@]}"; do
-        IFS='|' read -r mount_source mount_dest mount_mode <<< "$mount_entry"
-        # Expand tilde to user home
-        mount_source="${mount_source/#\~/$user_home}"
-        mount_dest="${mount_dest/#\~/$user_home}"
-        if [ -e "$mount_source" ]; then
-            if [ "$mount_mode" = "rw" ]; then
-                docker_args+=(-v "$mount_source:$mount_dest:rw")
-            else
-                docker_args+=(-v "$mount_source:$mount_dest:ro")
-            fi
-        fi
+    # Enumerate projects and build mount specs using shared functions
+    enumerate_projects "$branch_work_root" "$branch_intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
+    build_mount_specs "$intermediary_dir" "$work_dir" "$project_path" "$pipe_path" "$user_home"
+
+    # Apply mounts from shared CAGE_MOUNTS array
+    # Docker skips tmpfs (uses container's own filesystem)
+    for spec in "${CAGE_MOUNTS[@]}"; do
+        IFS='|' read -r type source dest mode <<< "$spec"
+        case "$type" in
+            bind|pipe)
+                # Docker needs the source to exist (except in dry-run)
+                if [ -e "$source" ] || [ -p "$source" ] || [ "$dry_run" = true ]; then
+                    if [ "$mode" = "ro" ]; then
+                        docker_args+=(-v "$source:$dest:ro")
+                    else
+                        docker_args+=(-v "$source:$dest")
+                    fi
+                fi
+                ;;
+            tmpfs)
+                # Docker handles /tmp and /run internally via its container image
+                ;;
+        esac
     done
-
-    # Mount strategy depends on mode:
-    # - Non-git mode (empty intermediary_dir): mount source directly, no intermediary
-    # - Non-isolated git mode: mount branch roots at / and /run
-    # - Isolated git mode: mount specific work dir and intermediary
-    if [ -z "$intermediary_dir" ]; then
-        # Non-git mode: mount source directory directly at its original path
-        docker_args+=(-v "$work_dir:$project_path")
-    elif [ "$cfg_isolated" != "true" ]; then
-        # Mount work directories at /
-        for dir in "$branch_work_root"/*; do
-            if [ -d "$dir" ]; then
-                local dirname
-                dirname=$(basename "$dir")
-                docker_args+=(-v "$dir:/$dirname")
-            fi
-        done
-        # Mount intermediary directories at /run
-        for dir in "$branch_intermediary_root"/*; do
-            if [ -d "$dir" ]; then
-                local dirname
-                dirname=$(basename "$dir")
-                docker_args+=(-v "$dir:/run/$dirname")
-            fi
-        done
-    else
-        # Isolated mode: mount only the specific work dir and intermediary
-        docker_args+=(-v "$work_dir:$project_path")
-        docker_args+=(-v "$intermediary_dir:/run$project_path")
-    fi
-
-    # Mount pipe for git hook communication (if it exists and we have an intermediary)
-    # Use /tmp/claude-cage/pipe since /run is now used for intermediaries
-    # Skip in non-git mode (no pipe needed)
-    if [ -n "$intermediary_dir" ] && [ -p "$pipe_path" ]; then
-        docker_args+=(-v "$pipe_path:/tmp/claude-cage/pipe")
-    fi
 
     # Working directory is the project path
     docker_args+=(-w "$project_path")

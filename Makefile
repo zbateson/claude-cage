@@ -9,6 +9,7 @@ SOURCES = \
 	src/git-patches.sh \
 	src/git-sync.sh \
 	src/network.sh \
+	src/mounts.sh \
 	src/bwrap.sh \
 	src/docker.sh \
 	src/main.sh

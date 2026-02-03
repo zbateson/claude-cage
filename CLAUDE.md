@@ -58,7 +58,7 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 2. **Intermediary** (`~/.cache/claude-cage/branches/<branch>/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
 3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
 
-Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches. Inside the sandbox, `work/` is mounted at `/` and `intermediary/` at `/run`, so projects appear at their original paths and git origins are at `/run<project-path>`.
+Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches. Inside the sandbox, each project's work directory is mounted at its original path, and intermediaries are mounted at `/run<project-path>`, so git origins are accessible there.
 
 Both intermediary and work use a single `claude` branch. Intermediary has `receive.denyCurrentBranch=updateInstead` to allow pushing to the checked-out branch.
 
@@ -85,6 +85,7 @@ The intermediary repo serves as a buffer:
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
 | `src/git-sync.sh` | `sync_to_source()`, pipe listener, manual merge |
 | `src/network.sh` | Network isolation via slirp4netns/iptables |
+| `src/mounts.sh` | Shared mount logic for bwrap and docker |
 | `src/bwrap.sh` | `run_in_bwrap()` - bubblewrap sandbox |
 | `src/docker.sh` | `run_in_docker()` - Docker container sandbox |
 | `src/main.sh` | Entry point - wires everything together |
@@ -103,9 +104,10 @@ The intermediary repo serves as a buffer:
 8. `git-patches.sh` - Patch recovery
 9. `git-sync.sh` - Manual merge
 10. `network.sh` - Network isolation
-11. `bwrap.sh` - Bwrap sandbox
-12. `docker.sh` - Docker sandbox
-13. `main.sh` - Orchestration
+11. `mounts.sh` - Shared mount logic
+12. `bwrap.sh` - Bwrap sandbox
+13. `docker.sh` - Docker sandbox
+14. `main.sh` - Orchestration
 
 ```bash
 make        # Build dist/claude-cage

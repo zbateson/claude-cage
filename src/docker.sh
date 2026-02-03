@@ -97,7 +97,11 @@ echo "  Allowing Docker DNS..." >&2
 iptables -A OUTPUT -d 127.0.0.11 -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -d 127.0.0.11 -p tcp --dport 53 -j ACCEPT
 
+echo "  Adding network rules..." >&2
 IPTABLES_HEADER
+
+    # Add trace message
+    echo 'echo "  Finished adding rules" >&2'
 
     if [ "$mode" = "allowlist" ]; then
         # Allowlist: add ACCEPT rules for allowed destinations

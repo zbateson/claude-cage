@@ -35,13 +35,25 @@ if ! command -v iptables >/dev/null 2>&1; then
     echo "Installing iptables..." >&2
     if command -v apt-get >/dev/null 2>&1; then
         debug_echo "  Running apt-get update && install..."
-        apt-get update -qq && apt-get install -qq -y iptables || true
+        if [ "$CAGE_DEBUG" = "1" ]; then
+            apt-get update && apt-get install -y iptables || true
+        else
+            apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y iptables >/dev/null 2>&1 || true
+        fi
     elif command -v apk >/dev/null 2>&1; then
         debug_echo "  Running apk add..."
-        apk add --quiet iptables || true
+        if [ "$CAGE_DEBUG" = "1" ]; then
+            apk add iptables || true
+        else
+            apk add --quiet iptables >/dev/null 2>&1 || true
+        fi
     elif command -v yum >/dev/null 2>&1; then
         debug_echo "  Running yum install..."
-        yum install -q -y iptables || true
+        if [ "$CAGE_DEBUG" = "1" ]; then
+            yum install -y iptables || true
+        else
+            yum install -q -y iptables >/dev/null 2>&1 || true
+        fi
     fi
 
     if ! command -v iptables >/dev/null 2>&1; then

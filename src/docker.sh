@@ -468,8 +468,16 @@ exit 1
 $iptables_script
 
 # Drop privileges and run command
-exec su -s /bin/bash -c '$*' - \"#${user_uid}\" 2>/dev/null || \\
-exec su -s /bin/bash -c '$*' nobody
+echo \"Running command as user ${user_uid}: $*\" >&2
+if su -s /bin/bash -c '$*' - \"#${user_uid}\"; then
+    exit 0
+fi
+echo \"su to UID ${user_uid} failed, trying nobody...\" >&2
+if su -s /bin/bash -c '$*' nobody; then
+    exit 0
+fi
+echo \"Failed to run command\" >&2
+exit 1
 ")
         fi
     else

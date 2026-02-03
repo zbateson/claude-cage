@@ -265,7 +265,7 @@ sync_to_source() {
         else
             echo "  Well now, that didn't go smooth. Might need to merge this one yourself."
             git -C "$source_dir" am --abort 2>/dev/null || true
-            save_failed_patch "$source_dir" "$patch" "$target_branch" "$commit_msg"
+            save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
         fi
     else
         # User switched branches - apply to target branch via temp index
@@ -310,7 +310,7 @@ sync_to_source() {
                 echo "  Got it. Changes are on $target_branch."
             else
                 echo "  Patch didn't apply clean to $target_branch."
-                save_failed_patch "$source_dir" "$patch" "$target_branch" "$commit_msg"
+                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
             fi
         )
 

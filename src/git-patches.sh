@@ -2,13 +2,15 @@
 # Failed patch handling (recovery from sync failures)
 # ============================================================================
 
-# List all branches that have pending patches
+# List all branches that have pending patches for a given direction
 # Arguments:
 #   $1 - source_dir: The source project directory
+#   $2 - direction: "from-intermediary" or "to-intermediary"
 # Returns: Space-separated list of branch names (unsanitized)
 list_pending_patch_branches() {
     local source_dir="$1"
-    local failed_root="$source_dir/claude-cage-failed-patches"
+    local direction="$2"
+    local failed_root="$source_dir/claude-cage-failed-patches/$direction"
 
     if [ ! -d "$failed_root" ]; then
         return
@@ -32,16 +34,18 @@ list_pending_patch_branches() {
     echo "$branches" | xargs  # trim whitespace
 }
 
-# Count patches for a specific branch
+# Count patches for a specific branch and direction
 # Arguments:
 #   $1 - source_dir
-#   $2 - branch name
+#   $2 - direction: "from-intermediary" or "to-intermediary"
+#   $3 - branch name
 count_patches_for_branch() {
     local source_dir="$1"
-    local branch="$2"
+    local direction="$2"
+    local branch="$3"
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$branch")
-    local failed_dir="$source_dir/claude-cage-failed-patches/$sanitized_branch"
+    local failed_dir="$source_dir/claude-cage-failed-patches/$direction/$sanitized_branch"
 
     if [ ! -d "$failed_dir" ]; then
         echo "0"
@@ -54,28 +58,44 @@ count_patches_for_branch() {
 # Save a failed patch for later recovery
 # Arguments:
 #   $1 - source_dir: The source directory (where user will see the patch)
-#   $2 - patch content
-#   $3 - branch name
-#   $4 - commit subject (for filename)
+#   $2 - direction: "from-intermediary" or "to-intermediary"
+#   $3 - patch content
+#   $4 - branch name
+#   $5 - commit subject (for filename)
+#   $6 - work_dir (optional): Also save to work directory for Claude to see
 save_failed_patch() {
     local source_dir="${1%/}"  # Strip trailing slash if present
-    local patch="$2"
-    local branch="$3"
-    local subject="$4"
+    local direction="$2"
+    local patch="$3"
+    local branch="$4"
+    local subject="$5"
+    local work_dir="${6%/}"  # Optional
 
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$branch")
-    local failed_dir="$source_dir/claude-cage-failed-patches/$sanitized_branch"
+    local rel_path="claude-cage-failed-patches/$direction/$sanitized_branch"
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local safe_subject
     safe_subject=$(echo "$subject" | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
+    local patch_filename="${timestamp}_${safe_subject}.patch"
 
-    mkdir -p "$failed_dir"
-    local patch_file="$failed_dir/${timestamp}_${safe_subject}.patch"
+    # Save to source directory
+    local source_failed_dir="$source_dir/$rel_path"
+    mkdir -p "$source_failed_dir"
+    local patch_file="$source_failed_dir/$patch_filename"
     echo "$patch" > "$patch_file"
     echo "  Saved patch to: $patch_file"
-    echo "  (Shows up in git status - apply with: git am $patch_file)"
+
+    # Also save to work directory if provided (so Claude can see it inside cage)
+    if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
+        local work_failed_dir="$work_dir/$rel_path"
+        mkdir -p "$work_failed_dir"
+        echo "$patch" > "$work_failed_dir/$patch_filename"
+        echo "  Also available inside cage at: $rel_path/$patch_filename"
+    fi
+
+    echo "  (Apply with: git am <patch_file>)"
 }
 
 # Apply a single patch with conflict handling
@@ -182,19 +202,21 @@ apply_single_patch() {
 # Apply all patches for a branch
 # Arguments:
 #   $1 - source_dir
-#   $2 - branch name
-#   $3 - original branch (to switch back to)
+#   $2 - direction: "from-intermediary" or "to-intermediary"
+#   $3 - branch name
+#   $4 - original branch (to switch back to)
 # Returns: "done" | "abort" | "quit"
 # Sets: BRANCH_PATCHES_RESULT
 BRANCH_PATCHES_RESULT=""
 apply_patches_for_branch() {
     local source_dir="$1"
-    local target_branch="$2"
-    local original_branch="$3"
+    local direction="$2"
+    local target_branch="$3"
+    local original_branch="$4"
 
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$target_branch")
-    local failed_dir="$source_dir/claude-cage-failed-patches/$sanitized_branch"
+    local failed_dir="$source_dir/claude-cage-failed-patches/$direction/$sanitized_branch"
 
     local current_branch
     current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)
@@ -263,11 +285,12 @@ handle_pending_patches() {
     original_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)
 
     while true; do
-        # Get list of branches with pending patches
-        local branches
-        branches=$(list_pending_patch_branches "$source_dir")
+        # Get list of branches with pending patches for each direction
+        local from_branches to_branches
+        from_branches=$(list_pending_patch_branches "$source_dir" "from-intermediary")
+        to_branches=$(list_pending_patch_branches "$source_dir" "to-intermediary")
 
-        if [ -z "$branches" ]; then
+        if [ -z "$from_branches" ] && [ -z "$to_branches" ]; then
             PENDING_PATCHES_RESULT="continue"
             return
         fi
@@ -282,11 +305,23 @@ handle_pending_patches() {
         echo "${YELLOW}Hold up.${NC} You've got failed patches waitin' to be applied:"
         echo ""
 
-        for branch in $branches; do
-            local count
-            count=$(count_patches_for_branch "$source_dir" "$branch")
-            echo "  $branch: $count patch(es)"
-        done
+        if [ -n "$from_branches" ]; then
+            echo "  From cage (apply to source):"
+            for branch in $from_branches; do
+                local count
+                count=$(count_patches_for_branch "$source_dir" "from-intermediary" "$branch")
+                echo "    $branch: $count patch(es)"
+            done
+        fi
+
+        if [ -n "$to_branches" ]; then
+            echo "  To cage (apply to intermediary):"
+            for branch in $to_branches; do
+                local count
+                count=$(count_patches_for_branch "$source_dir" "to-intermediary" "$branch")
+                echo "    $branch: $count patch(es)"
+            done
+        fi
 
         echo ""
 
@@ -326,16 +361,16 @@ handle_pending_patches() {
                     continue
                 fi
 
-                # Apply patches for each branch
-                for branch in $branches; do
+                # Apply "from-intermediary" patches (cage -> source)
+                for branch in $from_branches; do
                     local count
-                    count=$(count_patches_for_branch "$source_dir" "$branch")
+                    count=$(count_patches_for_branch "$source_dir" "from-intermediary" "$branch")
                     [ "$count" -gt 0 ] || continue
 
                     echo ""
-                    echo "=== Patches for branch: $branch ==="
+                    echo "=== From cage -> source, branch: $branch ==="
 
-                    apply_patches_for_branch "$source_dir" "$branch" "$original_branch"
+                    apply_patches_for_branch "$source_dir" "from-intermediary" "$branch" "$original_branch"
 
                     case "$BRANCH_PATCHES_RESULT" in
                         "quit")
@@ -344,10 +379,27 @@ handle_pending_patches() {
                             ;;
                         "abort")
                             # Go back to main menu
-                            break
+                            break 2
                             ;;
                         # done - continue to next branch
                     esac
+                done
+
+                # Apply "to-intermediary" patches (source -> cage)
+                # Note: These need to be applied to the intermediary, not source
+                for branch in $to_branches; do
+                    local count
+                    count=$(count_patches_for_branch "$source_dir" "to-intermediary" "$branch")
+                    [ "$count" -gt 0 ] || continue
+
+                    echo ""
+                    echo "=== Source -> cage, branch: $branch ==="
+                    echo "${YELLOW}Note:${NC} These patches need to be applied to the cage's intermediary."
+                    echo "      Start claude-cage on this branch and apply from there,"
+                    echo "      or delete them if no longer needed."
+
+                    # Can't auto-apply these here - they go to intermediary
+                    # User needs to handle manually or delete
                 done
 
                 # Switch back to original branch if needed

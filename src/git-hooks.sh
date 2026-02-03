@@ -418,12 +418,14 @@ EOF
 #   $3 - intermediary_dir: The intermediary directory
 #   $4 - target_branch: The branch that was active when cage started
 #   $5 - state_path: Path to the state file for tracking last processed commit
+#   $6 - work_dir: The work directory (for saving failed patches)
 setup_source_post_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
     local intermediary_dir="$3"
     local target_branch="$4"
     local state_path="$5"
+    local work_dir="$6"
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$target_branch")
     # Use git root for hook installation (supports running from subdirectories)
@@ -459,6 +461,8 @@ setup_source_post_commit() {
 INTERMEDIARY="$intermediary_dir"
 TARGET_BRANCH="$target_branch"
 STATE_FILE="$state_path"
+SOURCE_DIR="$source_dir"
+WORK_DIR="$work_dir"
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet
@@ -484,7 +488,27 @@ if echo "\$PATCH" | grep -q "^diff --git"; then
     if (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way); then
         : # success
     else
-        echo -e "\033[1;31mclaude-cage:\033[0m Patch didn't apply cleanly. You may need to sync manually."
+        git -C "\$INTERMEDIARY" am --abort 2>/dev/null || true
+        echo -e "\033[1;31mclaude-cage:\033[0m Patch didn't apply cleanly."
+
+        # Save patch for manual recovery
+        SANITIZED_BRANCH=\$(echo "\$TARGET_BRANCH" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g')
+        TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
+        SUBJECT=\$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
+        REL_PATH="claude-cage-failed-patches/to-intermediary/\$SANITIZED_BRANCH"
+        PATCH_FILE="\${TIMESTAMP}_\${SUBJECT}.patch"
+
+        # Save to source directory
+        mkdir -p "\$SOURCE_DIR/\$REL_PATH"
+        echo "\$PATCH" > "\$SOURCE_DIR/\$REL_PATH/\$PATCH_FILE"
+        echo -e "\033[1;31mclaude-cage:\033[0m Saved patch to: \$REL_PATH/\$PATCH_FILE"
+
+        # Also save to work directory if it exists (so Claude can see it inside cage)
+        if [ -d "\$WORK_DIR" ]; then
+            mkdir -p "\$WORK_DIR/\$REL_PATH"
+            echo "\$PATCH" > "\$WORK_DIR/\$REL_PATH/\$PATCH_FILE"
+            echo -e "\033[1;31mclaude-cage:\033[0m Also available inside cage at same path"
+        fi
     fi
 else
     echo -e "\033[1;31mclaude-cage:\033[0m Only excluded files in this commit, nothin' to sync."

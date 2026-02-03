@@ -284,7 +284,7 @@ run_in_docker() {
 
     # Container settings
     local image="${cfg_docker_image:-node:lts-slim}"
-    local container_name="${cfg_docker_container:-claude-cage-$$}"
+    local container_name="claude-cage-$$"
     local hostname="caged.docker"
 
     # Check if network filtering is enabled

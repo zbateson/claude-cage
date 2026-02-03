@@ -230,9 +230,7 @@ local directMount = config.directMount
 if directMount == nil then directMount = false end
 
 -- Docker options
-local docker = config.docker or {}
-local docker_image = docker.image or "node:lts-slim"
-local docker_container = docker.container or ""
+local docker_image = config.dockerImage or "node:lts-slim"
 
 -- Launch command (what to run inside sandbox)
 local launch = config.launch or "claude"
@@ -265,7 +263,6 @@ print(mode)
 print(tostring(autoMerge))
 print(tostring(isolated))
 print(docker_image)
-print(docker_container)
 print(launch)
 print(tostring(hideConfirmationPrompt))
 print(tostring(createCagedDir))
@@ -344,7 +341,6 @@ LUAEOF
         read -r cfg_autoMerge
         read -r cfg_isolated
         read -r cfg_docker_image
-        read -r cfg_docker_container
         read -r cfg_launch
         read -r cfg_hideConfirmationPrompt
         read -r cfg_createCagedDir

@@ -263,8 +263,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
-| `docker.image` | `"node:lts-slim"` | Docker container image (docker mode only) |
-| `docker.container` | `claude-cage-$$` | Docker container name (docker mode only) |
+| `dockerImage` | `"node:lts-slim"` | Docker image to use (docker mode only) |
 
 ### Direct Mount Mode
 

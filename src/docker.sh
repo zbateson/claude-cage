@@ -436,6 +436,8 @@ run_in_docker() {
             docker_args+=(/bin/bash -c "
 $iptables_script
 
+echo 'Launching shell...' >&2
+
 # Create bashrc with cage prompt
 cat > /tmp/.cage-bashrc << 'RCEOF'
 [ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
@@ -445,9 +447,16 @@ PS1=\"\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\\\$ \"
 RCEOF
 
 # Drop privileges and run shell
-# Use su with preserved environment
-exec su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - \"#${user_uid}\" 2>/dev/null || \\
-exec su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' nobody
+echo \"Dropping to user ${user_uid}...\" >&2
+if su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' - \"#${user_uid}\"; then
+    exit 0
+fi
+echo \"Failed to su to UID ${user_uid}, trying nobody...\" >&2
+if su -s /bin/bash -c 'exec bash --rcfile /tmp/.cage-bashrc' nobody; then
+    exit 0
+fi
+echo \"Failed to launch shell\" >&2
+exit 1
 ")
         else
             # Command with network filtering

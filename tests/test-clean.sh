@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export HOME="$TEST_TMP"
 
 cleanup() {
     rm -rf "$TEST_TMP"
@@ -53,7 +54,12 @@ echo "=== Setting up test cage ==="
 
 echo "Test 1: Create cage to have something to clean"
 cd "$TEST_TMP/source"
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
+# Use env -i for consistent behavior across different shell environments
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
 
 if [ ! -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should exist after cage creation"
@@ -104,7 +110,9 @@ echo ""
 echo "=== Testing clean with --branch flag ==="
 
 echo "Test 2: clean --branch with nonexistent branch should fail"
-output=$("$CAGE_DIR/dist/claude-cage" clean --branch nonexistent 2>&1) || true
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" clean --branch nonexistent 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q "not found"; then
     echo "FAIL: Should report branch not found"
@@ -116,7 +124,9 @@ echo "  PASS: Reports nonexistent branch correctly"
 
 echo "Test 3: clean --branch should remove specified branch"
 # Answer 'y' to confirmation prompt
-echo "y" | "$CAGE_DIR/dist/claude-cage" clean --branch "$BRANCH_NAME" >/dev/null 2>&1
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && echo "y" | "$2" clean --branch "'"$BRANCH_NAME"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should be removed after clean"
@@ -143,7 +153,11 @@ echo ""
 echo "=== Testing clean-all ==="
 
 echo "Test 4: Recreate cage for clean-all test"
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
 
 if [ ! -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should exist after cage recreation"
@@ -153,7 +167,9 @@ echo "  PASS: Cage recreated"
 
 echo "Test 5: clean-all should remove all caches"
 # Answer 'y' to confirmation
-echo "y" | "$CAGE_DIR/dist/claude-cage" clean-all >/dev/null 2>&1
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && echo "y" | "$2" clean-all >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should be removed after clean-all"
@@ -165,7 +181,9 @@ echo ""
 echo "=== Testing clean with no caches ==="
 
 echo "Test 6: clean with no caches should report nothing to clean"
-output=$("$CAGE_DIR/dist/claude-cage" clean 2>&1) || true
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" clean 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "nothin"; then
     echo "FAIL: Should report nothing to clean"
@@ -179,14 +197,20 @@ echo ""
 echo "=== Testing dirty work directory warnings ==="
 
 echo "Test 7: Recreate cage and make it dirty"
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
 
 # Make the work directory dirty
 echo "dirty change" >> "$WORK_DIR/file.txt"
 
 echo "Test 8: clean should show warning for dirty branch"
 # Don't actually clean, just check the output shows warning
-output=$("$CAGE_DIR/dist/claude-cage" clean --branch "$BRANCH_NAME" 2>&1 <<< "n") || true
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && echo "n" | "$2" clean --branch "'"$BRANCH_NAME"'" 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "uncommitted"; then
     echo "FAIL: Should warn about uncommitted changes"
@@ -197,7 +221,9 @@ fi
 echo "  PASS: Shows uncommitted changes warning"
 
 echo "Test 9: clean-all should show warning for dirty branch"
-output=$("$CAGE_DIR/dist/claude-cage" clean-all 2>&1 <<< "n") || true
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && echo "n" | "$2" clean-all 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "uncommitted"; then
     echo "FAIL: Should warn about uncommitted changes in branch list"

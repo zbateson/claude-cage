@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export HOME="$TEST_TMP"
 
 cleanup() {
     rm -rf "$TEST_TMP"
@@ -43,7 +44,8 @@ cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
     isolated = true,  -- needed for dry-run test (dirs must exist for non-isolated mounts)
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
@@ -51,7 +53,9 @@ echo "=== Testing bwrap command generation (--test --dry-run) ==="
 
 # Need --test to trigger bwrap command generation
 echo "Test 1: Should generate bwrap command with --test --dry-run"
-output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "bwrap"; then
     echo "FAIL: Should show bwrap command"
@@ -134,12 +138,15 @@ claude_cage {
         "~/.gitconfig",
         { source = "/etc/hosts", as = "/etc/hosts" }
     },
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
 echo "Test 9: Should include additional mounts in bwrap command"
-output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "\-\-ro-bind.*\.gitconfig"; then
     echo "FAIL: Should include .gitconfig mount"
@@ -173,13 +180,17 @@ rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
 echo "Test 11: --test mode should create cage and attempt to run shell"
-cd "$TEST_TMP/source"
-test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "echo 'INSIDE_CAGE'; exit" 2>&1) || true
+test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "echo INSIDE_CAGE; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 # Check if bwrap failed due to namespace restrictions
 if echo "$test_output" | grep -q "No permissions to create new namespace"; then
@@ -199,7 +210,11 @@ echo "  PASS: --test runs inside cage"
 
 echo "Test 12: Should be able to see files in work directory"
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
-test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "ls -la; exit" 2>&1) || true
+test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "ls -la; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$test_output" | grep -q "file.txt"; then
     echo "FAIL: Should see file.txt in work directory"
@@ -211,7 +226,11 @@ echo "  PASS: Can see files in work directory"
 
 echo "Test 13: Should be able to run git commands inside cage"
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
-test_output=$("$CAGE_DIR/dist/claude-cage" --test <<< "git status; exit" 2>&1) || true
+test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "git status; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$test_output" | grep -q "On branch claude"; then
     echo "FAIL: Should be on claude branch inside cage"

@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export HOME="$TEST_TMP"
 
 cleanup() {
     rm -rf "$TEST_TMP"
@@ -38,7 +39,8 @@ cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     exclude = { ".env" },
     autoMerge = true,
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
@@ -52,7 +54,13 @@ PIPE_PATH="$CLAUDE_CAGE_RUNTIME/pipes/$BRANCH_NAME$SOURCE_PATH"
 echo "Test 1: With autoMerge=true, should create post-receive hook"
 cd "$TEST_TMP/source"
 # Use --test and immediately exit to avoid trying to launch claude
-output=$(echo "exit" | "$CAGE_DIR/dist/claude-cage" --test 2>&1) || true
+# Use env -i for consistent behavior across different shell environments
+# Pass through CLAUDE_CAGE_CACHE and CLAUDE_CAGE_RUNTIME so paths are correct
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 hook_path="$INTERMEDIARY_DIR/.git/hooks/post-receive"
 if [ ! -f "$hook_path" ]; then
@@ -106,12 +114,18 @@ rm -f "$TEST_TMP/source/.git/hooks/post-commit"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     autoMerge = false,
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
 # Use --test mode to avoid trying to launch claude
-output=$(echo "exit" | "$CAGE_DIR/dist/claude-cage" --test 2>&1) || true
+# Use env -i for consistent behavior across different shell environments
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 echo "Test 11: With autoMerge=false, should NOT create pipe"
 if [ -p "$PIPE_PATH" ]; then
@@ -202,7 +216,12 @@ claude_cage {
 EOF
 
 # Run claude-cage which should clean up orphaned hooks on startup
-output=$(echo "exit" | "$CAGE_DIR/dist/claude-cage" --test 2>&1) || true
+# Use env -i for consistent behavior across different shell environments
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if [ -f "$TEST_TMP/source/.git/hooks/pre-commit.d/claude-cage-orphaned" ]; then
     echo "FAIL: Orphaned pre-commit hook should have been removed"

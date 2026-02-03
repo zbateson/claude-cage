@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export HOME="$TEST_TMP"
 
 cleanup() {
     rm -rf "$TEST_TMP"
@@ -35,7 +36,8 @@ git commit -q -m "Initial"
 
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
@@ -48,8 +50,9 @@ WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
 echo "=== Testing --dry-run mode ==="
 
 echo "Test 1: --dry-run should not create cage directories"
-cd "$TEST_TMP/source"
-"$CAGE_DIR/dist/claude-cage" --dry-run >/dev/null 2>&1
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --dry-run >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ -d "$INTERMEDIARY_DIR" ]; then
     echo "FAIL: intermediary directory should not be created in dry-run mode"
@@ -58,7 +61,9 @@ fi
 echo "  PASS: cage directories not created in dry-run"
 
 echo "Test 2: --dry-run should show [dry-run] prefix"
-output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "\[dry-run\]"; then
     echo "FAIL: Dry-run output should contain [dry-run] prefix"
@@ -80,8 +85,16 @@ echo "  PASS: Shows git commands"
 echo ""
 echo "=== Testing --verbose mode ==="
 
+# These tests run bwrap, which can be affected by shell environment settings.
+# We use env -i with minimal PATH to ensure consistent behavior across environments.
+# The test uses --test mode with "exit" piped to stdin to exit immediately.
+
 echo "Test 4: --verbose should show [run] prefix"
-verbose_output=$("$CAGE_DIR/dist/claude-cage" --verbose 2>&1) || true
+verbose_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'echo "exit" | "$1" --verbose --test 2>&1' _ "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$verbose_output" | grep -q "\[run\]"; then
     echo "FAIL: Verbose output should contain [run] prefix"
@@ -95,7 +108,11 @@ echo "  PASS: Found [run] prefix in verbose mode"
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 
 echo "Test 5: -v should be alias for --verbose"
-v_output=$("$CAGE_DIR/dist/claude-cage" -v 2>&1) || true
+v_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'echo "exit" | "$1" -v --test 2>&1' _ "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$v_output" | grep -q "\[run\]"; then
     echo "FAIL: -v should work as --verbose alias"
@@ -109,7 +126,11 @@ echo "=== Testing --debug mode ==="
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 
 echo "Test 6: --debug implies --verbose"
-debug_output=$("$CAGE_DIR/dist/claude-cage" --debug 2>&1) || true
+debug_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'echo "exit" | "$1" --debug --test 2>&1' _ "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$debug_output" | grep -q "\[run\]"; then
     echo "FAIL: --debug should imply --verbose"
@@ -123,7 +144,12 @@ echo "=== Testing run wrapper behavior ==="
 echo "Test 7: Commands should execute successfully without dry-run"
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 # Use --test to get a shell (just exit immediately) rather than trying to launch claude
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
+# Use env -i for consistent behavior across different shell environments
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'echo "exit" | "$1" --test' _ "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
 
 if [ ! -d "$INTERMEDIARY_DIR" ]; then
     echo "FAIL: Intermediary should be created without dry-run"

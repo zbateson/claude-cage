@@ -380,8 +380,8 @@ init_config() {
 
     original_user="${SUDO_USER:-$USER}"
     system_config="/etc/claude-cage.conf"
-    user_config="/home/${original_user}/.config/claude-cage/config"
-    user_config_dir="/home/${original_user}/.config/claude-cage"
+    user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-cage"
+    user_config="$user_config_dir/config"
 
     # Config root is always CWD
     config_root=$(pwd)

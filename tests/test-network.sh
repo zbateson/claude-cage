@@ -10,6 +10,7 @@ unset CLAUDE_CAGE_SOURCING
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
+export HOME="$TEST_TMP"
 
 cleanup() {
     rm -rf "$TEST_TMP"

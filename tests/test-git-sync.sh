@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export HOME="$TEST_TMP"
 
 cleanup() {
     rm -rf "$TEST_TMP"
@@ -37,7 +38,8 @@ git commit -m "Initial commit"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     autoMerge = true,
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
@@ -49,7 +51,12 @@ WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
 
 echo "Setting up cage..."
 cd "$TEST_TMP/source"
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
+# Use env -i for consistent behavior across different shell environments
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
 
 # Fix origin path for testing outside sandbox
 # (inside sandbox, intermediary is mounted at /run<project-path>)

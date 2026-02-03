@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export HOME="$TEST_TMP"
 
 cleanup() {
     rm -rf "$TEST_TMP"
@@ -43,7 +44,8 @@ cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     isolated = true,  -- needed for dry-run test (dirs must exist for non-isolated mounts)
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
@@ -51,7 +53,9 @@ echo "=== Testing docker command generation (--test --dry-run) ==="
 
 # Need --test to trigger docker command generation
 echo "Test 1: Should generate docker command with --test --dry-run"
-output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "docker run"; then
     echo "FAIL: Should show docker run command"
@@ -116,11 +120,14 @@ claude_cage {
     docker = {
         image = "ubuntu:22.04"
     },
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "ubuntu:22.04"; then
     echo "FAIL: Should use custom image"
     echo "Output was:"
@@ -136,11 +143,14 @@ claude_cage {
     docker = {
         container = "my-test-container"
     },
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "my-test-container"; then
     echo "FAIL: Should use custom container name"
     echo "Output was:"
@@ -158,12 +168,15 @@ claude_cage {
     additionalMounts = {
         "~/.gitconfig"
     },
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
 echo "Test 9: Should include additional mounts"
-output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "\-v.*\.gitconfig"; then
     echo "FAIL: Should include .gitconfig mount"
@@ -250,11 +263,14 @@ claude_cage {
     allow = {
         domains = { "github.com:443" }
     },
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage" --test --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "\-\-cap-add=NET_ADMIN"; then
     echo "FAIL: Should add NET_ADMIN capability"
     echo "Output was:"

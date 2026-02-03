@@ -11,6 +11,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TEST_TMP=$(mktemp -d)
 
+# Use test-specific cache and runtime dirs to avoid polluting user's dirs
+export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
+export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export HOME="$TEST_TMP"
+
 cleanup() {
     rm -rf "$TEST_TMP"
 }
@@ -34,11 +39,14 @@ echo "=== Testing showBanner config ==="
 echo "Test 1: showBanner = true should show banner"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
-    showBanner = true
+    showBanner = true,
+    hideConfirmationPrompt = true
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 # Check for ASCII art elements (CLAUDE or CAGE text)
 if ! echo "$output" | grep -q "██████\|CLAUDE\|CAGE"; then
@@ -52,11 +60,14 @@ echo "  PASS: Shows banner when showBanner = true"
 echo "Test 2: showBanner = false should hide banner"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
-    showBanner = false
+    showBanner = false,
+    hideConfirmationPrompt = true
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if echo "$output" | grep -q "██████"; then
     echo "FAIL: Should NOT show ASCII banner when showBanner = false"
@@ -69,10 +80,13 @@ echo "  PASS: Hides banner when showBanner = false"
 echo "Test 3: Default should show banner"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
+    hideConfirmationPrompt = true
 }
 EOF
 
-output=$("$CAGE_DIR/dist/claude-cage" --dry-run 2>&1)
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "██████\|CLAUDE\|CAGE"; then
     echo "FAIL: Should show banner by default"

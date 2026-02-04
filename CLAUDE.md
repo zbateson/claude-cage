@@ -488,7 +488,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Network filtering for Docker mode (uses iptables with privilege drop)
 - [x] Shell completions (bash and zsh)
 - [x] Clean commands for cache management
-- [ ] Testing on actual Claude Code workflow
+- [x] Testing on actual Claude Code workflow
 - [ ] More graceful conflict resolution when git-am fails
 
 ## Network Isolation

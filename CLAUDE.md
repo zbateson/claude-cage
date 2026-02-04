@@ -470,7 +470,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Cleanup on exit
 - [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (154 tests across 12 files)
+- [x] Comprehensive test suite (164 tests across 12 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)

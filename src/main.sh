@@ -410,6 +410,16 @@ else
     fi
 fi
 
+# Pre-resolve domains for network filtering (so warnings appear before sandbox info)
+pre_resolved_allow_ips=""
+pre_resolved_block_ips=""
+domains_pre_resolved=false
+if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+    [ -n "$cfg_allow_domains" ] && pre_resolved_allow_ips=$(resolve_domains_for_docker "$cfg_allow_domains")
+    [ -n "$cfg_block_domains" ] && pre_resolved_block_ips=$(resolve_domains_for_docker "$cfg_block_domains")
+    domains_pre_resolved=true
+fi
+
 echo ""
 echo "============================================"
 echo ""

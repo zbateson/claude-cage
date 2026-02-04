@@ -410,52 +410,58 @@ run_with_network_namespace() {
     local resolved_allow_domains=""
     local resolved_block_domains=""
 
-    if [ -n "$allow_domains" ]; then
-        [ "$verbose" = true ] && echo "Resolving allowed domains..." >&2
-        IFS='|' read -ra domains <<< "$allow_domains"
-        for domain_spec in "${domains[@]}"; do
-            local parsed
-            parsed=$(parse_ip_port "$domain_spec")
-            local domain="${parsed%%|*}"
-            local ports="${parsed#*|}"
-            local ips
-            ips=$(resolve_domain "$domain")
-            if [ -n "$ips" ]; then
-                while IFS= read -r ip; do
-                    if [ -n "$ports" ]; then
-                        resolved_allow_domains="${resolved_allow_domains}${resolved_allow_domains:+|}${ip}:${ports}"
-                    else
-                        resolved_allow_domains="${resolved_allow_domains}${resolved_allow_domains:+|}${ip}"
-                    fi
-                done <<< "$ips"
-            else
-                echo "Warning: Could not resolve domain '$domain', skipping..." >&2
-            fi
-        done
-    fi
+    # Use pre-resolved values from main.sh if available
+    if [ "${domains_pre_resolved:-}" = true ]; then
+        resolved_allow_domains="${pre_resolved_allow_ips:-}"
+        resolved_block_domains="${pre_resolved_block_ips:-}"
+    else
+        if [ -n "$allow_domains" ]; then
+            [ "$verbose" = true ] && echo "Resolving allowed domains..." >&2
+            IFS='|' read -ra domains <<< "$allow_domains"
+            for domain_spec in "${domains[@]}"; do
+                local parsed
+                parsed=$(parse_ip_port "$domain_spec")
+                local domain="${parsed%%|*}"
+                local ports="${parsed#*|}"
+                local ips
+                ips=$(resolve_domain "$domain")
+                if [ -n "$ips" ]; then
+                    while IFS= read -r ip; do
+                        if [ -n "$ports" ]; then
+                            resolved_allow_domains="${resolved_allow_domains}${resolved_allow_domains:+|}${ip}:${ports}"
+                        else
+                            resolved_allow_domains="${resolved_allow_domains}${resolved_allow_domains:+|}${ip}"
+                        fi
+                    done <<< "$ips"
+                else
+                    echo "Warning: Could not resolve domain '$domain', skipping..." >&2
+                fi
+            done
+        fi
 
-    if [ -n "$block_domains" ]; then
-        [ "$verbose" = true ] && echo "Resolving blocked domains..." >&2
-        IFS='|' read -ra domains <<< "$block_domains"
-        for domain_spec in "${domains[@]}"; do
-            local parsed
-            parsed=$(parse_ip_port "$domain_spec")
-            local domain="${parsed%%|*}"
-            local ports="${parsed#*|}"
-            local ips
-            ips=$(resolve_domain "$domain")
-            if [ -n "$ips" ]; then
-                while IFS= read -r ip; do
-                    if [ -n "$ports" ]; then
-                        resolved_block_domains="${resolved_block_domains}${resolved_block_domains:+|}${ip}:${ports}"
-                    else
-                        resolved_block_domains="${resolved_block_domains}${resolved_block_domains:+|}${ip}"
-                    fi
-                done <<< "$ips"
-            else
-                echo "Warning: Could not resolve domain '$domain', skipping..." >&2
-            fi
-        done
+        if [ -n "$block_domains" ]; then
+            [ "$verbose" = true ] && echo "Resolving blocked domains..." >&2
+            IFS='|' read -ra domains <<< "$block_domains"
+            for domain_spec in "${domains[@]}"; do
+                local parsed
+                parsed=$(parse_ip_port "$domain_spec")
+                local domain="${parsed%%|*}"
+                local ports="${parsed#*|}"
+                local ips
+                ips=$(resolve_domain "$domain")
+                if [ -n "$ips" ]; then
+                    while IFS= read -r ip; do
+                        if [ -n "$ports" ]; then
+                            resolved_block_domains="${resolved_block_domains}${resolved_block_domains:+|}${ip}:${ports}"
+                        else
+                            resolved_block_domains="${resolved_block_domains}${resolved_block_domains:+|}${ip}"
+                        fi
+                    done <<< "$ips"
+                else
+                    echo "Warning: Could not resolve domain '$domain', skipping..." >&2
+                fi
+            done
+        fi
     fi
 
     if [ "$dry_run" = true ]; then

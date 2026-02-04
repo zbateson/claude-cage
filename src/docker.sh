@@ -349,20 +349,25 @@ run_in_docker() {
     local resolved_block_ips=""
 
     if [ "$network_enabled" = true ]; then
-        if [ -n "$cfg_allow_domains" ]; then
-            [ "$verbose" = true ] && echo "Resolving allowed domains..." >&2
-            resolved_allow_ips=$(resolve_domains_for_docker "$cfg_allow_domains")
+        # Use pre-resolved values from main.sh if available
+        if [ "${domains_pre_resolved:-}" = true ]; then
+            resolved_allow_ips="${pre_resolved_allow_ips:-}"
+            resolved_block_ips="${pre_resolved_block_ips:-}"
+        else
+            if [ -n "$cfg_allow_domains" ]; then
+                [ "$verbose" = true ] && echo "Resolving allowed domains..." >&2
+                resolved_allow_ips=$(resolve_domains_for_docker "$cfg_allow_domains")
+            fi
+            if [ -n "$cfg_block_domains" ]; then
+                [ "$verbose" = true ] && echo "Resolving blocked domains..." >&2
+                resolved_block_ips=$(resolve_domains_for_docker "$cfg_block_domains")
+            fi
         fi
+
         # Add configured IPs to resolved list
         if [ -n "$cfg_allow_ips" ]; then
             resolved_allow_ips="${resolved_allow_ips}${resolved_allow_ips:+|}${cfg_allow_ips}"
         fi
-
-        if [ -n "$cfg_block_domains" ]; then
-            [ "$verbose" = true ] && echo "Resolving blocked domains..." >&2
-            resolved_block_ips=$(resolve_domains_for_docker "$cfg_block_domains")
-        fi
-        # Add configured IPs to resolved list
         if [ -n "$cfg_block_ips" ]; then
             resolved_block_ips="${resolved_block_ips}${resolved_block_ips:+|}${cfg_block_ips}"
         fi

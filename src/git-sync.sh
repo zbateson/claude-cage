@@ -256,6 +256,12 @@ sync_to_source() {
     local patch
     patch=$(git -C "$intermediary_dir" format-patch -1 "$refname" --stdout)
 
+    # Skip empty patches (e.g. empty commits, or commits with only non-tracked files)
+    if ! echo "$patch" | grep -q "^diff --git"; then
+        echo "  Empty patch, nothin' to apply."
+        return 0
+    fi
+
     # Check if user is still on the target branch
     local current_branch
     current_branch=$(git -C "$source_dir" branch --show-current)

@@ -451,8 +451,8 @@ RCEOF
 
 # Drop privileges and run shell
 debug_echo \"Launching shell...\"
-exec script -q -c \"su -s /bin/bash - cage -c 'exec bash --rcfile /tmp/.cage-bashrc'\" /dev/null 2>/dev/null || \\
-exec su -s /bin/bash - cage -c 'exec bash --rcfile /tmp/.cage-bashrc'
+exec script -q -c \"su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'\" /dev/null 2>/dev/null || \\
+exec su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'
 ")
         else
             # Command with network filtering
@@ -466,7 +466,7 @@ useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cag
 
 # Drop privileges and run command
 debug_echo \"Running: $*\"
-exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' - cage
+exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' cage
 ")
         fi
     else

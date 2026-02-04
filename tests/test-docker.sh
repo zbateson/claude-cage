@@ -202,12 +202,12 @@ if ! echo "$script" | grep -q "iptables -A OUTPUT -p tcp -d 1.2.3.4 --dport 443 
 fi
 echo "  PASS: Generates allowlist rules"
 
-echo "Test 12: generate_docker_iptables_script should allow Docker DNS"
-if ! echo "$script" | grep -q "127.0.0.11"; then
-    echo "FAIL: Should allow Docker DNS (127.0.0.11)"
+echo "Test 12: generate_docker_iptables_script should allow DNS (port 53)"
+if ! echo "$script" | grep -q "\-\-dport 53"; then
+    echo "FAIL: Should allow outbound DNS (port 53)"
     exit 1
 fi
-echo "  PASS: Allows Docker DNS"
+echo "  PASS: Allows DNS"
 
 echo "Test 13: generate_docker_iptables_script should generate blocklist rules"
 script=$(generate_docker_iptables_script "blocklist" "" "" "10.0.0.1" "")

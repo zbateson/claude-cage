@@ -90,10 +90,13 @@ iptables -A OUTPUT -o lo -j ACCEPT
 # Allow established/related connections
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# Allow Docker's internal DNS (127.0.0.11)
-debug_echo "  Allowing Docker DNS..."
-iptables -A OUTPUT -d 127.0.0.11 -p udp --dport 53 -j ACCEPT
-iptables -A OUTPUT -d 127.0.0.11 -p tcp --dport 53 -j ACCEPT
+# Allow DNS to any destination
+# Docker's DNS setup varies by network type: 127.0.0.11 on user-defined networks,
+# host nameservers (router IP, etc.) on default bridge. Allow all outbound port 53
+# rather than guessing - same approach as bwrap's slirp4netns resolver allowance.
+debug_echo "  Allowing DNS..."
+iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
 
 debug_echo "  Adding network rules..."
 IPTABLES_HEADER

@@ -718,7 +718,7 @@ When syncing commits from intermediary to source, if the user has switched branc
 
 All user-facing text uses Nic Cage's voice from Con Air. This applies to:
 
-- **Commit messages** - The subject line only, not the body/details below
+- **Commit messages** - The subject line only, not the body/details below. Keep subjects under 50 characters.
 - **README.md** - Prose text only (not example code, config, or comments within code blocks)
 - **Tool output in source code** - Echo statements, error messages, banners
 

@@ -361,4 +361,61 @@ fi
 echo "  PASS: Parsed additionalMounts"
 
 echo ""
+echo "=== Testing docker config table ==="
+
+echo "Test 13: Should parse docker.image"
+setup_git_repo "$TEST_TMP/docker-config-test"
+cat > "$TEST_TMP/docker-config-test/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "docker",
+    docker = {
+        image = "ubuntu:22.04",
+        packages = { "wget", "dnsutils" }
+    },
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+# Source the built script to test parse_config directly
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+unset CLAUDE_CAGE_SOURCING
+
+cd "$TEST_TMP/docker-config-test"
+parse_config "docker-config-test" "$TEST_TMP/docker-config-test" "$TEST_TMP/docker-config-test/.claude-cage"
+
+if [ "$cfg_docker_image" != "ubuntu:22.04" ]; then
+    echo "FAIL: docker.image should be 'ubuntu:22.04', got '$cfg_docker_image'"
+    exit 1
+fi
+echo "  PASS: Parsed docker.image"
+
+echo "Test 14: Should parse docker.packages"
+if [ "$cfg_docker_packages" != "wget|dnsutils" ]; then
+    echo "FAIL: docker.packages should be 'wget|dnsutils', got '$cfg_docker_packages'"
+    exit 1
+fi
+echo "  PASS: Parsed docker.packages"
+
+echo "Test 15: Should use default packages when docker.packages not set"
+setup_git_repo "$TEST_TMP/docker-defaults-test"
+cat > "$TEST_TMP/docker-defaults-test/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "docker",
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+cd "$TEST_TMP/docker-defaults-test"
+parse_config "docker-defaults-test" "$TEST_TMP/docker-defaults-test" "$TEST_TMP/docker-defaults-test/.claude-cage"
+
+if [ "$cfg_docker_packages" != "curl|iputils-ping" ]; then
+    echo "FAIL: docker.packages should default to 'curl|iputils-ping', got '$cfg_docker_packages'"
+    exit 1
+fi
+echo "  PASS: Default docker.packages"
+
+echo ""
 echo "=== All config tests passed! ==="

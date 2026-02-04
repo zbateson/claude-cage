@@ -8,7 +8,7 @@
 --   3. includeIf matches              (directory-scoped configs, set in system/user)
 --   4. .claude-cage                    (project settings, at git root)
 --
--- Array options (exclude, allow, block, additionalMounts) merge across levels.
+-- Array options (exclude, allow, block, additionalMounts, docker.packages) merge across levels.
 -- Scalar options are overridden by later configs.
 --
 -- See examples/example-user-config for includeIf usage.
@@ -51,8 +51,11 @@ claude_cage {
 
     mode = "bwrap",
 
-    -- Docker image (only used when mode = "docker")
-    -- dockerImage = "node:lts-slim",
+    -- Docker options (only used when mode = "docker")
+    -- docker = {
+    --     image = "node:lts-slim",
+    --     packages = { "curl", "iputils-ping" },  -- installed as root before dropping privileges
+    -- },
 
     -- =========================================================================
     -- SYNC OPTIONS

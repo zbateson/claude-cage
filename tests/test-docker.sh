@@ -117,7 +117,7 @@ echo "Test 7: Should accept custom image"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
-    dockerImage = "ubuntu:22.04",
+    docker = { image = "ubuntu:22.04" },
     showBanner = false,
     hideConfirmationPrompt = true
 }
@@ -176,14 +176,14 @@ echo "  PASS: Uses --rm for cleanup"
 echo ""
 echo "=== Testing docker user mapping ==="
 
-echo "Test 10: Should run as current user"
-if ! echo "$output" | grep -q "\-\-user"; then
-    echo "FAIL: Should specify --user for UID mapping"
+echo "Test 10: Should create user and drop privileges"
+if ! echo "$output" | grep -q "useradd"; then
+    echo "FAIL: Should create user for privilege drop"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Runs as current user"
+echo "  PASS: Creates user for privilege drop"
 
 echo ""
 echo "=== Testing docker network filtering ==="
@@ -262,6 +262,59 @@ if echo "$output" | grep -q "\-\-user"; then
     exit 1
 fi
 echo "  PASS: No --user when network filtering (starts as root)"
+
+echo ""
+echo "=== Testing docker package installation ==="
+
+# Reset config to basic docker mode
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "docker",
+    isolated = true,
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+echo "Test 17: Should install default packages (curl)"
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
+if ! echo "$output" | grep -q "curl"; then
+    echo "FAIL: Should install curl by default"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Installs default packages"
+
+echo "Test 18: Should use custom docker.packages"
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "docker",
+    isolated = true,
+    docker = { packages = { "wget", "dnsutils" } },
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
+if ! echo "$output" | grep -q "wget"; then
+    echo "FAIL: Should install configured packages"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+if echo "$output" | grep -q "curl"; then
+    echo "FAIL: Should NOT install default packages when custom ones are set"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Uses custom docker.packages"
 
 echo ""
 echo "=== All docker tests passed! ==="

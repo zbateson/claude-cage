@@ -297,6 +297,62 @@ resolve_domains_for_docker() {
     echo "$resolved"
 }
 
+# Generate script to install packages in Docker container
+# Installs configured packages if not already present
+# This runs as root inside the container before dropping privileges
+# Arguments:
+#   $1 - pipe-separated list of packages to install (e.g., "curl|iputils-ping")
+generate_docker_tool_install_script() {
+    local packages="$1"
+
+    # Always define debug_echo (used by later setup steps too)
+    cat << 'TOOLS_HEADER'
+# Helper for debug output
+debug_echo() { [ "$CAGE_DEBUG" = "1" ] && echo "$@" >&2 || true; }
+TOOLS_HEADER
+
+    # No packages to install
+    [ -z "$packages" ] && return
+
+    # Convert pipe-separated list to space-separated for package managers
+    local pkg_list="${packages//|/ }"
+
+    # Pick the first package to use as presence check
+    local check_pkg="${packages%%|*}"
+
+    cat << TOOLS_EOF
+# Install packages if missing
+if ! dpkg -s $check_pkg >/dev/null 2>&1 && ! command -v $check_pkg >/dev/null 2>&1; then
+    debug_echo "Installing packages: $pkg_list"
+    if command -v apt-get >/dev/null 2>&1; then
+        if [ "\$CAGE_DEBUG" = "1" ]; then
+            apt-get update && apt-get install -y $pkg_list || true
+        else
+            { apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y $pkg_list >/dev/null 2>&1; } &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            echo >&2
+        fi
+    elif command -v apk >/dev/null 2>&1; then
+        if [ "\$CAGE_DEBUG" = "1" ]; then
+            apk add $pkg_list || true
+        else
+            apk add --quiet $pkg_list >/dev/null 2>&1 &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            echo >&2
+        fi
+    elif command -v yum >/dev/null 2>&1; then
+        if [ "\$CAGE_DEBUG" = "1" ]; then
+            yum install -y $pkg_list || true
+        else
+            yum install -q -y $pkg_list >/dev/null 2>&1 &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            echo >&2
+        fi
+    fi
+fi
+TOOLS_EOF
+}
+
 # Run a command inside a Docker container
 # Usage: run_in_docker <branch_intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
 #
@@ -382,13 +438,10 @@ run_in_docker() {
     docker_args+=(--add-host=host.docker.internal:host-gateway)
 
     if [ "$network_enabled" = true ]; then
-        # Network filtering: start as root, add NET_ADMIN capability
+        # Network filtering: add NET_ADMIN capability for iptables
         docker_args+=(--cap-add=NET_ADMIN)
-        # Don't set --user here; we'll drop privileges after iptables setup
-    else
-        # No network filtering: run as current user directly
-        docker_args+=(--user "${user_uid}:${user_gid}")
     fi
+    # Always start as root to install packages, then drop privileges
 
     # Enumerate projects and build mount specs using shared functions
     enumerate_projects "$branch_work_root" "$branch_intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
@@ -427,17 +480,23 @@ run_in_docker() {
     # Image
     docker_args+=("$image")
 
-    # Add command or interactive shell
+    # Generate setup scripts
+    local tool_install_script
+    tool_install_script=$(generate_docker_tool_install_script "$cfg_docker_packages")
+
+    local iptables_script=""
     if [ "$network_enabled" = true ]; then
-        # Network filtering enabled: generate iptables script and drop privileges
-        local iptables_script
         iptables_script=$(generate_docker_iptables_script "$cfg_networkMode" \
             "$resolved_allow_ips" "$cfg_allow_networks" \
             "$resolved_block_ips" "$cfg_block_networks")
+    fi
 
-        if [ $# -eq 0 ]; then
-            # Interactive shell with network filtering
-            docker_args+=(/bin/bash -c "
+    # Add command or interactive shell
+    if [ $# -eq 0 ]; then
+        # Interactive shell
+        docker_args+=(/bin/bash -c "
+$tool_install_script
+
 $iptables_script
 
 # Create user with matching UID for privilege drop
@@ -459,9 +518,11 @@ debug_echo \"Launching shell...\"
 exec script -q -c \"su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'\" /dev/null 2>/dev/null || \\
 exec su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'
 ")
-        else
-            # Command with network filtering
-            docker_args+=(/bin/bash -c "
+    else
+        # Command
+        docker_args+=(/bin/bash -c "
+$tool_install_script
+
 $iptables_script
 
 # Create user with matching UID for privilege drop
@@ -473,22 +534,6 @@ useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cag
 debug_echo \"Running: $*\"
 exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' cage
 ")
-        fi
-    else
-        # No network filtering: run as user directly
-        if [ $# -eq 0 ]; then
-            # Custom rcfile with cage prompt indicator
-            docker_args+=(/bin/bash -c '
-cat > /tmp/.cage-bashrc << "EOF"
-[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
-[ -f ~/.bashrc ] && . ~/.bashrc
-# Cage prompt - red user@caged with bunny (Con Air style)
-PS1="\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\$ "
-EOF
-exec bash --rcfile /tmp/.cage-bashrc')
-        else
-            docker_args+=(/bin/bash -c "$*")
-        fi
     fi
 
     # Run docker

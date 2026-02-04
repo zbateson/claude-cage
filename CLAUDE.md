@@ -247,7 +247,7 @@ claude_cage {
 }
 ```
 
-Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all config levels. Scalar options are overridden by later configs.
+Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages`) merge across all config levels. Scalar options are overridden by later configs.
 
 ### Key Options
 
@@ -267,7 +267,8 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`) merge across all
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
-| `dockerImage` | `"node:lts-slim"` | Docker image to use (docker mode only) |
+| `docker.image` | `"node:lts-slim"` | Docker image to use (docker mode only) |
+| `docker.packages` | `{"curl", "iputils-ping"}` | Packages to install in Docker container (as root, before dropping privileges) |
 
 ### Direct Mount Mode
 
@@ -677,7 +678,7 @@ bash tests/run-all.sh
 | Test File | Component | Tests |
 |-----------|-----------|-------|
 | test-helpers.sh | helpers.sh | 7 |
-| test-config.sh | config.sh | 13 |
+| test-config.sh | config.sh | 16 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
 | test-git-hooks.sh | git-hooks.sh | 10 |
@@ -685,11 +686,11 @@ bash tests/run-all.sh
 | test-git-sync.sh | git-sync.sh | 18 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
-| test-docker.sh | docker.sh | 16 |
+| test-docker.sh | docker.sh | 18 |
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 159 tests across 12 files**
+**Total: 164 tests across 12 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

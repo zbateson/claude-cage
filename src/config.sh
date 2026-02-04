@@ -148,6 +148,18 @@ local function merge_config(base, override)
             for _, item in ipairs(v) do
                 table.insert(result.additionalMounts, item)
             end
+        elseif k == "docker" and type(v) == "table" then
+            result.docker = result.docker or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.docker[subkey] = result.docker[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.docker[subkey], item)
+                    end
+                else
+                    result.docker[subkey] = subval
+                end
+            end
         else
             result[k] = v
         end
@@ -267,7 +279,9 @@ local directMount = config.directMount
 if directMount == nil then directMount = false end
 
 -- Docker options
-local docker_image = config.dockerImage or "node:lts-slim"
+local docker = config.docker or {}
+local docker_image = docker.image or "node:lts-slim"
+local docker_packages = docker.packages
 
 -- Launch command (what to run inside sandbox)
 local launch = config.launch or "claude"
@@ -310,6 +324,14 @@ else
     print(tostring(allowNonGit))
 end
 print(tostring(directMount))
+-- docker.packages: nil = use defaults, empty table = no packages, otherwise list
+if docker_packages == nil then
+    print("curl|iputils-ping")
+elseif #docker_packages == 0 then
+    print("EMPTY")
+else
+    print(array_to_string(docker_packages))
+end
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -383,6 +405,7 @@ LUAEOF
         read -r cfg_createCagedDir
         read -r cfg_allowNonGit
         read -r cfg_directMount
+        read -r cfg_docker_packages
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do
@@ -398,13 +421,15 @@ LUAEOF
     } <<< "$lua_output"
 
     # Replace EMPTY placeholder with empty string
-    [ "$cfg_exclude" = "EMPTY" ] && cfg_exclude=""
-    [ "$cfg_allow_domains" = "EMPTY" ] && cfg_allow_domains=""
-    [ "$cfg_allow_ips" = "EMPTY" ] && cfg_allow_ips=""
-    [ "$cfg_allow_networks" = "EMPTY" ] && cfg_allow_networks=""
-    [ "$cfg_block_domains" = "EMPTY" ] && cfg_block_domains=""
-    [ "$cfg_block_ips" = "EMPTY" ] && cfg_block_ips=""
-    [ "$cfg_block_networks" = "EMPTY" ] && cfg_block_networks=""
+    # Use || true to prevent set -e from triggering on false conditions
+    [ "$cfg_exclude" = "EMPTY" ] && cfg_exclude="" || true
+    [ "$cfg_allow_domains" = "EMPTY" ] && cfg_allow_domains="" || true
+    [ "$cfg_allow_ips" = "EMPTY" ] && cfg_allow_ips="" || true
+    [ "$cfg_allow_networks" = "EMPTY" ] && cfg_allow_networks="" || true
+    [ "$cfg_block_domains" = "EMPTY" ] && cfg_block_domains="" || true
+    [ "$cfg_block_ips" = "EMPTY" ] && cfg_block_ips="" || true
+    [ "$cfg_block_networks" = "EMPTY" ] && cfg_block_networks="" || true
+    [ "$cfg_docker_packages" = "EMPTY" ] && cfg_docker_packages="" || true
 }
 
 # Initialize config from current directory

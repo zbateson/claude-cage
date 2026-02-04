@@ -367,6 +367,15 @@ else
     pipe_path=$(get_pipe_path "$cfg_source")
     state_path=$(get_state_path "$cfg_source")
 
+    # Check for other active sessions before doing anything destructive
+    other_session_active=false
+    if has_other_sessions "$cfg_source" "$source_branch"; then
+        other_session_active=true
+    fi
+
+    # Register our session early (before any destructive operations)
+    register_session "$cfg_source" "$source_branch"
+
     # Check if existing cage is in sync with source
     cage_state=$(check_cage_state "$cfg_source" "$work_dir" "$state_path")
 
@@ -375,21 +384,29 @@ else
             echo "Cage is in sync with source. Pickin' up where we left off."
             ;;
         "ahead_clean")
-            echo "Source moved ahead but cage is clean. Startin' fresh."
-            create_intermediary_clone "$cfg_source"
+            if [ "$other_session_active" = true ]; then
+                echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
+            else
+                echo "Source moved ahead but cage is clean. Startin' fresh."
+                create_intermediary_clone "$cfg_source"
+            fi
             ;;
         "ahead_dirty")
-            handle_dirty_cage "$cfg_source" "$work_dir" "$intermediary_dir" "$state_path" "$cfg_exclude"
-            case "$DIRTY_CAGE_RESULT" in
-                "recreate")
-                    create_intermediary_clone "$cfg_source"
-                    ;;
-                "exit")
-                    echo "Alright, we'll sort this out later."
-                    exit 0
-                    ;;
-                # "continue" - just proceed with existing cage
-            esac
+            if [ "$other_session_active" = true ]; then
+                echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
+            else
+                handle_dirty_cage "$cfg_source" "$work_dir" "$intermediary_dir" "$state_path" "$cfg_exclude"
+                case "$DIRTY_CAGE_RESULT" in
+                    "recreate")
+                        create_intermediary_clone "$cfg_source"
+                        ;;
+                    "exit")
+                        echo "Alright, we'll sort this out later."
+                        exit 0
+                        ;;
+                    # "continue" - just proceed with existing cage
+                esac
+            fi
             ;;
         "no_cage"|*)
             # No existing cage, create fresh
@@ -432,7 +449,7 @@ echo ""
 
 # Start pipe listener if autoMerge enabled (git mode only)
 if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
-    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch"
+    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch" "$state_path"
 fi
 
 # Set up cleanup handler for signals
@@ -440,6 +457,10 @@ cleanup_on_exit() {
     local exit_code=$?
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
+        # Always unregister our session
+        if [ -n "$source_branch" ]; then
+            unregister_session "$cfg_source" "$source_branch"
+        fi
         if [ -n "$PIPE_LISTENER_PID" ]; then
             stop_pipe_listener "$PIPE_LISTENER_PID"
             cleanup_pipe "$pipe_path"

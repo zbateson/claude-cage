@@ -128,7 +128,8 @@ When `autoMerge = true`:
 6. `sync_to_source()` runs:
    - Skips initial commit (just a copy)
    - Uses `git format-patch` on intermediary
-   - Applies to source with `git am --3way`
+   - Applies to source with `git am --3way` (same branch) or temp-index + `git update-ref` (user switched branches)
+   - Updates state file after successful apply (critical for branch-switch path where hooks don't fire)
 
 ### Inbound (Source -> Intermediary)
 
@@ -147,17 +148,19 @@ If commit only contains excluded files, shows: "Only excluded files in this comm
 
 ### Multiple Sessions
 
-Multiple claude-cage sessions can run concurrently on the same project (even on different branches). Session tracking prevents cleanup race conditions:
+Multiple claude-cage sessions can run concurrently on the same project (even on different branches). Session tracking prevents cleanup race conditions and protects running sessions:
 
-1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<branch>/<path-hash>/`
-2. **Hook dispatcher** - Source hooks use a dispatcher pattern (`.git/hooks/post-commit` runs all scripts in `post-commit.d/`)
-3. **Branch-specific hooks** - Each branch gets its own hook file: `post-commit.d/claude-cage-<branch>`
-4. **Safe cleanup** - Hooks are only removed when no other sessions need them
+1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<branch>/<path-hash>/` early at startup (before any destructive operations), regardless of autoMerge setting
+2. **Rebuild protection** - If another session is active for the same branch+project, the cage is never rebuilt (even if source has moved ahead). New sessions join the existing cage instead.
+3. **Hook dispatcher** - Source hooks use a dispatcher pattern (`.git/hooks/post-commit` runs all scripts in `post-commit.d/`)
+4. **Branch-specific hooks** - Each branch gets its own hook file: `post-commit.d/claude-cage-<branch>`
+5. **Safe cleanup** - Sessions are unregistered on exit. Hooks are only removed when no other sessions need them.
 
 This means:
-- Two sessions on `main` branch share the same hook (safe, content is identical)
+- Two sessions on `main` branch share the same hook and the same cage (safe, content is identical)
 - One session on `main`, another on `feature` → separate hooks, no conflict
 - Exiting one session doesn't break another session's hooks
+- Starting a second session never destroys a running session's work directory
 
 ### Failed Patch Recovery
 
@@ -679,14 +682,14 @@ bash tests/run-all.sh
 | test-git-clone.sh | git-clone.sh | 14 |
 | test-git-hooks.sh | git-hooks.sh | 10 |
 | test-git-patches.sh | git-patches.sh | 12 |
-| test-git-sync.sh | git-sync.sh | 14 |
+| test-git-sync.sh | git-sync.sh | 18 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 16 |
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 155 tests across 12 files**
+**Total: 159 tests across 12 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

@@ -276,9 +276,6 @@ cleanup_source_hooks() {
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$target_branch")
 
-    # Unregister this session first
-    unregister_session "$source_dir" "$target_branch"
-
     # Check if other sessions still need the hooks
     if has_other_sessions "$source_dir" "$target_branch"; then
         if [ "$verbose" = true ]; then
@@ -437,9 +434,6 @@ setup_source_post_commit() {
     if [ "$dry_run" != true ]; then
         ensure_hook_dispatcher "$git_root" "post-commit"
     fi
-
-    # Register this session
-    register_session "$source_dir" "$target_branch"
 
     # Convert exclude patterns to pathspec format
     # Use :(exclude,glob) for proper ** matching (** means zero or more dirs with glob)

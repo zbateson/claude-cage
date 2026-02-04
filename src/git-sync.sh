@@ -234,11 +234,13 @@ handle_dirty_cage() {
 #   $2 - intermediary_dir: The intermediary directory
 #   $3 - refname: The git ref that was pushed (e.g., refs/heads/claude/main)
 #   $4 - target_branch: The branch to apply commits to (branch when cage started)
+#   $5 - state_path: Path to state file for tracking last processed source commit
 sync_to_source() {
     local source_dir="$1"
     local intermediary_dir="$2"
     local refname="$3"
     local target_branch="$4"
+    local state_path="$5"
 
     # Skip the initial commit (it's just a copy of source files)
     local commit_msg
@@ -307,6 +309,11 @@ sync_to_source() {
                 # Update the branch ref
                 git update-ref "refs/heads/$target_branch" "$new_commit"
 
+                # Update state file (hooks don't fire for update-ref)
+                if [ -n "$state_path" ]; then
+                    echo "$new_commit" > "$state_path"
+                fi
+
                 echo "  Got it. Changes are on $target_branch."
             else
                 echo "  Patch didn't apply clean to $target_branch."
@@ -325,12 +332,14 @@ sync_to_source() {
 #   $2 - intermediary_dir: The intermediary directory
 #   $3 - pipe_path: The pipe file path
 #   $4 - target_branch: The branch to apply commits to
+#   $5 - state_path: Path to state file for tracking last processed source commit
 # Sets: PIPE_LISTENER_PID
 start_pipe_listener() {
     local source_dir="$1"
     local intermediary_dir="$2"
     local pipe_path="$3"
     local target_branch="$4"
+    local state_path="$5"
 
     # Run listener in background
     # Open pipe read-write to avoid blocking (there may be no writer yet)
@@ -342,7 +351,7 @@ start_pipe_listener() {
                 if [ -z "$target_branch" ]; then
                     echo "claude-cage: No target branch - can't sync. Was source repo on a branch when cage started?"
                 else
-                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch"
+                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch" "$state_path"
                 fi
             fi
         done

@@ -126,6 +126,145 @@ echo "      Tests 5-14 skipped"
 # and manually trigger commits from another.
 
 echo ""
+echo "=== Testing state file update on branch-switch sync ==="
+
+# Set up a fresh scenario for state file testing
+rm -rf "$TEST_TMP/state-source"
+mkdir -p "$TEST_TMP/state-source"
+cd "$TEST_TMP/state-source"
+git init -q
+git config user.email "test@example.com"
+git config user.name "Test User"
+echo "original" > file.txt
+git add .
+git commit -q -m "Initial commit"
+
+# Create feature branch with a commit
+git checkout -q -b feature
+echo "feature" > feature.txt
+git add .
+git commit -q -m "Feature commit"
+
+STATE_SOURCE_PATH="$TEST_TMP/state-source"
+STATE_BRANCH_NAME="feature"
+STATE_INTERMEDIARY="$CLAUDE_CAGE_CACHE/branches/$STATE_BRANCH_NAME/intermediary$STATE_SOURCE_PATH"
+STATE_WORK="$CLAUDE_CAGE_CACHE/branches/$STATE_BRANCH_NAME/work$STATE_SOURCE_PATH"
+
+cat > "$TEST_TMP/state-source/.claude-cage" << 'EOF'
+claude_cage {
+    autoMerge = true,
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+# Set up cage on feature branch
+echo "Setting up cage for state file test..."
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$STATE_SOURCE_PATH" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
+
+# Fix origin path for testing outside sandbox
+git -C "$STATE_WORK" remote set-url origin "$STATE_INTERMEDIARY"
+
+# Make a commit in work and push
+cd "$STATE_WORK"
+git config user.email "claude@example.com"
+git config user.name "Claude"
+echo "from claude" > claude-state.txt
+git add claude-state.txt
+git commit -q -m "Claude state test commit"
+git push origin claude 2>/dev/null
+
+# Switch source to master
+cd "$STATE_SOURCE_PATH"
+git checkout -q master
+
+# Source the script to get sync_to_source function
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+
+# Compute state path
+export CLAUDE_CAGE_BRANCH="$STATE_BRANCH_NAME"
+state_test_path=$(get_state_path "$STATE_SOURCE_PATH")
+
+# Record state before sync
+state_before=$(cat "$state_test_path" 2>/dev/null)
+
+echo "Test 5: State file should be updated after temp-index sync"
+sync_to_source "$STATE_SOURCE_PATH" "$STATE_INTERMEDIARY" "refs/heads/claude" "feature" "$state_test_path"
+
+state_after=$(cat "$state_test_path" 2>/dev/null)
+if [ "$state_before" = "$state_after" ]; then
+    echo "FAIL: State file was not updated after temp-index sync"
+    echo "  Before: $state_before"
+    echo "  After:  $state_after"
+    exit 1
+fi
+
+# Verify state matches the new feature branch tip
+feature_tip=$(git -C "$STATE_SOURCE_PATH" rev-parse feature)
+if [ "$state_after" != "$feature_tip" ]; then
+    echo "FAIL: State file does not match feature branch tip"
+    echo "  State:       $state_after"
+    echo "  Feature tip: $feature_tip"
+    exit 1
+fi
+echo "  PASS: State file updated to new feature branch tip after temp-index sync"
+
+echo ""
+echo "=== Testing active session detection ==="
+
+echo "Test 6: has_other_sessions should detect active sessions"
+# Spawn a background process we own and use its PID
+sleep 300 &
+fake_session_pid=$!
+session_dir=$(get_session_dir "$STATE_SOURCE_PATH" "$STATE_BRANCH_NAME")
+mkdir -p "$session_dir"
+echo "$fake_session_pid" > "$session_dir/$fake_session_pid"
+
+if ! has_other_sessions "$STATE_SOURCE_PATH" "$STATE_BRANCH_NAME"; then
+    kill "$fake_session_pid" 2>/dev/null
+    echo "FAIL: has_other_sessions should return true when active PID file exists"
+    exit 1
+fi
+echo "  PASS: Active session detected"
+
+echo "Test 7: has_other_sessions should clean stale PIDs"
+# Use a PID that definitely doesn't exist
+echo "999999999" > "$session_dir/999999999"
+
+# has_other_sessions should clean up stale PID and still find our sleep process
+if ! has_other_sessions "$STATE_SOURCE_PATH" "$STATE_BRANCH_NAME"; then
+    kill "$fake_session_pid" 2>/dev/null
+    echo "FAIL: Should still detect active PID after cleaning stale PID"
+    exit 1
+fi
+if [ -f "$session_dir/999999999" ]; then
+    kill "$fake_session_pid" 2>/dev/null
+    echo "FAIL: Stale PID file should have been cleaned up"
+    exit 1
+fi
+echo "  PASS: Stale PIDs cleaned, active session still detected"
+
+# Clean up the fake session
+kill "$fake_session_pid" 2>/dev/null
+wait "$fake_session_pid" 2>/dev/null || true
+
+echo "Test 8: check_cage_state returns ahead_clean when state is stale"
+# Set state file to old value (not matching current feature HEAD)
+echo "0000000000000000000000000000000000000000" > "$state_test_path"
+
+cage_result=$(check_cage_state "$STATE_SOURCE_PATH" "$STATE_WORK" "$state_test_path")
+if [ "$cage_result" != "ahead_clean" ]; then
+    echo "FAIL: Expected ahead_clean but got: $cage_result"
+    exit 1
+fi
+echo "  PASS: Stale state correctly detected as ahead_clean"
+
+echo ""
 echo "=== All git-sync tests passed! ==="
 exit 0
 

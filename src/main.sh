@@ -108,7 +108,6 @@ elif ! is_git_repo "$cfg_source"; then
                     echo "To skip this prompt next time, add 'allowNonGit = true' to your config:"
                     echo "  /etc/claude-cage.conf           (system-wide)"
                     echo "  ~/.config/claude-cage/config    (user)"
-                    echo "  .claude-cage                    (project)"
                     echo ""
                 else
                     echo "Alright, catch you later."

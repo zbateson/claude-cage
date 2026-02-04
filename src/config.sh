@@ -12,38 +12,75 @@ check_lua() {
     fi
 }
 
-# Walk from CWD up to filesystem root, collecting .claude-cage paths
-# Returns paths in root-to-leaf order (closer configs override farther)
-# Skips user config directory to avoid double-loading
-# Args: $1 = starting directory (CWD), $2 = user config directory to skip
-find_ancestor_configs() {
-    local current="$1"
-    local user_config_dir="$2"
-    local ancestors=()
-
-    # Walk up (excluding CWD itself - that's handled separately as local_config)
-    current=$(dirname "$current")
-    while [ "$current" != "/" ]; do
-        if [ -f "$current/.claude-cage" ]; then
-            # Skip if this is the user config directory
-            if [ "$current" != "$user_config_dir" ]; then
-                ancestors=("$current/.claude-cage" "${ancestors[@]}")
-            fi
+# Extract includeIf config paths that match the current directory
+# Parses system and user config files for includeIf entries, resolves ~ in paths,
+# and outputs matching config file paths (one per line)
+# Args: $1 = current directory (resolved), $2... = config files to scan
+resolve_include_if() {
+    local current_dir="$1"
+    shift
+    local scan_files_str=""
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        if [ -n "$scan_files_str" ]; then
+            scan_files_str="$scan_files_str|$f"
+        else
+            scan_files_str="$f"
         fi
-        current=$(dirname "$current")
     done
+    [ -z "$scan_files_str" ] && return
 
-    # Check root too
-    if [ -f "/.claude-cage" ]; then
-        ancestors=("/.claude-cage" "${ancestors[@]}")
-    fi
+    lua - "$current_dir" "$scan_files_str" <<'LUAEOF' 2>/dev/null
+local cwd = arg[1] or ""
+local files_str = arg[2] or ""
+local home = os.getenv("HOME") or ""
 
-    # Only output if we found something (avoid empty line)
-    if [ ${#ancestors[@]} -gt 0 ]; then
-        printf '%s\n' "${ancestors[@]}"
-    fi
+local function expand_tilde(path)
+    return path:gsub("^~", home)
+end
+
+local include_configs = {}
+
+local function handler(tbl)
+    if tbl.includeIf and type(tbl.includeIf) == "table" then
+        for _, rule in ipairs(tbl.includeIf) do
+            local dir = rule.dir
+            local config = rule.config
+            if dir and config then
+                dir = expand_tilde(dir)
+                config = expand_tilde(config)
+                -- Normalize: ensure dir ends with /
+                if not dir:match("/$") then dir = dir .. "/" end
+                local cwd_check = cwd .. "/"
+                if cwd_check:sub(1, #dir) == dir then
+                    table.insert(include_configs, config)
+                end
+            end
+        end
+    end
+end
+
+local safe_env = {
+    claude_cage = handler,
+    pairs = pairs, ipairs = ipairs,
+    type = type, tostring = tostring, tonumber = tonumber,
 }
 
+for filepath in string.gmatch(files_str, "[^|]+") do
+    local f = io.open(filepath, "r")
+    if f then
+        local content = f:read("*all")
+        f:close()
+        local chunk = load(content, "@" .. filepath, "t", safe_env)
+        if chunk then pcall(chunk) end
+    end
+end
+
+for _, path in ipairs(include_configs) do
+    print(path)
+end
+LUAEOF
+}
 
 # Parse config files using Lua
 # Args: $1 = derived_project, $2 = config_root_real, $3... = config file paths
@@ -133,8 +170,8 @@ local function get_source_name(filepath)
     elseif filepath:match("%.config/claude%-cage/config$") then
         return "user"
     else
-        -- For ancestor and local configs, show relative path hint
-        local basename = filepath:match("([^/]+)/%.claude%-cage$") or filepath
+        -- For includeIf and local configs, show the parent directory name
+        local basename = filepath:match("([^/]+)/[^/]+$") or filepath
         return basename
     end
 end
@@ -180,7 +217,7 @@ local function safe_load_config(filepath, config_handler)
     return true, nil
 end
 
--- Load configs in order (system, user, ancestors root-to-leaf, local)
+-- Load configs in order (system, user, includeIf matches, local)
 for _, filepath in ipairs(config_files) do
     local f = io.open(filepath, "r")
     if f then
@@ -384,17 +421,23 @@ init_config() {
     config_root_real=$(realpath "$config_root")
     derived_project=$(basename "$config_root_real")
 
-    # Find ancestor configs (root-to-leaf order)
-    ancestor_configs=()
-    while IFS= read -r cfg; do
-        [ -n "$cfg" ] && ancestor_configs+=("$cfg")
-    done < <(find_ancestor_configs "$config_root_real" "$user_config_dir")
+    # Local config at git root (not CWD, not ancestors beyond git root)
+    local_config=""
+    local git_root
+    git_root=$(git -C "$config_root_real" rev-parse --show-toplevel 2>/dev/null) || true
+    if [ -n "$git_root" ] && [ -f "$git_root/.claude-cage" ]; then
+        local_config="$git_root/.claude-cage"
+    fi
 
-    # Local config in CWD
-    local_config="$config_root/.claude-cage"
-    if [ ! -f "$local_config" ]; then
-        # No config in CWD - check if any config exists at all
-        if [ ! -f "$system_config" ] && [ ! -f "$user_config" ] && [ ${#ancestor_configs[@]} -eq 0 ]; then
+    # Resolve includeIf entries from system and user configs
+    include_if_configs=()
+    while IFS= read -r cfg; do
+        [ -n "$cfg" ] && include_if_configs+=("$cfg")
+    done < <(resolve_include_if "$config_root_real" "$system_config" "$user_config")
+
+    if [ -z "$local_config" ]; then
+        # No local config at git root - check if any config exists at all
+        if [ ! -f "$system_config" ] && [ ! -f "$user_config" ] && [ ${#include_if_configs[@]} -eq 0 ]; then
             # No config anywhere - run the builder (if interactive)
             if [ -t 0 ]; then
                 config_builder_run
@@ -402,17 +445,15 @@ init_config() {
             else
                 echo "No config found. Run interactively to set one up, or create:"
                 echo "  ~/.config/claude-cage/config (user-level)"
-                echo "  .claude-cage (project-level or in any ancestor directory)"
+                echo "  .claude-cage (project-level, at the git root)"
                 exit 1
             fi
         fi
-        # Have system, user, or ancestor config - proceed without CWD config
-        local_config=""
     fi
 
-    # Build config file list in order: system, user, ancestors (root-to-leaf), local
+    # Build config file list in order: system, user, includeIf matches, local
     config_files=("$system_config" "$user_config")
-    for cfg in "${ancestor_configs[@]}"; do
+    for cfg in "${include_if_configs[@]}"; do
         config_files+=("$cfg")
     done
     if [ -n "$local_config" ]; then

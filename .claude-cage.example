@@ -1,14 +1,17 @@
 -- Example .claude-cage configuration
 --
--- Place this file as .claude-cage in your project root.
+-- Place this file as .claude-cage at your project's git root.
 --
 -- Config files are loaded and merged in order:
 --   1. /etc/claude-cage.conf          (system-wide defaults)
 --   2. ~/.config/claude-cage/config   (user preferences)
---   3. .claude-cage                    (project settings)
+--   3. includeIf matches              (directory-scoped configs, set in system/user)
+--   4. .claude-cage                    (project settings, at git root)
 --
 -- Array options (exclude, allow, block, additionalMounts) merge across levels.
 -- Scalar options are overridden by later configs.
+--
+-- See examples/example-user-config for includeIf usage.
 
 claude_cage {
     -- =========================================================================

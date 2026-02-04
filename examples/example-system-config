@@ -3,7 +3,7 @@
 --
 -- This file provides organization-wide defaults for all users.
 -- Users override these in ~/.config/claude-cage/config
--- Projects override in ./.claude-cage
+-- Projects override in .claude-cage (at git root)
 
 claude_cage {
     -- =========================================================================
@@ -67,5 +67,16 @@ claude_cage {
     --         "192.168.0.0/16",
     --     },
     --     ips = { "169.254.169.254" },  -- AWS metadata
+    -- },
+
+    -- =========================================================================
+    -- DIRECTORY-SCOPED CONFIG (includeIf)
+    -- =========================================================================
+    -- Load additional config files when CWD is under a given directory.
+    -- Use a visible filename (e.g. claude-cage.config) so it's easy to spot.
+    -- Arrays merge, scalars override (same rules as all config levels).
+
+    -- includeIf = {
+    --     { dir = "/opt/company/projects", config = "/opt/company/claude-cage.config" },
     -- },
 }

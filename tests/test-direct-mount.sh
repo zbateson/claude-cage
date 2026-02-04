@@ -45,14 +45,6 @@ EOF
 mkdir -p "$TEST_TMP/non-git-project"
 echo "content" > "$TEST_TMP/non-git-project/file.txt"
 
-cat > "$TEST_TMP/non-git-project/.claude-cage" << 'EOF'
-claude_cage {
-    showBanner = false,
-    hideConfirmationPrompt = true,
-    allowNonGit = true
-}
-EOF
-
 echo "=== Testing --direct-mount flag in git repo ==="
 
 BRANCH_NAME=$(git -C "$TEST_TMP/git-project" branch --show-current)
@@ -119,6 +111,16 @@ echo ""
 echo "=== Testing non-git directory handling ==="
 
 echo "Test 5: allowNonGit=true should enable direct mount for non-git dirs"
+# Non-git dirs have no git root, so config must come from user config
+mkdir -p "$TEST_TMP/.config/claude-cage"
+cat > "$TEST_TMP/.config/claude-cage/config" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    allowNonGit = true
+}
+EOF
+
 cd "$TEST_TMP/non-git-project"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
@@ -133,7 +135,7 @@ fi
 echo "  PASS: Non-git directory uses direct mount"
 
 echo "Test 6: allowNonGit=false should reject non-git dirs"
-cat > "$TEST_TMP/non-git-project/.claude-cage" << 'EOF'
+cat > "$TEST_TMP/.config/claude-cage/config" << 'EOF'
 claude_cage {
     showBanner = false,
     hideConfirmationPrompt = true,
@@ -152,6 +154,9 @@ if ! echo "$output" | grep -q -i "git"; then
     exit 1
 fi
 echo "  PASS: allowNonGit=false rejects non-git dirs"
+
+# Clean up user config so it doesn't affect remaining tests
+rm -f "$TEST_TMP/.config/claude-cage/config"
 
 echo ""
 echo "=== Testing git-merge rejection in direct mount mode ==="

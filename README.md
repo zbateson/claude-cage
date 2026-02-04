@@ -183,12 +183,26 @@ claude_cage {
 
 1. `/etc/claude-cage.conf` (system)
 2. `~/.config/claude-cage/config` (user)
-3. `.claude-cage` in ancestor directories (root → current, for shared team/project configs)
-4. `.claude-cage` in current directory (project)
+3. `includeIf` matches (directory-scoped configs declared in system/user config)
+4. `.claude-cage` at git root (project)
 
 Arrays like `exclude` and `additionalMounts` combine across all levels. Scalars like `mode` override (closer configs win).
 
-**More options:** See [`.claude-cage.example`](.claude-cage.example) for the full list of configuration options including `hideConfirmationPrompt`, `createCagedDir`, and Docker-specific settings.
+**Directory-scoped config (`includeIf`):** Got a directory full of projects that share config? Use `includeIf` in your user config instead of scatterin' hidden files around:
+
+```lua
+-- ~/.config/claude-cage/config
+claude_cage {
+    includeIf = {
+        { dir = "~/Projects/public", config = "~/Projects/public/claude-cage.config" },
+        { dir = "~/Projects/private", config = "~/Projects/private/claude-cage.config" },
+    }
+}
+```
+
+When your CWD is under `~/Projects/public/`, the matching config is loaded. Use a visible filename like `claude-cage.config` so it's easy to spot. Same merge rules apply—arrays combine, scalars override.
+
+**More options:** See [`.claude-cage.example`](.claude-cage.example) for project-level settings and [`examples/`](examples/) for system and user config examples including `includeIf`.
 
 
 ## Usage

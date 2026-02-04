@@ -79,7 +79,7 @@ The intermediary repo serves as a buffer:
 | `src/helpers.sh` | `run`, `run_quiet`, color codes, dry-run support |
 | `src/banner.sh` | ASCII art banner (print_banner) |
 | `src/config-builder.sh` | Interactive config generator when no config exists |
-| `src/config.sh` | Lua-based config parsing (system, user, ancestors, local) |
+| `src/config.sh` | Lua-based config parsing (system, user, includeIf, local) |
 | `src/git-clone.sh` | `create_intermediary_clone()` - archives source with excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
@@ -197,25 +197,26 @@ Config files are loaded and merged in order (later values override, arrays merge
 |-------|------|-----------|
 | System | `/etc/claude-cage.conf` | No |
 | User | `~/.config/claude-cage/config` | No |
-| Ancestors | `.claude-cage` in any ancestor directory | No |
-| Local | `.claude-cage` (current directory) | No |
+| includeIf | Directory-scoped configs declared in system/user config | No |
+| Local | `.claude-cage` (at git root) | No |
 
-### Hierarchical Config Resolution
+### includeIf — Directory-Scoped Config
 
-Config walks from the filesystem root down to your current directory, loading any `.claude-cage` files found along the way. This lets you set up shared config for all projects under a directory.
+Instead of walking ancestor directories (which creates subtle trust boundary issues), shared config is handled via `includeIf` in your system or user config. When CWD is under a matching directory, the referenced config file is loaded.
 
-Example for CWD = `/home/user/projects/public/my-app/`:
+```lua
+-- ~/.config/claude-cage/config
+claude_cage {
+    includeIf = {
+        { dir = "~/Projects/public", config = "~/Projects/public/claude-cage.config" },
+        { dir = "~/Projects/private", config = "~/Projects/private/claude-cage.config" },
+    }
+}
 ```
-/etc/claude-cage.conf                              (system)
-~/.config/claude-cage/config                       (user)
-/.claude-cage                                      (if exists)
-/home/.claude-cage                                 (if exists)
-/home/user/projects/.claude-cage                   (if exists)
-/home/user/projects/public/.claude-cage            (if exists)
-/home/user/projects/public/my-app/.claude-cage     (local/CWD)
-```
 
-Closer configs override farther ones for scalar values. Arrays (like `exclude`) merge across all levels.
+Use a visible filename like `claude-cage.config` for included configs so they're easy to spot. Both `dir` and `config` support `~` expansion.
+
+Later configs override earlier ones for scalar values. Arrays (like `exclude`) merge across all levels.
 
 **No config?** If no config exists at any level, an interactive builder walks you through creating one. It prompts for sandbox mode, common excludes, auto-merge, and optional tool-specific mounts (e.g., Claude Code's `~/.claude`).
 
@@ -607,7 +608,7 @@ $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UI
     └── <pid>                           # One file per active session
 
 project/
-├── .claude-cage                        # Project config file (optional with ancestors)
+├── .claude-cage                        # Project config file (at git root)
 ├── .caged/                             # Optional symlinks to cache (createCagedDir = true)
 │   ├── .gitignore                      # Self-ignoring (* and !.gitignore)
 │   └── <branch>/                       # One directory per caged branch
@@ -673,7 +674,7 @@ bash tests/run-all.sh
 | Test File | Component | Tests |
 |-----------|-----------|-------|
 | test-helpers.sh | helpers.sh | 7 |
-| test-config.sh | config.sh | 12 |
+| test-config.sh | config.sh | 13 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
 | test-git-hooks.sh | git-hooks.sh | 10 |
@@ -685,7 +686,7 @@ bash tests/run-all.sh
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 154 tests across 12 files**
+**Total: 155 tests across 12 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

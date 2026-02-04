@@ -88,8 +88,8 @@ Arguments after -- are passed through to the launch command.
 Config files (loaded in order, later values override):
   /etc/claude-cage.conf              System-wide config
   ~/.config/claude-cage/config       User config
-  <ancestors>/.claude-cage           Ancestor directory configs
-  .claude-cage                       Project config
+  includeIf matches                  Directory-scoped configs (set in system/user)
+  .claude-cage                       Project config (at git root)
 
 Examples:
   claude-cage                    Start sandbox with configured launch command

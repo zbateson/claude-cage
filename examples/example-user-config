@@ -3,7 +3,7 @@
 --
 -- This file provides your personal defaults across all projects.
 -- Overrides system config (/etc/claude-cage.conf).
--- Projects override these in ./.claude-cage
+-- Projects override these in .claude-cage (at git root)
 
 claude_cage {
     -- =========================================================================
@@ -90,5 +90,17 @@ claude_cage {
     --         "api.anthropic.com:443",
     --         "registry.npmjs.org:443",
     --     },
+    -- },
+
+    -- =========================================================================
+    -- DIRECTORY-SCOPED CONFIG (includeIf)
+    -- =========================================================================
+    -- Load additional config files when CWD is under a given directory.
+    -- Use a visible filename (e.g. claude-cage.config) so it's easy to spot.
+    -- Arrays merge, scalars override (same rules as all config levels).
+
+    -- includeIf = {
+    --     { dir = "~/Projects/public", config = "~/Projects/public/claude-cage.config" },
+    --     { dir = "~/Projects/private", config = "~/Projects/private/claude-cage.config" },
     -- },
 }

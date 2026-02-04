@@ -333,6 +333,7 @@ sync_to_source() {
 #   $3 - pipe_path: The pipe file path
 #   $4 - target_branch: The branch to apply commits to
 #   $5 - state_path: Path to state file for tracking last processed source commit
+#   $6 - verbose: "true" to show sync output, anything else to suppress
 # Sets: PIPE_LISTENER_PID
 start_pipe_listener() {
     local source_dir="$1"
@@ -340,6 +341,7 @@ start_pipe_listener() {
     local pipe_path="$3"
     local target_branch="$4"
     local state_path="$5"
+    local listener_verbose="${6:-false}"
 
     # Run listener in background
     # Open pipe read-write to avoid blocking (there may be no writer yet)
@@ -348,10 +350,15 @@ start_pipe_listener() {
         exec 3<>"$pipe_path"
         while read -r refname newrev <&3; do
             if [ -n "$refname" ]; then
+                if [ "$debug" = true ]; then
+                    echo -e "${_yellow}[pipe-listener] received: refname=$refname newrev=$newrev target=$target_branch$(date +" at %H:%M:%S")${_reset}" >&2
+                fi
                 if [ -z "$target_branch" ]; then
-                    echo "claude-cage: No target branch - can't sync. Was source repo on a branch when cage started?"
-                else
+                    echo "claude-cage: No target branch - can't sync. Was source repo on a branch when cage started?" >&2
+                elif [ "$listener_verbose" = true ]; then
                     sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch" "$state_path"
+                else
+                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch" "$state_path" >/dev/null 2>&1
                 fi
             fi
         done

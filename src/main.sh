@@ -449,7 +449,7 @@ echo ""
 
 # Start pipe listener if autoMerge enabled (git mode only)
 if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
-    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch" "$state_path"
+    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch" "$state_path" "$verbose"
 fi
 
 # Set up cleanup handler for signals

@@ -1,0 +1,5185 @@
+#!/bin/bash
+CLAUDE_CAGE_VERSION="0.1.0"
+# ============================================================================
+# Helper functions
+# ============================================================================
+
+# Parse --dry-run, --verbose, --debug, --help, --version early
+dry_run=false
+verbose=false
+debug=false
+show_help=false
+show_version=false
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) dry_run=true ;;
+        --verbose|-v) verbose=true ;;
+        --debug) debug=true ;;
+        --help|-h) show_help=true ;;
+        --version) show_version=true ;;
+    esac
+done
+
+# --debug implies --verbose
+[ "$debug" = true ] && verbose=true
+
+# ANSI color codes
+_yellow='\033[33m'
+_cyan='\033[1;36m'
+_white='\033[1;37m'
+_reset='\033[0m'
+
+# Wrapper function for commands that modify the system
+# In dry-run mode, prints the command instead of executing it
+# In verbose mode, prints the command before executing
+run() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] $*"
+        return 0
+    fi
+    if [ "$verbose" = true ]; then
+        echo -e "${_yellow}[run] $*${_reset}" >&2
+    fi
+    "$@"
+}
+
+# Wrapper for commands that should be silent in normal mode
+# In verbose mode, prints the command before executing
+# In debug mode, shows command output instead of suppressing it
+run_quiet() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] $*"
+        return 0
+    fi
+    if [ "$verbose" = true ]; then
+        echo -e "${_yellow}[run] $*${_reset}" >&2
+    fi
+    if [ "$debug" = true ]; then
+        "$@"
+    else
+        "$@" >/dev/null 2>&1
+    fi
+}
+
+# Display help message
+show_help() {
+    cat << 'EOF'
+claude-cage - A sandboxed git workflow for Claude Code
+
+Usage: claude-cage [options] [subcommand] [-- args...]
+
+Subcommands:
+  git-merge           Fetch refs from intermediary for manual merge
+  clean               Remove cached branch (interactive selection)
+  clean-all           Remove all cached branches for this project
+  completion SHELL    Output shell completion script (bash or zsh)
+  install-completions Install shell completions for current shell
+
+Options:
+  --test          Drop into a shell for testing instead of launching
+  --direct-mount  Mount source directly without git sync
+  --branch NAME   Specify branch for clean command
+  --dry-run       Show commands without executing
+  --verbose, -v   Show commands as they execute
+  --debug         Show command output (implies --verbose)
+  --help, -h      Show this help message
+  --version       Show version number
+
+Arguments after -- are passed through to the launch command.
+
+Config files (loaded in order, later values override):
+  /etc/claude-cage.conf              System-wide config
+  ~/.config/claude-cage/config       User config
+  includeIf matches                  Directory-scoped configs (set in system/user)
+  .claude-cage                       Project config (at git root)
+
+Examples:
+  claude-cage                    Start sandbox with configured launch command
+  claude-cage --test             Drop into a shell for testing
+  claude-cage --resume           Pass --resume to the launch command
+  claude-cage clean              Interactively select branch cache to remove
+  claude-cage clean --branch main  Remove cache for 'main' branch
+  claude-cage git-merge          Fetch intermediary refs for manual merge
+
+For more info, see: https://github.com/zbateson/claude-cage
+EOF
+}
+
+# Output bash completion script
+output_bash_completion() {
+    cat << 'EOF'
+# Bash completion for claude-cage
+_claude_cage() {
+    local cur prev words cword
+    _init_completion 2>/dev/null || return
+
+    local subcommands="git-merge clean clean-all completion install-completions"
+    local flags="--test --direct-mount --branch --dry-run --verbose -v --debug --help -h --version"
+
+    case "$prev" in
+        --branch)
+            local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+            if [ -d "$cache_dir/branches" ]; then
+                COMPREPLY=($(compgen -W "$(ls -1 "$cache_dir/branches" 2>/dev/null)" -- "$cur"))
+            fi
+            return
+            ;;
+        completion)
+            COMPREPLY=($(compgen -W "bash zsh" -- "$cur"))
+            return
+            ;;
+    esac
+
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+    else
+        COMPREPLY=($(compgen -W "$subcommands $flags" -- "$cur"))
+    fi
+}
+complete -F _claude_cage claude-cage
+EOF
+}
+
+# Output zsh completion script
+output_zsh_completion() {
+    cat << 'EOF'
+#compdef claude-cage
+_claude_cage() {
+    local -a subcommands flags
+
+    subcommands=(
+        'git-merge:Fetch refs from intermediary for manual merge'
+        'clean:Remove cached branch (interactive selection)'
+        'clean-all:Remove all cached branches for this project'
+        'completion:Output shell completion script'
+        'install-completions:Install shell completions for current shell'
+    )
+
+    flags=(
+        '--test[Drop into a shell for testing]'
+        '--direct-mount[Mount source directly without git sync]'
+        '--branch[Specify branch for clean command]:branch:_claude_cage_branches'
+        '--dry-run[Show commands without executing]'
+        '(-v --verbose)'{-v,--verbose}'[Show commands as they execute]'
+        '--debug[Show command output (implies --verbose)]'
+        '(-h --help)'{-h,--help}'[Show help message]'
+        '--version[Show version number]'
+    )
+
+    _arguments -C $flags '1: :->command' '*::arg:->args'
+
+    case "$state" in
+        command) _describe -t subcommands 'subcommand' subcommands ;;
+        args)
+            case "${words[1]}" in
+                completion) _values 'shell' bash zsh ;;
+            esac
+            ;;
+    esac
+}
+
+_claude_cage_branches() {
+    local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+    [ -d "$cache_dir/branches" ] && _describe -t branches 'branch' $(ls -1 "$cache_dir/branches" 2>/dev/null)
+}
+
+_claude_cage "$@"
+EOF
+}
+print_banner() {
+    local banner=$(cat << 'EOF'
+
+
+
+   ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
+  ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝
+  ██║     ██║     ███████║██║   ██║██║  ██║█████╗
+  ██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝
+  ╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗
+   ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝
+                  ___________
+                .'           '.
+               /  -_-    -_-   \
+              |    (_)  (_)     |
+              |                 |          ,----.
+              |      .---.      |         /||||||\
+               \    '.__.'     /         | ||||||.|
+                '.          .'           | |||||| |
+                  '-._____.-'            | |||||| |
+                      |||                |_||||||_|
+                     /|||\                 \    /
+                    / ||| \                 |  |
+
+        ██████╗ █████╗  ██████╗ ███████╗
+        ██╔════╝██╔══██╗██╔════╝ ██╔════╝
+        ██║     ███████║██║  ███╗█████╗
+        ██║     ██╔══██║██║   ██║██╔══╝
+        ╚██████╗██║  ██║╚██████╔╝███████╗
+         ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+
+
+EOF
+)
+
+    # ANSI color codes
+    local yellow='\033[33m'
+    local reset='\033[0m'
+
+    # Print banner line by line with a slight delay for "slide up" effect
+    local line_num=0
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        # Lines 4-9 are CLAUDE (after 3 blank lines), lines 23-28 are CAGE
+        if (( line_num >= 4 && line_num <= 9 )) || (( line_num >= 23 && line_num <= 28 )); then
+            echo -e "${yellow}${line}${reset}"
+        else
+            echo "$line"
+        fi
+        sleep 0.01
+    done <<< "$banner"
+    sleep 0.3
+}
+#!/usr/bin/env bash
+# config-builder.sh - Interactive config generator
+
+# shellcheck source=src/helpers.sh
+# Assumes helpers.sh is already sourced (for colors)
+
+config_builder_prompt_yesno() {
+    local prompt="$1"
+    local default="${2:-y}"
+    local yn_hint="[Y/n]"
+    [ "$default" = "n" ] && yn_hint="[y/N]"
+
+    while true; do
+        printf "%s %s " "$prompt" "$yn_hint"
+        read -r answer
+        answer="${answer:-$default}"
+        case "$answer" in
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+            *) echo "Come on, yes or no." ;;
+        esac
+    done
+}
+
+config_builder_prompt_choice() {
+    local prompt="$1"
+    shift
+    local options=("$@")
+    local count=${#options[@]}
+
+    echo "$prompt"
+    for i in "${!options[@]}"; do
+        printf "  %d) %s\n" "$((i + 1))" "${options[$i]}"
+    done
+
+    while true; do
+        printf "Choice [1-%d]: " "$count"
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$count" ]; then
+            return $((choice - 1))
+        fi
+        echo "Pick a number between 1 and $count, friend."
+    done
+}
+
+config_builder_prompt_multi() {
+    local prompt="$1"
+    shift
+    local options=("$@")
+    local count=${#options[@]}
+    local selected=()
+
+    # Initialize all as selected
+    for ((i = 0; i < count; i++)); do
+        selected+=("1")
+    done
+
+    echo "$prompt"
+    echo "(Hit a number to toggle, Enter when you're done)"
+    echo
+
+    while true; do
+        for i in "${!options[@]}"; do
+            local mark="[ ]"
+            [ "${selected[$i]}" = "1" ] && mark="[x]"
+            printf "  %d) %s %s\n" "$((i + 1))" "$mark" "${options[$i]}"
+        done
+        printf "\nToggle [1-%d] or hit Enter: " "$count"
+        read -r choice
+
+        if [ -z "$choice" ]; then
+            # Return selected indices
+            MULTI_RESULT=()
+            for i in "${!selected[@]}"; do
+                [ "${selected[$i]}" = "1" ] && MULTI_RESULT+=("$i")
+            done
+            return 0
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$count" ]; then
+            local idx=$((choice - 1))
+            if [ "${selected[$idx]}" = "1" ]; then
+                selected[$idx]="0"
+            else
+                selected[$idx]="1"
+            fi
+            # Clear and redraw
+            printf "\033[%dA\033[J" $((count + 2))
+        fi
+    done
+}
+
+config_builder_prompt_text() {
+    local prompt="$1"
+    local default="$2"
+
+    if [ -n "$default" ]; then
+        printf "%s [%s]: " "$prompt" "$default" >&2
+    else
+        printf "%s: " "$prompt" >&2
+    fi
+    read -r answer
+    echo "${answer:-$default}"
+}
+
+# Offer to install shell completions
+config_builder_install_completions() {
+    local shell_name=""
+    local install_path=""
+    local completion_content=""
+
+    # Detect shell
+    if [ -n "$BASH_VERSION" ]; then
+        shell_name="bash"
+        install_path="$HOME/.local/share/bash-completion/completions/claude-cage"
+    elif [ -n "$ZSH_VERSION" ]; then
+        shell_name="zsh"
+        install_path="$HOME/.zsh/completions/_claude-cage"
+    else
+        # Try to detect from $SHELL
+        case "$SHELL" in
+            */bash) shell_name="bash"; install_path="$HOME/.local/share/bash-completion/completions/claude-cage" ;;
+            */zsh) shell_name="zsh"; install_path="$HOME/.zsh/completions/_claude-cage" ;;
+        esac
+    fi
+
+    if [ -z "$shell_name" ]; then
+        return 0  # Can't detect shell, skip
+    fi
+
+    # Check if already installed
+    if [ -f "$install_path" ]; then
+        return 0  # Already installed
+    fi
+
+    echo
+    echo "Want tab-completion for claude-cage commands and flags?"
+    if ! config_builder_prompt_yesno "Install $shell_name completions?" "y"; then
+        return 0
+    fi
+
+    # Create directory
+    mkdir -p "$(dirname "$install_path")"
+
+    if [ "$shell_name" = "bash" ]; then
+        cat > "$install_path" << 'BASH_WRAPPER'
+# claude-cage bash completion (auto-generated wrapper)
+# Loads completions dynamically from claude-cage
+eval "$(claude-cage completion bash 2>/dev/null)"
+BASH_WRAPPER
+        echo "Installed to: $install_path"
+        echo "Completions will be available in new bash sessions."
+
+    elif [ "$shell_name" = "zsh" ]; then
+        cat > "$install_path" << 'ZSH_WRAPPER'
+#compdef claude-cage
+# claude-cage zsh completion (auto-generated wrapper)
+# Loads completions dynamically from claude-cage
+eval "$(claude-cage completion zsh 2>/dev/null)"
+ZSH_WRAPPER
+        echo "Installed to: $install_path"
+
+        # Check if fpath includes this directory
+        local zshrc="$HOME/.zshrc"
+        local fpath_line='fpath=(~/.zsh/completions $fpath)'
+        if [ -f "$zshrc" ] && grep -q '\.zsh/completions' "$zshrc" 2>/dev/null; then
+            echo "Completions will be available in new zsh sessions."
+        else
+            echo
+            echo "Add this line to your ~/.zshrc (before compinit):"
+            echo "  $fpath_line"
+            echo
+            if config_builder_prompt_yesno "Add it automatically?" "y"; then
+                # Prepend to .zshrc so it's before any compinit
+                if [ -f "$zshrc" ]; then
+                    local tmp_zshrc
+                    tmp_zshrc=$(mktemp)
+                    echo "$fpath_line" > "$tmp_zshrc"
+                    cat "$zshrc" >> "$tmp_zshrc"
+                    mv "$tmp_zshrc" "$zshrc"
+                else
+                    echo "$fpath_line" > "$zshrc"
+                fi
+                echo "Added to ~/.zshrc"
+            fi
+            echo "Completions will be available in new zsh sessions."
+        fi
+    fi
+}
+
+config_builder_run() {
+    local user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-cage"
+    local user_config="$user_config_dir/config"
+    local project_config=".claude-cage"
+
+    echo
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  No config found. Let's get you set up, friend."
+    echo "═══════════════════════════════════════════════════════════════"
+    echo
+
+    # 1. Config location
+    config_builder_prompt_choice "Where do you want me to save this thing?" \
+        "$user_config (applies to all projects)" \
+        "$project_config (this project only)"
+    local config_location=$?
+    local config_path="$user_config"
+    [ $config_location -eq 1 ] && config_path="$project_config"
+
+    echo
+
+    # 2. Sandbox mode
+    local mode_options=(
+        "bwrap - Lightweight, Linux/WSL only"
+        "docker - Works everywhere Docker runs"
+    )
+    config_builder_prompt_choice "How we runnin' this sandbox?" "${mode_options[@]}"
+    local mode_choice=$?
+    local mode="bwrap"
+    [ $mode_choice -eq 1 ] && mode="docker"
+
+    echo
+
+    # 3. Common excludes
+    local exclude_options=(
+        ".env, .env.*"
+        "secrets/, credentials/"
+        "*.pem, *.key, *.p12"
+        "application-*.properties (Spring Boot secrets)"
+    )
+    config_builder_prompt_multi "What should I keep outta the sandbox?" "${exclude_options[@]}"
+    local exclude_patterns=()
+    for idx in "${MULTI_RESULT[@]}"; do
+        case $idx in
+            0) exclude_patterns+=('".env"' '".env.*"') ;;
+            1) exclude_patterns+=('"secrets/**"' '"credentials/**"') ;;
+            2) exclude_patterns+=('"*.pem"' '"*.key"' '"*.p12"') ;;
+            3) exclude_patterns+=('"application-*.properties"') ;;
+        esac
+    done
+
+    echo
+
+    # 4. Custom excludes
+    if config_builder_prompt_yesno "Got any other patterns to exclude?" "n"; then
+        echo "Gimme the patterns, comma-separated (e.g., 'private/**, *.secret'):"
+        read -r custom_patterns
+        if [ -n "$custom_patterns" ]; then
+            IFS=',' read -ra customs <<< "$custom_patterns"
+            for pattern in "${customs[@]}"; do
+                pattern=$(echo "$pattern" | xargs)  # trim whitespace
+                [ -n "$pattern" ] && exclude_patterns+=("\"$pattern\"")
+            done
+        fi
+    fi
+
+    echo
+
+    # 5. Auto-merge
+    echo "Auto-merge pushes your sandbox commits back to source in real-time."
+    echo "Without it, you gotta run 'claude-cage git-merge' yourself."
+    config_builder_prompt_yesno "Want auto-merge?" "y"
+    local auto_merge=$?
+    local auto_merge_str="false"
+    [ $auto_merge -eq 0 ] && auto_merge_str="true"
+
+    echo
+
+    # 6. Allow non-git directories
+    echo "Normally I work with git repos so I can sync changes back and forth."
+    echo "But if you point me at a plain directory, I can still sandbox it - just no git magic."
+    config_builder_prompt_yesno "Allow runnin' in non-git directories?" "y"
+    local allow_non_git=$?
+    local allow_non_git_str="false"
+    [ $allow_non_git -eq 0 ] && allow_non_git_str="true"
+
+    echo
+
+    # 8. Caged directory symlinks
+    echo "The .caged/ directory puts shortcuts to your sandbox branches right in your project."
+    echo "Makes it easy to poke around and see what's happenin' in there."
+    local create_caged_str="false"
+    if config_builder_prompt_yesno "Create .caged/ shortcuts to your sandbox branches?" "n"; then
+        create_caged_str="true"
+
+        # Offer to add to root .gitignore
+        local git_root
+        git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+        if [ -n "$git_root" ]; then
+            local gitignore="$git_root/.gitignore"
+            if [ ! -f "$gitignore" ] || ! grep -q '^\.caged/\?$' "$gitignore" 2>/dev/null; then
+                echo
+                echo "The .caged/ directory has its own .gitignore, but addin' it to your"
+                echo "project's .gitignore is extra insurance against accidentally committin' it."
+                if config_builder_prompt_yesno "Add .caged/ to .gitignore?" "y"; then
+                    echo ".caged/" >> "$gitignore"
+                    echo "Added .caged/ to $gitignore"
+                fi
+            fi
+        fi
+    fi
+
+    echo
+
+    # 9. Launch command
+    local launch_cmd
+    launch_cmd=$(config_builder_prompt_text "What're we runnin' in there" "claude")
+
+    echo
+
+    # 10. Tool-specific mounts
+    local additional_mounts=()
+    if [ "$launch_cmd" = "claude" ]; then
+        echo "Claude Code needs these mounted:"
+        echo
+        echo '    "~/.local/bin/claude",'
+        echo '    "~/.gitconfig",'
+        echo '    { source = "~/.claude", mode = "rw" },'
+        echo '    { source = "~/.claude.json", mode = "rw" },'
+        echo
+        if config_builder_prompt_yesno "Add these mounts?" "y"; then
+            # Check if ~/.claude and ~/.claude.json exist
+            local claude_dir="$HOME/.claude"
+            local claude_json="$HOME/.claude.json"
+            local need_create=()
+
+            [ ! -d "$claude_dir" ] && need_create+=("$claude_dir (directory)")
+            [ ! -f "$claude_json" ] && need_create+=("$claude_json (file)")
+
+            if [ ${#need_create[@]} -gt 0 ]; then
+                echo
+                echo "Hold on, these don't exist yet:"
+                for item in "${need_create[@]}"; do
+                    echo "  - $item"
+                done
+                if config_builder_prompt_yesno "Want me to create 'em?" "y"; then
+                    [ ! -d "$claude_dir" ] && mkdir -p "$claude_dir" && echo "Created $claude_dir"
+                    [ ! -f "$claude_json" ] && echo "{}" > "$claude_json" && echo "Created $claude_json"
+                fi
+            fi
+
+            additional_mounts+=(
+                '"~/.local/bin/claude"'
+                '"~/.gitconfig"'
+                '{ source = "~/.claude", mode = "rw" }'
+                '{ source = "~/.claude.json", mode = "rw" }'
+            )
+        fi
+        echo
+    else
+        # Not claude - offer just gitconfig
+        if config_builder_prompt_yesno "Mount ~/.gitconfig? (read-only)" "y"; then
+            additional_mounts+=('"~/.gitconfig"')
+        fi
+        echo
+    fi
+
+    # 11. Additional read-only mounts
+    if config_builder_prompt_yesno "Any other read-only mounts you want mounted?" "n"; then
+        echo "Gimme the paths, comma-separated:"
+        read -r other_mounts
+        if [ -n "$other_mounts" ]; then
+            IFS=',' read -ra mounts <<< "$other_mounts"
+            for mount in "${mounts[@]}"; do
+                mount=$(echo "$mount" | xargs)  # trim
+                [ -n "$mount" ] && additional_mounts+=("\"$mount\"")
+            done
+        fi
+    fi
+
+    echo
+
+    # 12. Additional read-write mounts
+    if config_builder_prompt_yesno "Any read-write mounts you need mounted?" "n"; then
+        echo "Gimme the paths, comma-separated:"
+        read -r rw_mounts
+        if [ -n "$rw_mounts" ]; then
+            IFS=',' read -ra mounts <<< "$rw_mounts"
+            for mount in "${mounts[@]}"; do
+                mount=$(echo "$mount" | xargs)  # trim
+                [ -n "$mount" ] && additional_mounts+=("{ source = \"$mount\", mode = \"rw\" }")
+            done
+        fi
+    fi
+
+    echo
+
+    # Build config content
+    local config_content="claude_cage {"
+    config_content+="\n    launch = \"$launch_cmd\","
+    config_content+="\n    mode = \"$mode\","
+    config_content+="\n    autoMerge = $auto_merge_str,"
+    config_content+="\n    allowNonGit = $allow_non_git_str,"
+    config_content+="\n    createCagedDir = $create_caged_str,"
+
+    if [ ${#exclude_patterns[@]} -gt 0 ]; then
+        local excludes_str
+        excludes_str=$(IFS=', '; echo "${exclude_patterns[*]}")
+        config_content+="\n    exclude = { $excludes_str },"
+    fi
+
+    if [ ${#additional_mounts[@]} -gt 0 ]; then
+        config_content+="\n    additionalMounts = {"
+        for mount in "${additional_mounts[@]}"; do
+            config_content+="\n        $mount,"
+        done
+        config_content+="\n    },"
+    fi
+
+    # Remove trailing comma and close
+    config_content="${config_content%,}"
+    config_content+="\n}"
+
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Here's what we got:"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo
+    echo -e "$config_content"
+    echo
+
+    if config_builder_prompt_yesno "Write this to $config_path?" "y"; then
+        # Create directory if needed
+        if [ $config_location -eq 0 ]; then
+            mkdir -p "$user_config_dir"
+        fi
+        echo -e "$config_content" > "$config_path"
+        echo
+        echo "Saved to $config_path."
+
+        # Offer to install shell completions
+        config_builder_install_completions
+
+        echo
+        echo "You're good to go. Fire up claude-cage again when you're ready."
+        return 0
+    else
+        echo "Alright, no config written. Come back when you're ready."
+        return 1
+    fi
+}
+# ============================================================================
+# Configuration parsing
+# ============================================================================
+
+# Check if lua is available
+check_lua() {
+    if ! command -v lua >/dev/null 2>&1; then
+        echo "Now listen carefully. We got a problem here."
+        echo "I need lua installed on this bird."
+        echo "Can't do nothin' without it."
+        exit 1
+    fi
+}
+
+# Extract includeIf config paths that match the current directory
+# Parses system and user config files for includeIf entries, resolves ~ in paths,
+# and outputs matching config file paths (one per line)
+# Args: $1 = current directory (resolved), $2... = config files to scan
+resolve_include_if() {
+    local current_dir="$1"
+    shift
+    local scan_files_str=""
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        if [ -n "$scan_files_str" ]; then
+            scan_files_str="$scan_files_str|$f"
+        else
+            scan_files_str="$f"
+        fi
+    done
+    [ -z "$scan_files_str" ] && return
+
+    lua - "$current_dir" "$scan_files_str" <<'LUAEOF' 2>/dev/null
+local cwd = arg[1] or ""
+local files_str = arg[2] or ""
+local home = os.getenv("HOME") or ""
+
+local function expand_tilde(path)
+    return path:gsub("^~", home)
+end
+
+local include_configs = {}
+
+local function handler(tbl)
+    if tbl.includeIf and type(tbl.includeIf) == "table" then
+        for _, rule in ipairs(tbl.includeIf) do
+            local dir = rule.dir
+            local config = rule.config
+            if dir and config then
+                dir = expand_tilde(dir)
+                config = expand_tilde(config)
+                -- Normalize: ensure dir ends with /
+                if not dir:match("/$") then dir = dir .. "/" end
+                local cwd_check = cwd .. "/"
+                if cwd_check:sub(1, #dir) == dir then
+                    table.insert(include_configs, config)
+                end
+            end
+        end
+    end
+end
+
+local safe_env = {
+    claude_cage = handler,
+    pairs = pairs, ipairs = ipairs,
+    type = type, tostring = tostring, tonumber = tonumber,
+}
+
+for filepath in string.gmatch(files_str, "[^|]+") do
+    local f = io.open(filepath, "r")
+    if f then
+        local content = f:read("*all")
+        f:close()
+        local chunk = load(content, "@" .. filepath, "t", safe_env)
+        if chunk then pcall(chunk) end
+    end
+end
+
+for _, path in ipairs(include_configs) do
+    print(path)
+end
+LUAEOF
+}
+
+# Parse config files using Lua
+# Args: $1 = derived_project, $2 = config_root_real, $3... = config file paths
+# Sets all cfg_* variables
+parse_config() {
+    local derived_project="$1"
+    local config_root_real="$2"
+    shift 2
+    local config_files_str=""
+    for cfg in "$@"; do
+        if [ -n "$config_files_str" ]; then
+            config_files_str="$config_files_str|$cfg"
+        else
+            config_files_str="$cfg"
+        fi
+    done
+
+    local lua_output
+    lua_output=$(lua - "$derived_project" "$config_root_real" "$config_files_str" <<'LUAEOF' 2>&1
+local derived_project = arg[1] or ""
+local config_root = arg[2] or ""
+local config_files_str = arg[3] or ""
+
+-- Split config files string into table
+local config_files = {}
+for path in string.gmatch(config_files_str, "[^|]+") do
+    table.insert(config_files, path)
+end
+
+-- Merge two tables (later overrides earlier)
+local function merge_config(base, override)
+    local result = {}
+    for k, v in pairs(base) do
+        result[k] = v
+    end
+    for k, v in pairs(override) do
+        if k == "exclude" and type(v) == "table" then
+            -- Merge exclude arrays
+            result.exclude = result.exclude or {}
+            for _, item in ipairs(v) do
+                table.insert(result.exclude, item)
+            end
+        elseif k == "block" and type(v) == "table" then
+            result.block = result.block or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.block[subkey] = result.block[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.block[subkey], item)
+                    end
+                end
+            end
+        elseif k == "allow" and type(v) == "table" then
+            result.allow = result.allow or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.allow[subkey] = result.allow[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.allow[subkey], item)
+                    end
+                end
+            end
+        elseif k == "additionalMounts" and type(v) == "table" then
+            result.additionalMounts = result.additionalMounts or {}
+            for _, item in ipairs(v) do
+                table.insert(result.additionalMounts, item)
+            end
+        elseif k == "docker" and type(v) == "table" then
+            result.docker = result.docker or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.docker[subkey] = result.docker[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.docker[subkey], item)
+                    end
+                else
+                    result.docker[subkey] = subval
+                end
+            end
+        else
+            result[k] = v
+        end
+    end
+    return result
+end
+
+-- Handler for claude_cage function
+local configs = {}
+function claude_cage(tbl)
+    table.insert(configs, tbl)
+end
+
+-- Track excludes by source for display (dynamic based on loaded files)
+local sources = {}
+
+local function get_source_name(filepath)
+    if filepath:match("/etc/claude%-cage%.conf$") then
+        return "system"
+    elseif filepath:match("%.config/claude%-cage/config$") then
+        return "user"
+    else
+        -- For includeIf and local configs, show the parent directory name
+        local basename = filepath:match("([^/]+)/[^/]+$") or filepath
+        return basename
+    end
+end
+
+local function track_excludes(filepath, cfg)
+    if cfg.exclude and type(cfg.exclude) == "table" then
+        local name = get_source_name(filepath)
+        if not sources[filepath] then
+            sources[filepath] = { name = name, path = filepath, excludes = {} }
+        end
+        for _, item in ipairs(cfg.exclude) do
+            table.insert(sources[filepath].excludes, item)
+        end
+    end
+end
+
+-- Safe config loader
+local function safe_load_config(filepath, config_handler)
+    local f = io.open(filepath, "r")
+    if not f then return false, "Cannot open file" end
+    local content = f:read("*all")
+    f:close()
+
+    local safe_env = {
+        claude_cage = config_handler,
+        pairs = pairs,
+        ipairs = ipairs,
+        type = type,
+        tostring = tostring,
+        tonumber = tonumber,
+    }
+
+    local chunk, parse_err = load(content, "@" .. filepath, "t", safe_env)
+    if not chunk then
+        return false, "Parse error: " .. tostring(parse_err)
+    end
+
+    local success, exec_err = pcall(chunk)
+    if not success then
+        return false, "Execution error: " .. tostring(exec_err)
+    end
+
+    return true, nil
+end
+
+-- Load configs in order (system, user, includeIf matches, local)
+for _, filepath in ipairs(config_files) do
+    local f = io.open(filepath, "r")
+    if f then
+        f:close()
+        local before_count = #configs
+        local success, err = safe_load_config(filepath, claude_cage)
+        if not success then
+            io.stderr:write("Error loading config: " .. filepath .. "\n" .. tostring(err) .. "\n")
+            os.exit(1)
+        end
+        for i = before_count + 1, #configs do
+            track_excludes(filepath, configs[i])
+        end
+    end
+end
+
+-- Merge all configs
+local config = {}
+for _, cfg in ipairs(configs) do
+    config = merge_config(config, cfg)
+end
+
+-- Project name is the current directory name
+local project = derived_project
+
+-- Set defaults (source is always config_root/CWD)
+local source = config_root
+local showBanner = config.showBanner
+if showBanner == nil then showBanner = true end
+local networkMode = config.networkMode or "disabled"
+local mode = config.mode or "bwrap"
+local autoMerge = config.autoMerge
+if autoMerge == nil then autoMerge = false end
+local isolated = config.isolated
+if isolated == nil then isolated = false end
+local hideConfirmationPrompt = config.hideConfirmationPrompt
+if hideConfirmationPrompt == nil then hideConfirmationPrompt = false end
+local createCagedDir = config.createCagedDir
+if createCagedDir == nil then createCagedDir = false end
+
+-- Non-git directory support (nil = unset, true = allow, false = disallow)
+local allowNonGit = config.allowNonGit
+-- Keep as nil if not set (special handling for "unset" state)
+
+-- Direct mount mode - mount source directly without git clone/sync
+local directMount = config.directMount
+if directMount == nil then directMount = false end
+
+-- Docker options
+local docker = config.docker or {}
+local docker_image = docker.image or "node:lts-slim"
+local docker_packages = docker.packages
+
+-- Launch command (what to run inside sandbox)
+local launch = config.launch or "claude"
+
+-- Get exclude list
+local exclude = config.exclude or {}
+
+-- Network rules
+local allow = config.allow or {}
+local block = config.block or {}
+
+local function array_to_string(arr)
+    if not arr or #arr == 0 then return "EMPTY" end
+    return table.concat(arr, "|")
+end
+
+-- Output (pipe-delimited) - removed mounted from first line
+print(source .. "|" .. tostring(showBanner))
+print(array_to_string(exclude))
+print(networkMode)
+print(array_to_string(allow.domains))
+print(array_to_string(allow.ips))
+print(array_to_string(allow.networks))
+print(array_to_string(block.domains))
+print(array_to_string(block.ips))
+print(array_to_string(block.networks))
+print(project)
+print(config_root)
+print(mode)
+print(tostring(autoMerge))
+print(tostring(isolated))
+print(docker_image)
+print(launch)
+print(tostring(hideConfirmationPrompt))
+print(tostring(createCagedDir))
+-- allowNonGit: nil = "unset", true = "true", false = "false"
+if allowNonGit == nil then
+    print("unset")
+else
+    print(tostring(allowNonGit))
+end
+print(tostring(directMount))
+-- docker.packages: nil = use defaults, empty table = no packages, otherwise list
+if docker_packages == nil then
+    print("curl|iputils-ping")
+elseif #docker_packages == 0 then
+    print("EMPTY")
+else
+    print(array_to_string(docker_packages))
+end
+
+-- Output excludes by source for display (in config file order)
+local display_lines = {}
+for _, filepath in ipairs(config_files) do
+    if sources[filepath] and #sources[filepath].excludes > 0 then
+        table.insert(display_lines, sources[filepath].name .. "|" .. table.concat(sources[filepath].excludes, ", "))
+    end
+end
+print(#display_lines)
+for _, line in ipairs(display_lines) do
+    print(line)
+end
+
+-- Process additionalMounts
+local mounts = config.additionalMounts or {}
+local mount_entries = {}
+for _, entry in ipairs(mounts) do
+    local src, dest, mmode
+    if type(entry) == "string" then
+        src = entry
+        dest = entry
+        mmode = "ro"
+    elseif type(entry) == "table" then
+        src = entry.source or entry[1]
+        dest = entry["as"] or entry.dest or src
+        mmode = entry.mode or "ro"
+    end
+    if src then
+        table.insert(mount_entries, src .. "|" .. dest .. "|" .. mmode)
+    end
+end
+print(#mount_entries)
+for _, entry in ipairs(mount_entries) do
+    print(entry)
+end
+LUAEOF
+)
+    local lua_exit_code=$?
+
+    if [ $lua_exit_code -ne 0 ]; then
+        echo ""
+        echo "============================================"
+        echo "Somethin' went wrong with the config files"
+        echo "============================================"
+        echo ""
+        echo "$lua_output"
+        echo ""
+        echo "Now I want you to fix that and we'll try this again."
+        exit 1
+    fi
+
+    # Parse the lua output
+    {
+        IFS='|' read -r cfg_source cfg_showBanner
+        read -r cfg_exclude
+        read -r cfg_networkMode
+        read -r cfg_allow_domains
+        read -r cfg_allow_ips
+        read -r cfg_allow_networks
+        read -r cfg_block_domains
+        read -r cfg_block_ips
+        read -r cfg_block_networks
+        read -r cfg_project
+        read -r cfg_config_root
+        read -r cfg_mode
+        read -r cfg_autoMerge
+        read -r cfg_isolated
+        read -r cfg_docker_image
+        read -r cfg_launch
+        read -r cfg_hideConfirmationPrompt
+        read -r cfg_createCagedDir
+        read -r cfg_allowNonGit
+        read -r cfg_directMount
+        read -r cfg_docker_packages
+        read -r cfg_display_line_count
+        cfg_display_lines=()
+        for ((i=0; i<cfg_display_line_count; i++)); do
+            read -r line
+            cfg_display_lines+=("$line")
+        done
+        read -r cfg_mount_count
+        cfg_mounts=()
+        for ((i=0; i<cfg_mount_count; i++)); do
+            read -r line
+            cfg_mounts+=("$line")
+        done
+    } <<< "$lua_output"
+
+    # Replace EMPTY placeholder with empty string
+    # Use || true to prevent set -e from triggering on false conditions
+    [ "$cfg_exclude" = "EMPTY" ] && cfg_exclude="" || true
+    [ "$cfg_allow_domains" = "EMPTY" ] && cfg_allow_domains="" || true
+    [ "$cfg_allow_ips" = "EMPTY" ] && cfg_allow_ips="" || true
+    [ "$cfg_allow_networks" = "EMPTY" ] && cfg_allow_networks="" || true
+    [ "$cfg_block_domains" = "EMPTY" ] && cfg_block_domains="" || true
+    [ "$cfg_block_ips" = "EMPTY" ] && cfg_block_ips="" || true
+    [ "$cfg_block_networks" = "EMPTY" ] && cfg_block_networks="" || true
+    [ "$cfg_docker_packages" = "EMPTY" ] && cfg_docker_packages="" || true
+}
+
+# Initialize config from current directory
+init_config() {
+    check_lua
+
+    original_user="${SUDO_USER:-$USER}"
+    system_config="/etc/claude-cage.conf"
+    user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-cage"
+    user_config="$user_config_dir/config"
+
+    # Config root is always CWD
+    config_root=$(pwd)
+    config_root_real=$(realpath "$config_root")
+    derived_project=$(basename "$config_root_real")
+
+    # Local config at git root (not CWD, not ancestors beyond git root)
+    local_config=""
+    local git_root
+    git_root=$(git -C "$config_root_real" rev-parse --show-toplevel 2>/dev/null) || true
+    if [ -n "$git_root" ] && [ -f "$git_root/.claude-cage" ]; then
+        local_config="$git_root/.claude-cage"
+    fi
+
+    # Resolve includeIf entries from system and user configs
+    include_if_configs=()
+    while IFS= read -r cfg; do
+        [ -n "$cfg" ] && include_if_configs+=("$cfg")
+    done < <(resolve_include_if "$config_root_real" "$system_config" "$user_config")
+
+    if [ -z "$local_config" ]; then
+        # No local config at git root - check if any config exists at all
+        if [ ! -f "$system_config" ] && [ ! -f "$user_config" ] && [ ${#include_if_configs[@]} -eq 0 ]; then
+            # No config anywhere - run the builder (if interactive)
+            if [ -t 0 ]; then
+                config_builder_run
+                exit $?
+            else
+                echo "No config found. Run interactively to set one up, or create:"
+                echo "  ~/.config/claude-cage/config (user-level)"
+                echo "  .claude-cage (project-level, at the git root)"
+                exit 1
+            fi
+        fi
+    fi
+
+    # Build config file list in order: system, user, includeIf matches, local
+    config_files=("$system_config" "$user_config")
+    for cfg in "${include_if_configs[@]}"; do
+        config_files+=("$cfg")
+    done
+    if [ -n "$local_config" ]; then
+        config_files+=("$local_config")
+    fi
+
+    parse_config "$derived_project" "$config_root_real" "${config_files[@]}"
+}
+# ============================================================================
+# Git archive + fresh init (no history of excluded files)
+# ============================================================================
+
+# Base directories for cage data
+CLAUDE_CAGE_CACHE="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+CLAUDE_CAGE_RUNTIME="${CLAUDE_CAGE_RUNTIME:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/claude-cage}"
+
+# Sanitize a branch name for use in filesystem paths
+# Replaces problematic characters with dashes
+sanitize_branch_name() {
+    local branch="$1"
+    # Replace / with -- (for feature/foo style branches)
+    # Replace other problematic chars with -
+    echo "$branch" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g'
+}
+
+# Current branch for path construction (set by main.sh before calling get_cage_path)
+CLAUDE_CAGE_BRANCH=""
+
+# Get the cache path for a source directory
+# Arguments: $1 = source directory, $2 = type (work|intermediary)
+# Uses CLAUDE_CAGE_BRANCH if set, otherwise defaults to "default"
+get_cage_path() {
+    local source_dir="$1"
+    local type="$2"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/$type$source_dir"
+}
+
+# Get the pipe path for a source directory
+# Uses CLAUDE_CAGE_BRANCH if set
+get_pipe_path() {
+    local source_dir="$1"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_RUNTIME/pipes/$branch_dir$source_dir"
+}
+
+# Get the state file path for a source directory
+# State file tracks the last processed commit from source
+# Uses CLAUDE_CAGE_BRANCH if set, hashes the path for a flat file structure
+get_state_path() {
+    local source_dir="$1"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/state-$path_hash"
+}
+
+# Get the branch work root directory (contains all projects for a branch)
+# This is mounted at / so all same-branch projects are visible at original paths
+get_branch_work_root() {
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work"
+}
+
+# Get the branch intermediary root directory (contains all intermediaries for a branch)
+# This is mounted at /run so all same-branch intermediaries are accessible
+get_branch_intermediary_root() {
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/intermediary"
+}
+
+# Get the git root directory for a path
+# Works from subdirectories by using git's auto-discovery
+get_git_root() {
+    local source_dir="$1"
+    git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null
+}
+
+# Check if a directory is inside a git repository
+# Returns 0 (success) if it is, 1 (failure) if not
+is_git_repo() {
+    local source_dir="$1"
+    git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+# List all cached branches for a source directory
+# Returns sanitized branch names (one per line)
+list_cached_branches() {
+    local source_dir="$1"
+    local branches=()
+
+    # Check each branch directory in cache
+    if [ -d "$CLAUDE_CAGE_CACHE/branches" ]; then
+        for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
+            [ -d "$branch_dir" ] || continue
+            local branch_name
+            branch_name=$(basename "$branch_dir")
+            # Check if this branch has data for our source directory
+            if [ -d "$branch_dir/work$source_dir" ] || [ -d "$branch_dir/intermediary$source_dir" ]; then
+                echo "$branch_name"
+            fi
+        done
+    fi
+}
+
+# Check if a work directory has uncommitted changes
+# Returns 0 if dirty, 1 if clean
+is_work_dirty() {
+    local work_dir="$1"
+    [ -d "$work_dir/.git" ] || return 1
+    # Check for uncommitted changes
+    if [ -n "$(git -C "$work_dir" status --porcelain 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Clean up stale state files (state files with no corresponding work/intermediary dirs)
+# Arguments: $1 = source directory (optional, if not provided cleans all)
+clean_stale_state_files() {
+    local source_dir="$1"
+    local cleaned=0
+
+    if [ ! -d "$CLAUDE_CAGE_CACHE/branches" ]; then
+        return 0
+    fi
+
+    for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
+        [ -d "$branch_dir" ] || continue
+
+        for state_file in "$branch_dir"/state-*; do
+            [ -f "$state_file" ] || continue
+
+            local path_hash
+            path_hash=$(basename "$state_file" | sed 's/^state-//')
+
+            # Check if there's a corresponding work or intermediary dir
+            local has_work=false
+            local has_intermediary=false
+
+            # If source_dir specified, only check that path's hash
+            if [ -n "$source_dir" ]; then
+                local expected_hash
+                expected_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+                if [ "$path_hash" != "$expected_hash" ]; then
+                    continue
+                fi
+            fi
+
+            # Look for any directory that would correspond to this state file
+            # State file hash is based on source path, so check work/* and intermediary/*
+            if [ -d "$branch_dir/work" ]; then
+                for work_path in "$branch_dir/work"/*; do
+                    if [ -d "$work_path" ]; then
+                        local work_hash
+                        # Reconstruct the source path and hash it
+                        # work_path is: branch_dir/work/<source_path>
+                        local reconstructed_source="${work_path#"$branch_dir/work"}"
+                        work_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
+                        if [ "$work_hash" = "$path_hash" ]; then
+                            has_work=true
+                            break
+                        fi
+                    fi
+                done
+            fi
+
+            if [ -d "$branch_dir/intermediary" ]; then
+                for inter_path in "$branch_dir/intermediary"/*; do
+                    if [ -d "$inter_path" ]; then
+                        local inter_hash
+                        local reconstructed_source="${inter_path#"$branch_dir/intermediary"}"
+                        inter_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
+                        if [ "$inter_hash" = "$path_hash" ]; then
+                            has_intermediary=true
+                            break
+                        fi
+                    fi
+                done
+            fi
+
+            # If no corresponding directories, remove the state file
+            if [ "$has_work" = false ] && [ "$has_intermediary" = false ]; then
+                if [ "$verbose" = true ]; then
+                    echo "Removing stale state file: $state_file"
+                fi
+                run rm -f "$state_file"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+    done
+
+    if [ "$cleaned" -gt 0 ] && [ "$verbose" = true ]; then
+        echo "Cleaned up $cleaned stale state file(s)"
+    fi
+
+    return 0
+}
+
+# Clean up cache for a specific branch
+# Arguments: $1 = source directory, $2 = sanitized branch name
+clean_branch_cache() {
+    local source_dir="$1"
+    local branch_name="$2"
+    local branch_cache="$CLAUDE_CAGE_CACHE/branches/$branch_name"
+    local work_dir="$branch_cache/work$source_dir"
+    local intermediary_dir="$branch_cache/intermediary$source_dir"
+    local caged_link="$source_dir/.caged/$branch_name"
+
+    # Remove source hooks for this branch
+    local git_root
+    git_root=$(get_git_root "$source_dir" 2>/dev/null)
+    if [ -n "$git_root" ]; then
+        local pre_commit_hook="$git_root/.git/hooks/pre-commit.d/claude-cage-$branch_name"
+        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$branch_name"
+
+        if [ -f "$pre_commit_hook" ]; then
+            run rm -f "$pre_commit_hook"
+            echo "Removed pre-commit hook: $pre_commit_hook"
+            maybe_remove_dispatcher "$git_root" "pre-commit"
+        fi
+
+        if [ -f "$post_commit_hook" ]; then
+            run rm -f "$post_commit_hook"
+            echo "Removed post-commit hook: $post_commit_hook"
+            maybe_remove_dispatcher "$git_root" "post-commit"
+        fi
+    fi
+
+    # Remove work directory
+    if [ -d "$work_dir" ]; then
+        run rm -rf "$work_dir"
+        echo "Removed work directory: $work_dir"
+    fi
+
+    # Remove intermediary directory
+    if [ -d "$intermediary_dir" ]; then
+        run rm -rf "$intermediary_dir"
+        echo "Removed intermediary directory: $intermediary_dir"
+    fi
+
+    # Remove state file
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    local state_file="$branch_cache/state-$path_hash"
+    if [ -f "$state_file" ]; then
+        run rm -f "$state_file"
+        echo "Removed state file: $state_file"
+    fi
+
+    # Remove .caged symlink for this branch
+    if [ -L "$caged_link/work" ] || [ -L "$caged_link/intermediary" ]; then
+        run rm -rf "$caged_link"
+        echo "Removed .caged symlink: $caged_link"
+    fi
+
+    # Clean up empty branch directory if no other projects use it
+    if [ -d "$branch_cache/work" ] && [ -z "$(ls -A "$branch_cache/work" 2>/dev/null)" ]; then
+        run rm -rf "$branch_cache/work"
+    fi
+    if [ -d "$branch_cache/intermediary" ] && [ -z "$(ls -A "$branch_cache/intermediary" 2>/dev/null)" ]; then
+        run rm -rf "$branch_cache/intermediary"
+    fi
+    if [ -d "$branch_cache" ] && [ -z "$(ls -A "$branch_cache" 2>/dev/null)" ]; then
+        run rm -rf "$branch_cache"
+        echo "Removed empty branch cache: $branch_cache"
+    fi
+
+    # Clean up empty .caged directory
+    local caged_dir="$source_dir/.caged"
+    if [ -d "$caged_dir" ]; then
+        # Only .gitignore left?
+        local remaining
+        remaining=$(ls -A "$caged_dir" 2>/dev/null | grep -v '^\.gitignore$')
+        if [ -z "$remaining" ]; then
+            run rm -rf "$caged_dir"
+            echo "Removed empty .caged directory"
+        fi
+    fi
+}
+
+# Get current branch from source project
+# Returns empty string and exits 1 if not on a branch (detached HEAD or no commits)
+get_source_branch() {
+    local source_dir="$1"
+    local branch
+    branch=$(git -C "$source_dir" branch --show-current)
+
+    if [ -z "$branch" ]; then
+        # Try to get default branch name
+        branch=$(git -C "$source_dir" config --get init.defaultBranch 2>/dev/null)
+        if [ -z "$branch" ]; then
+            # Check if main or master exists
+            if git -C "$source_dir" rev-parse --verify main >/dev/null 2>&1; then
+                branch="main"
+            elif git -C "$source_dir" rev-parse --verify master >/dev/null 2>&1; then
+                branch="master"
+            fi
+        fi
+    fi
+
+    echo "$branch"
+}
+
+# Create the intermediary and work directories
+# Arguments: $1 = source directory (defaults to pwd)
+create_intermediary_clone() {
+    local source_dir="${1:-$(pwd)}"
+    local intermediary_dir
+    local work_dir
+    intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
+    work_dir=$(get_cage_path "$source_dir" "work")
+
+    # Capture source branch before we start
+    local source_branch
+    source_branch=$(get_source_branch "$source_dir")
+    echo "Source branch: $source_branch"
+
+    echo ""
+    echo "Buildin' your intermediary now..."
+
+    # Clean up existing directories if they exist
+    if [ -d "$intermediary_dir" ]; then
+        echo "  Cleanin' out the old intermediary..."
+        run rm -rf "$intermediary_dir"
+    fi
+    if [ -d "$work_dir" ]; then
+        echo "  Cleanin' out the old workspace..."
+        run rm -rf "$work_dir"
+    fi
+
+    # Ensure parent directory exists
+    run mkdir -p "$(dirname "$intermediary_dir")"
+
+    # Build sparse-checkout patterns: include everything, then exclude configured patterns
+    # Format: /* (include all), then !pattern for each exclude
+    local -a sparse_patterns=("/*")
+    if [ -n "$cfg_exclude" ]; then
+        IFS='|' read -ra excludes <<< "$cfg_exclude"
+        for pattern in "${excludes[@]}"; do
+            sparse_patterns+=("!$pattern")
+        done
+    fi
+
+    # Clone from committed state using sparse checkout
+    # --depth 1: shallow clone (only latest commit)
+    # --sparse: enable sparse checkout
+    # --filter=blob:none: don't fetch blobs until needed (partial clone)
+    # --no-checkout: don't populate working directory yet
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir"
+        echo "[dry-run] git sparse-checkout init --no-cone"
+        echo "[dry-run] git sparse-checkout set ${sparse_patterns[*]}"
+        echo "[dry-run] git checkout"
+    else
+        if [ "$verbose" = true ]; then
+            echo -e "${_yellow}[run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir${_reset}" >&2
+        fi
+        git clone --depth 1 --sparse --filter=blob:none --no-checkout "$source_dir" "$intermediary_dir" 2>/dev/null
+
+        # Set up sparse checkout with gitignore-style patterns (no-cone mode)
+        git -C "$intermediary_dir" sparse-checkout init --no-cone
+        git -C "$intermediary_dir" sparse-checkout set "${sparse_patterns[@]}"
+
+        # Now checkout - only non-excluded files will appear in working directory
+        git -C "$intermediary_dir" checkout 2>/dev/null
+    fi
+
+    # Remove the cloned .git and reinitialize fresh (no history of excluded files)
+    echo "  Startin' fresh, clean slate..."
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] rm -rf $intermediary_dir/.git && git init && git add . && git commit"
+    else
+        rm -rf "$intermediary_dir/.git"
+        git -C "$intermediary_dir" init --quiet
+        git -C "$intermediary_dir" add .
+        if [ "$verbose" = true ]; then
+            echo -e "${_yellow}[run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'${_reset}" >&2
+        fi
+        git -C "$intermediary_dir" commit -m "Initial commit from claude-cage" >/dev/null
+    fi
+
+    echo ""
+    echo "Intermediary's ready at: $intermediary_dir"
+
+    # Create claude branch in intermediary (this is where source commits land)
+    echo "  Settin' up the claude branch..."
+    run_quiet git -C "$intermediary_dir" checkout -b "claude"
+
+    # Allow pushing to checked-out branch (updates working tree automatically)
+    if ! run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead; then
+        echo "Warning: Failed to set receive.denyCurrentBranch config"
+    fi
+
+    # Prevent force pushes (amended commits cause sync issues)
+    if ! run_quiet git -C "$intermediary_dir" config receive.denyNonFastForwards true; then
+        echo "Warning: Failed to set receive.denyNonFastForwards config"
+    fi
+
+    # Create work directory by cloning from intermediary
+    echo ""
+    echo "Settin' up your workspace..."
+    run_quiet git clone "$intermediary_dir" "$work_dir"
+
+    # Update origin to use the path as it appears inside the cage
+    # Intermediary is mounted at /run, so origin is /run<source_dir>
+    run_quiet git -C "$work_dir" remote set-url origin "/run$source_dir"
+
+    # Configure push to auto-setup upstream tracking
+    if ! run_quiet git -C "$work_dir" config push.autoSetupRemote true; then
+        echo "Warning: Failed to set push.autoSetupRemote config"
+    fi
+
+    echo ""
+    echo "Workspace is good to go: $work_dir"
+    echo "  Branch: claude"
+
+    # Show what files are in work (verbose only)
+    if [ "$verbose" = true ] && [ "$dry_run" != true ]; then
+        echo ""
+        echo "Here's what we're workin' with:"
+        local file_count
+        file_count=$(cd "$work_dir" && find . -type f -not -path './.git/*' | wc -l)
+        (cd "$work_dir" && find . -type f -not -path './.git/*' | head -20)
+        if [ "$file_count" -gt 20 ]; then
+            echo "  ... plus $((file_count - 20)) more where that came from"
+        fi
+    fi
+
+    # Initialize state file with current source HEAD (skip in dry-run)
+    if [ "$dry_run" != true ]; then
+        local state_path
+        state_path=$(get_state_path "$source_dir")
+        git -C "$source_dir" rev-parse HEAD > "$state_path"
+    fi
+}
+
+# Set up .caged/ directory with symlinks to cache directories
+# Arguments: $1 = source directory
+setup_caged_symlinks() {
+    local source_dir="$1"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+
+    if [ -z "$git_root" ]; then
+        echo "Can't find git root for .caged/ setup - skippin' it."
+        return 1
+    fi
+
+    local caged_dir="$git_root/.caged"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "${CLAUDE_CAGE_BRANCH:-default}")
+
+    # Target paths in cache
+    local work_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/work$source_dir"
+    local intermediary_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/intermediary$source_dir"
+
+    # Create .caged and branch directories
+    local branch_dir="$caged_dir/$sanitized_branch"
+    run mkdir -p "$branch_dir"
+
+    # Create self-ignoring .gitignore if missing
+    if [ ! -f "$caged_dir/.gitignore" ]; then
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] Creating $caged_dir/.gitignore"
+        else
+            printf '*\n!.gitignore\n' > "$caged_dir/.gitignore"
+        fi
+    fi
+
+    # Create/update work symlink
+    local work_symlink="$branch_dir/work"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $work_target $work_symlink"
+    else
+        rm -f "$work_symlink"
+        ln -s "$work_target" "$work_symlink"
+    fi
+
+    # Create/update intermediary symlink
+    local intermediary_symlink="$branch_dir/intermediary"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $intermediary_target $intermediary_symlink"
+    else
+        rm -f "$intermediary_symlink"
+        ln -s "$intermediary_target" "$intermediary_symlink"
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo "  Created .caged/$sanitized_branch/ symlinks"
+    fi
+}
+# ============================================================================
+# Git hooks and communication pipe
+# ============================================================================
+
+# ============================================================================
+# Session tracking (prevents cleanup race conditions with multiple sessions)
+# ============================================================================
+
+# Get the session directory for a source/branch combo
+# Sessions are tracked in runtime dir (cleared on reboot)
+get_session_dir() {
+    local source_dir="$1"
+    local branch="$2"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$branch")
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    echo "$CLAUDE_CAGE_RUNTIME/sessions/$sanitized_branch/$path_hash"
+}
+
+# Register this session (create PID file)
+register_session() {
+    local source_dir="$1"
+    local branch="$2"
+    local session_dir
+    session_dir=$(get_session_dir "$source_dir" "$branch")
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] register session at $session_dir/$$"
+    else
+        mkdir -p "$session_dir"
+        echo $$ > "$session_dir/$$"
+    fi
+}
+
+# Unregister this session (remove PID file)
+unregister_session() {
+    local source_dir="$1"
+    local branch="$2"
+    local session_dir
+    session_dir=$(get_session_dir "$source_dir" "$branch")
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] unregister session at $session_dir/$$"
+    else
+        rm -f "$session_dir/$$"
+        # Clean up empty directories
+        rmdir "$session_dir" 2>/dev/null || true
+        rmdir "$(dirname "$session_dir")" 2>/dev/null || true
+    fi
+}
+
+# Check if other sessions exist for this source/branch
+# Returns 0 (true) if other sessions exist, 1 (false) if not
+has_other_sessions() {
+    local source_dir="$1"
+    local branch="$2"
+    local session_dir
+    session_dir=$(get_session_dir "$source_dir" "$branch")
+
+    if [ ! -d "$session_dir" ]; then
+        return 1  # no sessions at all
+    fi
+
+    # Check for other PID files (not ours)
+    local count=0
+    for pidfile in "$session_dir"/*; do
+        [ -f "$pidfile" ] || continue
+        local pid
+        pid=$(basename "$pidfile")
+        if [ "$pid" != "$$" ]; then
+            # Check if process is still running
+            if kill -0 "$pid" 2>/dev/null; then
+                count=$((count + 1))
+            else
+                # Stale PID file, clean it up
+                rm -f "$pidfile"
+            fi
+        fi
+    done
+
+    [ $count -gt 0 ]
+}
+
+# ============================================================================
+# Orphaned hook cleanup
+# ============================================================================
+
+# Clean up orphaned hooks (hooks pointing to non-existent cages)
+# This handles the case where a crash/SIGKILL prevented normal cleanup
+# Arguments: $1 = source directory (git root)
+cleanup_orphaned_hooks() {
+    local source_dir="$1"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+
+    if [ -z "$git_root" ] || [ ! -d "$git_root/.git/hooks" ]; then
+        return 0
+    fi
+
+    local cleaned=0
+
+    # Check pre-commit hooks
+    if [ -d "$git_root/.git/hooks/pre-commit.d" ]; then
+        for hook in "$git_root/.git/hooks/pre-commit.d"/claude-cage-*; do
+            [ -f "$hook" ] || continue
+
+            # Extract WORK_DIR from the hook
+            local work_dir
+            work_dir=$(grep '^WORK_DIR=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
+
+            if [ -n "$work_dir" ] && [ ! -d "$work_dir" ]; then
+                if [ "$verbose" = true ]; then
+                    echo "Removing orphaned hook: $hook"
+                fi
+                rm -f "$hook"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+        maybe_remove_dispatcher "$git_root" "pre-commit"
+    fi
+
+    # Check post-commit hooks
+    if [ -d "$git_root/.git/hooks/post-commit.d" ]; then
+        for hook in "$git_root/.git/hooks/post-commit.d"/claude-cage-*; do
+            [ -f "$hook" ] || continue
+
+            # Extract INTERMEDIARY from the hook
+            local intermediary_dir
+            intermediary_dir=$(grep '^INTERMEDIARY=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
+
+            if [ -n "$intermediary_dir" ] && [ ! -d "$intermediary_dir" ]; then
+                if [ "$verbose" = true ]; then
+                    echo "Removing orphaned hook: $hook"
+                fi
+                rm -f "$hook"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+        maybe_remove_dispatcher "$git_root" "post-commit"
+    fi
+
+    if [ "$cleaned" -gt 0 ]; then
+        echo "Cleaned up $cleaned orphaned hook(s) from previous session."
+    fi
+}
+
+# ============================================================================
+# Hook dispatcher (allows multiple hooks to coexist)
+# ============================================================================
+
+# Ensure the hook dispatcher exists for a given hook type
+# The dispatcher runs all scripts in <hook>.d/
+ensure_hook_dispatcher() {
+    local source_dir="$1"
+    local hook_type="$2"  # e.g., "post-commit" or "pre-commit"
+    local hook_path="$source_dir/.git/hooks/$hook_type"
+    local hook_dir="$source_dir/.git/hooks/${hook_type}.d"
+
+    # Create the .d directory
+    mkdir -p "$hook_dir"
+
+    # If hook doesn't exist or isn't our dispatcher, set it up
+    if [ ! -f "$hook_path" ] || ! grep -q "claude-cage-dispatcher" "$hook_path" 2>/dev/null; then
+        # If existing hook, preserve it
+        if [ -f "$hook_path" ] && [ ! -L "$hook_path" ]; then
+            mv "$hook_path" "$hook_dir/00-original"
+            chmod +x "$hook_dir/00-original"
+        fi
+
+        # Create dispatcher
+        cat > "$hook_path" << 'DISPATCHER'
+#!/bin/bash
+# claude-cage-dispatcher: runs all hooks in <hook>.d/
+HOOK_DIR="$(dirname "$0")/$(basename "$0").d"
+if [ -d "$HOOK_DIR" ]; then
+    for hook in "$HOOK_DIR"/*; do
+        [ -x "$hook" ] && "$hook" "$@"
+    done
+fi
+DISPATCHER
+        chmod +x "$hook_path"
+    fi
+}
+
+# Remove dispatcher if no hooks remain in .d directory
+maybe_remove_dispatcher() {
+    local source_dir="$1"
+    local hook_type="$2"
+    local hook_path="$source_dir/.git/hooks/$hook_type"
+    local hook_dir="$source_dir/.git/hooks/${hook_type}.d"
+
+    if [ -d "$hook_dir" ]; then
+        # Check if only original hook remains or directory is empty
+        local remaining
+        remaining=$(ls -A "$hook_dir" 2>/dev/null | wc -l)
+
+        if [ "$remaining" -eq 0 ]; then
+            # Empty, remove dispatcher
+            rm -f "$hook_path"
+            rmdir "$hook_dir"
+        elif [ "$remaining" -eq 1 ] && [ -f "$hook_dir/00-original" ]; then
+            # Only original remains, restore it
+            mv "$hook_dir/00-original" "$hook_path"
+            rmdir "$hook_dir"
+        fi
+    fi
+}
+
+# ============================================================================
+# Named pipe and intermediary hooks
+# ============================================================================
+
+# Set up named pipe and git hooks for cage communication
+# Arguments:
+#   $1 - source_dir: The original source directory
+#   $2 - intermediary_dir: The intermediary directory
+#   $3 - pipe_path: The pipe file path
+setup_git_hooks() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local pipe_path="$3"
+    local hook_path="$intermediary_dir/.git/hooks/post-receive"
+
+    # Path to pipe as seen from inside the sandbox
+    local mounted_pipe_path="/tmp/claude-cage/pipe"
+
+    # Create parent directory for pipe if needed
+    local pipe_dir
+    pipe_dir=$(dirname "$pipe_path")
+    run mkdir -p "$pipe_dir"
+
+    # Create named pipe for communication (always fresh)
+    run rm -f "$pipe_path"
+    run mkfifo "$pipe_path"
+
+    # Create post-receive hook on intermediary
+    # This runs inside the sandbox when work/ pushes to intermediary/
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path"
+    else
+        cat > "$hook_path" << EOF
+#!/bin/bash
+while read oldrev newrev refname; do
+    if [ "\${CAGE_DEBUG:-}" = "1" ]; then
+        echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
+    fi
+    echo "\$refname \$newrev" > "$mounted_pipe_path"
+done
+EOF
+        chmod +x "$hook_path"
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo "  Created pipe: $pipe_path"
+        echo "  Created hook: $hook_path"
+    fi
+}
+
+# Clean up the named pipe
+# Arguments:
+#   $1 - pipe_path: The pipe file path
+cleanup_pipe() {
+    local pipe_path="$1"
+
+    if [ -p "$pipe_path" ]; then
+        run rm -f "$pipe_path"
+    fi
+}
+
+# Clean up source repo hooks
+# Only removes hooks if no other sessions are using them
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - target_branch: The branch that was active when cage started
+cleanup_source_hooks() {
+    local source_dir="$1"
+    local target_branch="$2"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$target_branch")
+
+    # Check if other sessions still need the hooks
+    if has_other_sessions "$source_dir" "$target_branch"; then
+        if [ "$verbose" = true ]; then
+            echo "  Other sessions active, keepin' hooks for branch: $target_branch"
+        fi
+        return 0
+    fi
+
+    # Use git root for hook paths (supports running from subdirectories)
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+
+    # No other sessions, safe to remove our branch-specific hooks
+    local pre_commit_hook="$git_root/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
+    local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+
+    if [ -f "$pre_commit_hook" ]; then
+        run rm -f "$pre_commit_hook"
+        if [ "$verbose" = true ]; then
+            echo "  Removed hook: $pre_commit_hook"
+        fi
+        maybe_remove_dispatcher "$git_root" "pre-commit"
+    fi
+
+    if [ -f "$post_commit_hook" ]; then
+        run rm -f "$post_commit_hook"
+        if [ "$verbose" = true ]; then
+            echo "  Removed hook: $post_commit_hook"
+        fi
+        maybe_remove_dispatcher "$git_root" "post-commit"
+    fi
+}
+
+# Set up pre-commit hook on source repo to prevent mixed commits
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - exclude_patterns: Pipe-delimited exclude patterns
+#   $3 - target_branch: The branch that was active when cage started
+setup_source_pre_commit() {
+    local source_dir="$1"
+    local exclude_patterns="$2"
+    local target_branch="$3"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$target_branch")
+    # Use git root for hook installation (supports running from subdirectories)
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local hook_path="$git_root/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
+    local work_dir
+    work_dir=$(get_cage_path "$source_dir" "work")
+
+    # Ensure dispatcher exists (at git root, not source_dir)
+    if [ "$dry_run" != true ]; then
+        ensure_hook_dispatcher "$git_root" "pre-commit"
+    fi
+
+    # Create pre-commit hook
+    # We need to pass exclude patterns into the hook
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path"
+    else
+        cat > "$hook_path" << EOF
+#!/bin/bash
+# claude-cage: prevent mixing excluded and included files in same commit
+WORK_DIR="$work_dir"
+TARGET_BRANCH="$target_branch"
+
+if [ ! -d "\$WORK_DIR" ]; then
+    exit 0  # cage not set up yet
+fi
+
+# Only enforce on the branch that was active when cage started
+current_branch=\$(git branch --show-current)
+if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
+    exit 0  # different branch, no restrictions
+fi
+
+# Exclude patterns (set at hook creation time)
+EXCLUDE_PATTERNS="$exclude_patterns"
+
+# Get staged files
+STAGED=\$(git diff --cached --name-only)
+if [ -z "\$STAGED" ]; then
+    exit 0  # no staged files
+fi
+
+# Check each staged file against exclude patterns
+EXCLUDED=""
+INCLUDED=""
+
+while IFS= read -r file; do
+    is_excluded=false
+    IFS='|' read -ra patterns <<< "\$EXCLUDE_PATTERNS"
+    for pattern in "\${patterns[@]}"; do
+        # Convert gitignore pattern to bash glob matching
+        # Remove leading **/ for matching
+        match_pattern="\${pattern#\*\*/}"
+        if [[ "\$file" == \$match_pattern ]] || [[ "\$file" == */\$match_pattern ]] || [[ "\$file" == \$pattern ]]; then
+            is_excluded=true
+            break
+        fi
+    done
+    if [ "\$is_excluded" = true ]; then
+        EXCLUDED="\$EXCLUDED\$file\n"
+    else
+        INCLUDED="\$INCLUDED\$file\n"
+    fi
+done <<< "\$STAGED"
+
+if [ -n "\$EXCLUDED" ] && [ -n "\$INCLUDED" ]; then
+    echo "Whoa there. You're mixin' secret files with regular ones."
+    echo ""
+    echo "Excluded files:"
+    echo -e "\$EXCLUDED" | sed '/^\$/d' | sed 's/^/  /'
+    echo ""
+    echo "Included files:"
+    echo -e "\$INCLUDED" | sed '/^\$/d' | sed 's/^/  /'
+    echo ""
+    echo "Gotta keep 'em separate, friend."
+    exit 1
+fi
+
+exit 0
+EOF
+        chmod +x "$hook_path"
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo "  Created source hook: $hook_path"
+    fi
+}
+
+# Set up post-commit hook on source repo to sync commits to intermediary
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
+#   $3 - intermediary_dir: The intermediary directory
+#   $4 - target_branch: The branch that was active when cage started
+#   $5 - state_path: Path to the state file for tracking last processed commit
+#   $6 - work_dir: The work directory (for saving failed patches)
+setup_source_post_commit() {
+    local source_dir="$1"
+    local exclude_patterns="$2"
+    local intermediary_dir="$3"
+    local target_branch="$4"
+    local state_path="$5"
+    local work_dir="$6"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$target_branch")
+    # Use git root for hook installation (supports running from subdirectories)
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local hook_path="$git_root/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+
+    # Ensure dispatcher exists (at git root, not source_dir)
+    if [ "$dry_run" != true ]; then
+        ensure_hook_dispatcher "$git_root" "post-commit"
+    fi
+
+    # Convert exclude patterns to pathspec format
+    # Use :(exclude,glob) for proper ** matching (** means zero or more dirs with glob)
+    local pathspec_excludes=""
+    if [ -n "$exclude_patterns" ]; then
+        IFS='|' read -ra patterns <<< "$exclude_patterns"
+        for pattern in "${patterns[@]}"; do
+            pathspec_excludes="$pathspec_excludes ':(exclude,glob)$pattern'"
+        done
+    fi
+
+    # Create post-commit hook
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path"
+    else
+        cat > "$hook_path" << EOF
+#!/bin/bash
+# claude-cage: sync commits to intermediary's claude branch (excluding sensitive files)
+INTERMEDIARY="$intermediary_dir"
+TARGET_BRANCH="$target_branch"
+STATE_FILE="$state_path"
+SOURCE_DIR="$source_dir"
+WORK_DIR="$work_dir"
+
+if [ ! -d "\$INTERMEDIARY" ]; then
+    exit 0  # cage not set up yet
+fi
+
+# Only sync commits from the branch that was active when cage started
+current_branch=\$(git branch --show-current)
+if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
+    exit 0  # different branch, no sync needed
+fi
+
+# Apply commit to intermediary's claude branch, excluding sensitive files
+# format-patch with pathspec excludes ensures sensitive files aren't included
+# Note: Using HEAD~1..HEAD instead of -1 HEAD because the latter has weird behavior
+# when pathspec excludes all files (it outputs the parent commit instead of empty)
+# Note: Don't use "-- ." before excludes - it breaks pathspec exclude matching
+PATCH=\$(git format-patch HEAD~1..HEAD --stdout --$pathspec_excludes)
+
+# Check if patch has any actual changes (not just empty)
+if echo "\$PATCH" | grep -q "^diff --git"; then
+    # Ensure we're on claude branch and apply
+    echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
+    if (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way); then
+        : # success
+    else
+        git -C "\$INTERMEDIARY" am --abort 2>/dev/null || true
+        echo -e "\033[1;31mclaude-cage:\033[0m Patch didn't apply cleanly."
+
+        # Save patch for manual recovery
+        SANITIZED_BRANCH=\$(echo "\$TARGET_BRANCH" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g')
+        TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
+        SUBJECT=\$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
+        REL_PATH="claude-cage-failed-patches/to-intermediary/\$SANITIZED_BRANCH"
+        PATCH_FILE="\${TIMESTAMP}_\${SUBJECT}.patch"
+
+        # Save to source directory
+        mkdir -p "\$SOURCE_DIR/\$REL_PATH"
+        echo "\$PATCH" > "\$SOURCE_DIR/\$REL_PATH/\$PATCH_FILE"
+        echo -e "\033[1;31mclaude-cage:\033[0m Saved patch to: \$REL_PATH/\$PATCH_FILE"
+
+        # Also save to work directory if it exists (so Claude can see it inside cage)
+        if [ -d "\$WORK_DIR" ]; then
+            mkdir -p "\$WORK_DIR/\$REL_PATH"
+            echo "\$PATCH" > "\$WORK_DIR/\$REL_PATH/\$PATCH_FILE"
+            echo -e "\033[1;31mclaude-cage:\033[0m Also available inside cage at same path"
+        fi
+    fi
+else
+    echo -e "\033[1;31mclaude-cage:\033[0m Only excluded files in this commit, nothin' to sync."
+fi
+
+# Update state file with current commit (even if only excluded files)
+# This tracks that we've processed this commit
+git rev-parse HEAD > "\$STATE_FILE"
+EOF
+        chmod +x "$hook_path"
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo "  Created source hook: $hook_path"
+    fi
+}
+# ============================================================================
+# Failed patch handling (recovery from sync failures)
+# ============================================================================
+
+# List all branches that have pending patches for a given direction
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - direction: "from-intermediary" or "to-intermediary"
+# Returns: Space-separated list of branch names (unsanitized)
+list_pending_patch_branches() {
+    local source_dir="$1"
+    local direction="$2"
+    local failed_root="$source_dir/claude-cage-failed-patches/$direction"
+
+    if [ ! -d "$failed_root" ]; then
+        return
+    fi
+
+    local branches=""
+    for dir in "$failed_root"/*/; do
+        [ -d "$dir" ] || continue
+        local patch_count
+        patch_count=$(find "$dir" -maxdepth 1 -name "*.patch" -type f 2>/dev/null | wc -l)
+        if [ "$patch_count" -gt 0 ]; then
+            local sanitized_name
+            sanitized_name=$(basename "$dir")
+            # Unsanitize: -- back to /
+            local branch_name
+            branch_name=$(echo "$sanitized_name" | sed 's/--/\//g')
+            branches="$branches $branch_name"
+        fi
+    done
+
+    echo "$branches" | xargs  # trim whitespace
+}
+
+# Count patches for a specific branch and direction
+# Arguments:
+#   $1 - source_dir
+#   $2 - direction: "from-intermediary" or "to-intermediary"
+#   $3 - branch name
+count_patches_for_branch() {
+    local source_dir="$1"
+    local direction="$2"
+    local branch="$3"
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$branch")
+    local failed_dir="$source_dir/claude-cage-failed-patches/$direction/$sanitized_branch"
+
+    if [ ! -d "$failed_dir" ]; then
+        echo "0"
+        return
+    fi
+
+    find "$failed_dir" -maxdepth 1 -name "*.patch" -type f 2>/dev/null | wc -l
+}
+
+# Save a failed patch for later recovery
+# Arguments:
+#   $1 - source_dir: The source directory (where user will see the patch)
+#   $2 - direction: "from-intermediary" or "to-intermediary"
+#   $3 - patch content
+#   $4 - branch name
+#   $5 - commit subject (for filename)
+#   $6 - work_dir (optional): Also save to work directory for Claude to see
+save_failed_patch() {
+    local source_dir="${1%/}"  # Strip trailing slash if present
+    local direction="$2"
+    local patch="$3"
+    local branch="$4"
+    local subject="$5"
+    local work_dir="${6%/}"  # Optional
+
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$branch")
+    local rel_path="claude-cage-failed-patches/$direction/$sanitized_branch"
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    local safe_subject
+    safe_subject=$(echo "$subject" | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
+    local patch_filename="${timestamp}_${safe_subject}.patch"
+
+    # Save to source directory
+    local source_failed_dir="$source_dir/$rel_path"
+    mkdir -p "$source_failed_dir"
+    local patch_file="$source_failed_dir/$patch_filename"
+    echo "$patch" > "$patch_file"
+    echo "  Saved patch to: $patch_file"
+
+    # Also save to work directory if provided (so Claude can see it inside cage)
+    if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
+        local work_failed_dir="$work_dir/$rel_path"
+        mkdir -p "$work_failed_dir"
+        echo "$patch" > "$work_failed_dir/$patch_filename"
+        echo "  Also available inside cage at: $rel_path/$patch_filename"
+    fi
+
+    echo "  (Apply with: git am <patch_file>)"
+}
+
+# Apply a single patch with conflict handling
+# Arguments:
+#   $1 - source_dir
+#   $2 - patch_file
+# Returns: "applied" | "skipped" | "abort" | "quit"
+# Sets: PATCH_RESULT
+PATCH_RESULT=""
+apply_single_patch() {
+    local source_dir="$1"
+    local patch_file="$2"
+    local patch_name
+    patch_name=$(basename "$patch_file")
+
+    echo ""
+    echo "Applyin': $patch_name"
+
+    if git -C "$source_dir" am --3way "$patch_file" 2>/dev/null; then
+        echo "  ${GREEN}Applied clean.${NC}"
+        rm -f "$patch_file"
+        PATCH_RESULT="applied"
+        return
+    fi
+
+    # Conflict - show what happened
+    echo ""
+    echo "${YELLOW}Hit a snag.${NC} This patch has conflicts."
+    echo ""
+    echo "Here's the patch that failed:"
+    echo "-----------------------------"
+    git -C "$source_dir" am --show-current-patch=diff 2>/dev/null | head -50
+    echo "-----------------------------"
+    echo ""
+
+    while true; do
+        echo "What do you wanna do?"
+        echo "  1) Open a shell to fix it manually (then 'git am --continue')"
+        echo "  2) Skip this patch (keeps file for later)"
+        echo "  3) Abort and go back to main menu"
+        echo "  q) Quit claude-cage"
+        echo ""
+        printf "Choice [1-3/q]: "
+
+        local choice=""
+        if [ -e /dev/tty ]; then
+            read -r choice </dev/tty
+        else
+            read -r choice
+        fi
+
+        case "$choice" in
+            1)
+                echo ""
+                echo "Droppin' you into a shell. Fix the conflicts, then:"
+                echo "  git add <fixed-files>"
+                echo "  git am --continue"
+                echo ""
+                echo "Or if you can't fix it:"
+                echo "  git am --abort"
+                echo "  exit"
+                echo ""
+                (cd "$source_dir" && ${SHELL:-/bin/bash})
+
+                # Check if they resolved it
+                if ! git -C "$source_dir" am --show-current-patch >/dev/null 2>&1; then
+                    # No longer in am state - they either continued or aborted
+                    if git -C "$source_dir" log -1 --format=%s 2>/dev/null | grep -q "$(head -1 "$patch_file" 2>/dev/null | sed 's/^From [^ ]* //' | cut -c1-20)"; then
+                        echo "  ${GREEN}Looks like you got it.${NC}"
+                        rm -f "$patch_file"
+                        PATCH_RESULT="applied"
+                    else
+                        echo "  Patch was aborted. Keepin' the file for later."
+                        PATCH_RESULT="skipped"
+                    fi
+                    return
+                fi
+                # Still in am state, loop back
+                echo "Still got conflicts. Let's try again."
+                ;;
+            2)
+                git -C "$source_dir" am --abort 2>/dev/null || true
+                echo "  Skippin' this one. Patch file stays for later."
+                PATCH_RESULT="skipped"
+                return
+                ;;
+            3)
+                git -C "$source_dir" am --abort 2>/dev/null || true
+                PATCH_RESULT="abort"
+                return
+                ;;
+            q|Q)
+                git -C "$source_dir" am --abort 2>/dev/null || true
+                PATCH_RESULT="quit"
+                return
+                ;;
+            *)
+                echo "Pick a number, friend."
+                ;;
+        esac
+    done
+}
+
+# Apply all patches for a branch
+# Arguments:
+#   $1 - source_dir
+#   $2 - direction: "from-intermediary" or "to-intermediary"
+#   $3 - branch name
+#   $4 - original branch (to switch back to)
+# Returns: "done" | "abort" | "quit"
+# Sets: BRANCH_PATCHES_RESULT
+BRANCH_PATCHES_RESULT=""
+apply_patches_for_branch() {
+    local source_dir="$1"
+    local direction="$2"
+    local target_branch="$3"
+    local original_branch="$4"
+
+    local sanitized_branch
+    sanitized_branch=$(sanitize_branch_name "$target_branch")
+    local failed_dir="$source_dir/claude-cage-failed-patches/$direction/$sanitized_branch"
+
+    local current_branch
+    current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)
+
+    # Switch if needed
+    if [ "$current_branch" != "$target_branch" ]; then
+        echo ""
+        echo "Switchin' from '$current_branch' to '$target_branch' to apply patches..."
+        if ! git -C "$source_dir" checkout "$target_branch" 2>/dev/null; then
+            echo "${RED}Can't switch to $target_branch.${NC} You may need to commit or stash first."
+            BRANCH_PATCHES_RESULT="abort"
+            return
+        fi
+    fi
+
+    # Get sorted list of patches (oldest first by filename timestamp)
+    local patches
+    patches=$(find "$failed_dir" -maxdepth 1 -name "*.patch" -type f 2>/dev/null | sort)
+
+    for patch_file in $patches; do
+        [ -f "$patch_file" ] || continue
+
+        apply_single_patch "$source_dir" "$patch_file"
+
+        case "$PATCH_RESULT" in
+            "quit")
+                # Switch back before quitting
+                if [ "$current_branch" != "$target_branch" ] && [ -n "$original_branch" ]; then
+                    git -C "$source_dir" checkout "$original_branch" 2>/dev/null || true
+                fi
+                BRANCH_PATCHES_RESULT="quit"
+                return
+                ;;
+            "abort")
+                BRANCH_PATCHES_RESULT="abort"
+                return
+                ;;
+            # applied/skipped - continue to next patch
+        esac
+    done
+
+    # Check if directory is empty now
+    local remaining
+    remaining=$(find "$failed_dir" -maxdepth 1 -name "*.patch" -type f 2>/dev/null | wc -l)
+    if [ "$remaining" -eq 0 ]; then
+        rmdir "$failed_dir" 2>/dev/null || true
+        # Clean up parent if empty
+        local parent_dir
+        parent_dir=$(dirname "$failed_dir")
+        rmdir "$parent_dir" 2>/dev/null || true
+    fi
+
+    BRANCH_PATCHES_RESULT="done"
+}
+
+# Main interactive handler for pending patches
+# Arguments:
+#   $1 - source_dir: The source project directory
+# Returns: "continue" | "quit"
+# Sets: PENDING_PATCHES_RESULT
+PENDING_PATCHES_RESULT=""
+handle_pending_patches() {
+    local source_dir="$1"
+
+    local original_branch
+    original_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)
+
+    while true; do
+        # Get list of branches with pending patches for each direction
+        local from_branches to_branches
+        from_branches=$(list_pending_patch_branches "$source_dir" "from-intermediary")
+        to_branches=$(list_pending_patch_branches "$source_dir" "to-intermediary")
+
+        if [ -z "$from_branches" ] && [ -z "$to_branches" ]; then
+            PENDING_PATCHES_RESULT="continue"
+            return
+        fi
+
+        # Check if working directory is dirty
+        local is_dirty=false
+        if [ -n "$(git -C "$source_dir" status --porcelain 2>/dev/null)" ]; then
+            is_dirty=true
+        fi
+
+        echo ""
+        echo "${YELLOW}Hold up.${NC} You've got failed patches waitin' to be applied:"
+        echo ""
+
+        if [ -n "$from_branches" ]; then
+            echo "  From cage (apply to source):"
+            for branch in $from_branches; do
+                local count
+                count=$(count_patches_for_branch "$source_dir" "from-intermediary" "$branch")
+                echo "    $branch: $count patch(es)"
+            done
+        fi
+
+        if [ -n "$to_branches" ]; then
+            echo "  To cage (apply to intermediary):"
+            for branch in $to_branches; do
+                local count
+                count=$(count_patches_for_branch "$source_dir" "to-intermediary" "$branch")
+                echo "    $branch: $count patch(es)"
+            done
+        fi
+
+        echo ""
+
+        if [ "$is_dirty" = true ]; then
+            echo "${YELLOW}Note:${NC} Your working directory has uncommitted changes."
+            echo "      Commit, stash, or reset them before applyin' patches."
+            echo ""
+            echo "What do you wanna do?"
+            echo "  1) I've cleaned up - check again"
+            echo "  2) Delete all pending patches"
+            echo "  3) Continue without applyin'"
+            echo "  q) Quit"
+            echo ""
+            printf "Choice [1-3/q]: "
+        else
+            echo "What do you wanna do?"
+            echo "  1) Apply patches one-by-one"
+            echo "  2) Delete all pending patches"
+            echo "  3) Continue without applyin'"
+            echo "  q) Quit"
+            echo ""
+            printf "Choice [1-3/q]: "
+        fi
+
+        local choice=""
+        if [ -e /dev/tty ]; then
+            read -r choice </dev/tty
+        else
+            read -r choice
+        fi
+
+        case "$choice" in
+            1)
+                if [ "$is_dirty" = true ]; then
+                    # Re-check - loop will re-evaluate
+                    echo "Checkin' again..."
+                    continue
+                fi
+
+                # Apply "from-intermediary" patches (cage -> source)
+                for branch in $from_branches; do
+                    local count
+                    count=$(count_patches_for_branch "$source_dir" "from-intermediary" "$branch")
+                    [ "$count" -gt 0 ] || continue
+
+                    echo ""
+                    echo "=== From cage -> source, branch: $branch ==="
+
+                    apply_patches_for_branch "$source_dir" "from-intermediary" "$branch" "$original_branch"
+
+                    case "$BRANCH_PATCHES_RESULT" in
+                        "quit")
+                            PENDING_PATCHES_RESULT="quit"
+                            return
+                            ;;
+                        "abort")
+                            # Go back to main menu
+                            break 2
+                            ;;
+                        # done - continue to next branch
+                    esac
+                done
+
+                # Apply "to-intermediary" patches (source -> cage)
+                # Note: These need to be applied to the intermediary, not source
+                for branch in $to_branches; do
+                    local count
+                    count=$(count_patches_for_branch "$source_dir" "to-intermediary" "$branch")
+                    [ "$count" -gt 0 ] || continue
+
+                    echo ""
+                    echo "=== Source -> cage, branch: $branch ==="
+                    echo "${YELLOW}Note:${NC} These patches need to be applied to the cage's intermediary."
+                    echo "      Start claude-cage on this branch and apply from there,"
+                    echo "      or delete them if no longer needed."
+
+                    # Can't auto-apply these here - they go to intermediary
+                    # User needs to handle manually or delete
+                done
+
+                # Switch back to original branch if needed
+                local current
+                current=$(git -C "$source_dir" branch --show-current 2>/dev/null)
+                if [ "$current" != "$original_branch" ] && [ -n "$original_branch" ]; then
+                    echo ""
+                    echo "Switchin' back to '$original_branch'..."
+                    git -C "$source_dir" checkout "$original_branch" 2>/dev/null || true
+                fi
+                # Loop back to check if more patches remain
+                ;;
+            2)
+                echo ""
+                echo "Clearin' out all pending patches..."
+                rm -rf "$source_dir/claude-cage-failed-patches"
+                echo "  Done."
+                PENDING_PATCHES_RESULT="continue"
+                return
+                ;;
+            3)
+                echo "Alright, movin' on. Those patches'll still be there next time."
+                PENDING_PATCHES_RESULT="continue"
+                return
+                ;;
+            q|Q)
+                PENDING_PATCHES_RESULT="quit"
+                return
+                ;;
+            *)
+                echo "Pick a number, friend."
+                ;;
+        esac
+    done
+}
+# ============================================================================
+# Git sync operations (fetch/merge from intermediary)
+# ============================================================================
+
+# Check if existing cage is in sync with source
+# Returns: "no_cage" | "in_sync" | "ahead_clean" | "ahead_dirty"
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - work_dir: The cage work directory
+#   $3 - state_path: Path to the state file
+check_cage_state() {
+    local source_dir="$1"
+    local work_dir="$2"
+    local state_path="$3"
+
+    # No existing cage
+    if [ ! -d "$work_dir" ] || [ ! -f "$state_path" ]; then
+        echo "no_cage"
+        return
+    fi
+
+    # Get current source HEAD and last synced state
+    local source_head last_state
+    source_head=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
+    last_state=$(cat "$state_path" 2>/dev/null)
+
+    # In sync - source hasn't moved
+    if [ "$source_head" = "$last_state" ]; then
+        echo "in_sync"
+        return
+    fi
+
+    # Source is ahead - check if work dir is clean
+    local work_status
+    work_status=$(git -C "$work_dir" status --porcelain 2>/dev/null)
+
+    if [ -z "$work_status" ]; then
+        echo "ahead_clean"
+    else
+        echo "ahead_dirty"
+    fi
+}
+
+# Show diff of uncommitted changes in work directory
+# Arguments:
+#   $1 - work_dir: The cage work directory
+show_cage_diff() {
+    local work_dir="$1"
+    echo ""
+    echo "Changes in the cage:"
+    echo "--------------------"
+    git -C "$work_dir" diff 2>/dev/null
+    git -C "$work_dir" diff --cached 2>/dev/null
+    # Show untracked files
+    local untracked
+    untracked=$(git -C "$work_dir" ls-files --others --exclude-standard 2>/dev/null)
+    if [ -n "$untracked" ]; then
+        echo ""
+        echo "Untracked files:"
+        echo "$untracked" | sed 's/^/  /'
+    fi
+    echo "--------------------"
+    echo ""
+}
+
+# Apply source commits on top of current cage state
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - intermediary_dir: The intermediary directory
+#   $3 - state_path: Path to the state file
+#   $4 - exclude_patterns: Pipe-delimited exclude patterns
+apply_source_commits_to_cage() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local state_path="$3"
+    local exclude_patterns="$4"
+
+    local last_state source_head
+    last_state=$(cat "$state_path" 2>/dev/null)
+    source_head=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
+
+    echo "Bringin' the cage up to speed..."
+    echo "  From: ${last_state:0:8}"
+    echo "  To:   ${source_head:0:8}"
+
+    # Build pathspec excludes
+    local pathspec_excludes=""
+    if [ -n "$exclude_patterns" ]; then
+        IFS='|' read -ra patterns <<< "$exclude_patterns"
+        for pattern in "${patterns[@]}"; do
+            pathspec_excludes="$pathspec_excludes :(exclude,glob)$pattern"
+        done
+    fi
+
+    # Get commits between last state and current HEAD
+    local commits
+    commits=$(git -C "$source_dir" rev-list --reverse "$last_state..$source_head" 2>/dev/null)
+
+    if [ -z "$commits" ]; then
+        echo "  No commits to apply."
+        return 0
+    fi
+
+    local commit_count=0
+    local failed=false
+
+    for commit in $commits; do
+        commit_count=$((commit_count + 1))
+        local subject
+        subject=$(git -C "$source_dir" log -1 --format=%s "$commit")
+        echo "  [$commit_count] ${subject:0:50}"
+
+        # Generate patch excluding sensitive files
+        local patch
+        if [ -n "$pathspec_excludes" ]; then
+            patch=$(git -C "$source_dir" format-patch -1 "$commit" --stdout -- $pathspec_excludes 2>/dev/null)
+        else
+            patch=$(git -C "$source_dir" format-patch -1 "$commit" --stdout 2>/dev/null)
+        fi
+
+        # Check if patch has changes
+        if echo "$patch" | grep -q "^diff --git"; then
+            if ! (cd "$intermediary_dir" && echo "$patch" | git am --3way 2>/dev/null); then
+                echo "  Failed to apply. You may need to resolve this manually."
+                git -C "$intermediary_dir" am --abort 2>/dev/null || true
+                failed=true
+                break
+            fi
+        fi
+    done
+
+    if [ "$failed" = false ]; then
+        # Update state file
+        echo "$source_head" > "$state_path"
+        echo "  All caught up."
+    fi
+}
+
+# Handle dirty cage with user prompts
+# Sets global DIRTY_CAGE_RESULT to: "continue" | "recreate" | "exit"
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - work_dir: The cage work directory
+#   $3 - intermediary_dir: The intermediary directory
+#   $4 - state_path: Path to the state file
+#   $5 - exclude_patterns: Pipe-delimited exclude patterns
+DIRTY_CAGE_RESULT=""
+handle_dirty_cage() {
+    local source_dir="$1"
+    local work_dir="$2"
+    local intermediary_dir="$3"
+    local state_path="$4"
+    local exclude_patterns="$5"
+
+    local last_state source_head
+    last_state=$(cat "$state_path" 2>/dev/null)
+    source_head=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
+
+    echo ""
+    echo "Hold up. Your source repo's moved ahead, but there's uncommitted work in the cage."
+    echo ""
+    echo "  Source HEAD:  ${source_head:0:8}"
+    echo "  Cage synced:  ${last_state:0:8}"
+    echo ""
+    echo "Uncommitted changes in cage:"
+    git -C "$work_dir" status --short 2>/dev/null | head -10 | sed 's/^/  /'
+    local change_count
+    change_count=$(git -C "$work_dir" status --short 2>/dev/null | wc -l)
+    if [ "$change_count" -gt 10 ]; then
+        echo "  ... and $((change_count - 10)) more"
+    fi
+
+    local read_failed=0
+    while true; do
+        echo ""
+        echo "What do you wanna do?"
+        echo "  1) Apply source commits on top (keep cage changes)"
+        echo "  2) Go in as-is (ignore the mismatch)"
+        echo "  3) Clear it all and start fresh"
+        echo "  4) Show diff of cage changes"
+        echo "  q) Quit"
+        echo ""
+        printf "Choice [1-4/q]: "
+
+        # Try /dev/tty first, fall back to stdin
+        local choice=""
+        if [ -e /dev/tty ]; then
+            read -r choice </dev/tty || read_failed=1
+        else
+            read -r choice || read_failed=1
+        fi
+
+        # If read failed or returned empty twice, we're non-interactive
+        if [ "$read_failed" = 1 ] || [ -z "$choice" ]; then
+            echo ""
+            echo "Can't get input (non-interactive). Goin' in as-is."
+            DIRTY_CAGE_RESULT="continue"
+            return
+        fi
+
+        case "$choice" in
+            1)
+                apply_source_commits_to_cage "$source_dir" "$intermediary_dir" "$state_path" "$exclude_patterns"
+                DIRTY_CAGE_RESULT="continue"
+                return
+                ;;
+            2)
+                echo "Alright, goin' in as-is. You're flyin' blind on those new commits."
+                DIRTY_CAGE_RESULT="continue"
+                return
+                ;;
+            3)
+                echo "Wipin' the slate clean..."
+                DIRTY_CAGE_RESULT="recreate"
+                return
+                ;;
+            4)
+                show_cage_diff "$work_dir"
+                ;;
+            q|Q)
+                DIRTY_CAGE_RESULT="exit"
+                return
+                ;;
+            *)
+                echo "Pick a number, friend. 1, 2, 3, 4, or q."
+                ;;
+        esac
+    done
+}
+
+# Apply changes from intermediary to source using format-patch/git-am
+# Arguments:
+#   $1 - source_dir: The original source directory
+#   $2 - intermediary_dir: The intermediary directory
+#   $3 - refname: The git ref that was pushed (e.g., refs/heads/claude/main)
+#   $4 - target_branch: The branch to apply commits to (branch when cage started)
+#   $5 - state_path: Path to state file for tracking last processed source commit
+sync_to_source() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local refname="$3"
+    local target_branch="$4"
+    local state_path="$5"
+
+    # Skip the initial commit (it's just a copy of source files)
+    local commit_msg
+    commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$refname")
+    if [ "$commit_msg" = "Initial commit from claude-cage" ]; then
+        echo "First commit, nothin' to sync yet"
+        return 0
+    fi
+
+    echo "Bringin' changes home: $refname -> $target_branch"
+
+    # Get the patch
+    local patch
+    patch=$(git -C "$intermediary_dir" format-patch -1 "$refname" --stdout)
+
+    # Check if user is still on the target branch
+    local current_branch
+    current_branch=$(git -C "$source_dir" branch --show-current)
+
+    if [ "$current_branch" = "$target_branch" ]; then
+        # Simple case - user still on same branch, use git am
+        if echo "$patch" | git -C "$source_dir" am --3way; then
+            echo "  Got it. Changes are in."
+        else
+            echo "  Well now, that didn't go smooth. Might need to merge this one yourself."
+            git -C "$source_dir" am --abort 2>/dev/null || true
+            save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
+        fi
+    else
+        # User switched branches - apply to target branch via temp index
+        echo "  You switched branches, applyin' to $target_branch without disturbin' your work..."
+
+        local tmp_index="$source_dir/.git/claude-cage-tmp-index"
+
+        # Get commit metadata from the patch
+        local author_name author_email author_date
+        author_name=$(echo "$patch" | grep "^From:" | head -1 | sed 's/^From: //' | sed 's/ <.*//')
+        author_email=$(echo "$patch" | grep "^From:" | head -1 | sed 's/.*<\(.*\)>/\1/')
+        author_date=$(echo "$patch" | grep "^Date:" | head -1 | sed 's/^Date: //')
+
+        (
+            export GIT_INDEX_FILE="$tmp_index"
+            cd "$source_dir"
+
+            # Load target branch tree into temp index
+            git read-tree "$target_branch"
+
+            # Apply patch to temp index
+            if echo "$patch" | git apply --cached; then
+                # Write new tree
+                local tree
+                tree=$(git write-tree)
+
+                # Create commit with preserved metadata via environment variables
+                local parent
+                parent=$(git rev-parse "$target_branch")
+
+                # Set author info from patch
+                export GIT_AUTHOR_NAME="$author_name"
+                export GIT_AUTHOR_EMAIL="$author_email"
+                [ -n "$author_date" ] && export GIT_AUTHOR_DATE="$author_date"
+
+                local new_commit
+                new_commit=$(git commit-tree "$tree" -p "$parent" -m "$commit_msg")
+
+                # Update the branch ref
+                git update-ref "refs/heads/$target_branch" "$new_commit"
+
+                # Update state file (hooks don't fire for update-ref)
+                if [ -n "$state_path" ]; then
+                    echo "$new_commit" > "$state_path"
+                fi
+
+                echo "  Got it. Changes are on $target_branch."
+            else
+                echo "  Patch didn't apply clean to $target_branch."
+                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
+            fi
+        )
+
+        # Clean up temp index
+        rm -f "$tmp_index"
+    fi
+}
+
+# Start the pipe listener in background
+# Arguments:
+#   $1 - source_dir: The original source directory
+#   $2 - intermediary_dir: The intermediary directory
+#   $3 - pipe_path: The pipe file path
+#   $4 - target_branch: The branch to apply commits to
+#   $5 - state_path: Path to state file for tracking last processed source commit
+#   $6 - verbose: "true" to show sync output, anything else to suppress
+# Sets: PIPE_LISTENER_PID
+start_pipe_listener() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local pipe_path="$3"
+    local target_branch="$4"
+    local state_path="$5"
+    local listener_verbose="${6:-false}"
+
+    # Run listener in background
+    # Open pipe read-write to avoid blocking (there may be no writer yet)
+    # Note: Variables are captured at fork time, including target_branch
+    (
+        exec 3<>"$pipe_path"
+        while read -r refname newrev <&3; do
+            if [ -n "$refname" ]; then
+                if [ "$debug" = true ]; then
+                    echo -e "${_yellow}[pipe-listener] received: refname=$refname newrev=$newrev target=$target_branch$(date +" at %H:%M:%S")${_reset}" >&2
+                fi
+                if [ -z "$target_branch" ]; then
+                    echo "claude-cage: No target branch - can't sync. Was source repo on a branch when cage started?" >&2
+                elif [ "$listener_verbose" = true ]; then
+                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch" "$state_path"
+                else
+                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch" "$state_path" >/dev/null 2>&1
+                fi
+            fi
+        done
+    ) &
+    PIPE_LISTENER_PID=$!
+}
+
+# Stop the pipe listener
+# Arguments:
+#   $1 - listener_pid: PID of the listener process
+stop_pipe_listener() {
+    local listener_pid="$1"
+    if [ -n "$listener_pid" ] && kill -0 "$listener_pid" 2>/dev/null; then
+        kill "$listener_pid" 2>/dev/null
+        wait "$listener_pid" 2>/dev/null
+    fi
+}
+
+# Manual git merge from intermediary (for --git-merge option)
+# Arguments:
+#   $1 - source_dir: The original source directory
+manual_git_merge() {
+    local source_dir="$1"
+
+    # Need to set branch for get_cage_path
+    CLAUDE_CAGE_BRANCH=$(get_source_branch "$source_dir")
+    export CLAUDE_CAGE_BRANCH
+
+    local intermediary_dir
+    intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
+
+    if [ ! -d "$intermediary_dir" ]; then
+        echo "Nothin' to merge on branch '$CLAUDE_CAGE_BRANCH'."
+        echo "Were you on a different branch when you started the cage?"
+        exit 1
+    fi
+
+    # Add or update intermediary remote
+    if git -C "$source_dir" remote | grep -q "^intermediary$"; then
+        run git -C "$source_dir" remote set-url intermediary "$intermediary_dir"
+    else
+        run git -C "$source_dir" remote add intermediary "$intermediary_dir"
+    fi
+
+    echo "Grabbin' what Claude's been workin' on..."
+    run git -C "$source_dir" fetch intermediary
+
+    echo ""
+    echo "Here's what's waitin' for ya:"
+    git -C "$source_dir" branch -r 2>/dev/null | grep -E "^\\s*intermediary/" | sed 's/^/  /' || echo "  (none yet)"
+
+    echo ""
+    echo "When you're ready, just run:"
+    echo "  git merge intermediary/<branch>"
+}
+# ============================================================================
+# Network isolation via slirp4netns
+# ============================================================================
+#
+# Provides unprivileged network filtering using:
+# - slirp4netns for userspace networking in network namespaces
+# - iptables rules configured inside the namespace (CAP_NET_ADMIN)
+#
+# slirp4netns network layout:
+#   10.0.2.2  - Host loopback (maps to 127.0.0.1 on host)
+#   10.0.2.3  - DNS resolver
+#   10.0.2.15 - Sandbox's own IP (default)
+
+# Check if slirp4netns is available
+check_slirp4netns() {
+    if ! command -v slirp4netns >/dev/null 2>&1; then
+        echo "We got a problem. I need slirp4netns for network filtering."
+        echo "Install it: sudo apt install slirp4netns"
+        exit 1
+    fi
+}
+
+# Check if unprivileged user namespaces are available
+# Tests the exact unshare flags we'll use for network isolation
+check_userns() {
+    # Skip check in dry-run mode
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] check_userns (unshare --user --map-root-user --net)"
+        return 0
+    fi
+
+    local error_output
+    error_output=$(unshare --user --map-root-user --net true 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -ne 0 ]; then
+        echo "Well this ain't gonna work. Unprivileged user namespaces are not available."
+        echo ""
+        echo "Error: $error_output"
+        echo ""
+        echo "Network filtering requires user namespace support. To enable it:"
+        echo ""
+
+        # Check for AppArmor restriction (Ubuntu 23.10+)
+        local apparmor_restrict
+        apparmor_restrict=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)
+        if [ "$apparmor_restrict" = "1" ]; then
+            echo "  AppArmor is blocking unprivileged user namespaces."
+            echo ""
+            echo "  # Temporary (until reboot):"
+            echo "  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+            echo ""
+            echo "  # Permanent:"
+            echo "  echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/userns.conf"
+            echo "  sudo sysctl --system"
+        elif [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
+            local userns_clone
+            userns_clone=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null)
+            if [ "$userns_clone" = "0" ]; then
+                echo "  User namespaces are DISABLED (kernel.unprivileged_userns_clone=0)."
+                echo ""
+                echo "  # Temporary (until reboot):"
+                echo "  sudo sysctl -w kernel.unprivileged_userns_clone=1"
+                echo ""
+                echo "  # Permanent:"
+                echo "  echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/userns.conf"
+                echo "  sudo sysctl --system"
+            else
+                echo "  User namespaces appear enabled but still blocked."
+                echo "  This may be an AppArmor/SELinux policy issue."
+            fi
+        else
+            echo "  Your kernel may not support unprivileged user namespaces."
+        fi
+        echo ""
+        echo "Alternatively, use networkMode = \"disabled\" to skip network filtering."
+        exit 1
+    fi
+}
+
+# Check if iptables is available
+check_iptables() {
+    # Skip check in dry-run mode
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] check_iptables"
+        return 0
+    fi
+
+    if ! command -v iptables >/dev/null 2>&1; then
+        echo "Gonna need iptables for the network stuff."
+        echo "Install it: sudo apt install iptables"
+        exit 1
+    fi
+}
+
+# Resolve domain to IPs
+# Extracted from main claude-cage script
+resolve_domain() {
+    local domain="$1"
+    # Use getent to resolve domain (supports /etc/hosts and DNS)
+    getent ahosts "$domain" 2>/dev/null | awk '{print $1}' | sort -u
+}
+
+# Parse IP/domain:port specification
+# Returns: ip|ports (pipe-separated)
+# Extracted from main claude-cage script
+parse_ip_port() {
+    local spec="$1"
+    local ip=""
+    local ports=""
+
+    if [[ "$spec" =~ ^(.+):([0-9,]+)$ ]]; then
+        ip="${BASH_REMATCH[1]}"
+        ports="${BASH_REMATCH[2]}"
+    else
+        ip="$spec"
+        ports=""
+    fi
+
+    echo "$ip|$ports"
+}
+
+# Add iptables rule (simplified, Linux-only version)
+# Usage: add_iptables_rule <action> <ip_or_network> [ports] [insert_mode]
+# action: ACCEPT, DROP, or REJECT
+# ports: comma-separated list or single port (optional)
+# insert_mode: "insert" to add at beginning of chain (optional)
+add_iptables_rule() {
+    local action="$1"
+    local ip_or_network="$2"
+    local ports="$3"
+    local insert_mode="$4"
+
+    # Translate 127.0.0.1 to 10.0.2.2 (slirp4netns host loopback)
+    # Inside the sandbox, 127.0.0.1 is the sandbox's own loopback
+    # 10.0.2.2 maps to the host's 127.0.0.1
+    if [[ "$ip_or_network" == "127.0.0.1"* ]]; then
+        ip_or_network="${ip_or_network/127.0.0.1/10.0.2.2}"
+    fi
+
+    local iptables_flag="-A"
+    if [ "$insert_mode" = "insert" ]; then
+        iptables_flag="-I"
+    fi
+
+    if [ "$dry_run" = true ]; then
+        if [ -z "$ports" ]; then
+            echo "[dry-run] iptables $iptables_flag OUTPUT -d $ip_or_network -j $action"
+        elif [[ "$ports" == *","* ]]; then
+            echo "[dry-run] iptables $iptables_flag OUTPUT -p tcp -d $ip_or_network -m multiport --dports $ports -j $action"
+            echo "[dry-run] iptables $iptables_flag OUTPUT -p udp -d $ip_or_network -m multiport --dports $ports -j $action"
+        else
+            echo "[dry-run] iptables $iptables_flag OUTPUT -p tcp -d $ip_or_network --dport $ports -j $action"
+            echo "[dry-run] iptables $iptables_flag OUTPUT -p udp -d $ip_or_network --dport $ports -j $action"
+        fi
+        return 0
+    fi
+
+    if [ -z "$ports" ]; then
+        # No port restriction - allow/block all ports
+        iptables $iptables_flag OUTPUT -d "$ip_or_network" -j "$action"
+    else
+        # Port restriction - apply to TCP and UDP
+        if [[ "$ports" == *","* ]]; then
+            # Multiple ports - use multiport
+            iptables $iptables_flag OUTPUT -p tcp -d "$ip_or_network" -m multiport --dports "$ports" -j "$action"
+            iptables $iptables_flag OUTPUT -p udp -d "$ip_or_network" -m multiport --dports "$ports" -j "$action"
+        else
+            # Single port
+            iptables $iptables_flag OUTPUT -p tcp -d "$ip_or_network" --dport "$ports" -j "$action"
+            iptables $iptables_flag OUTPUT -p udp -d "$ip_or_network" --dport "$ports" -j "$action"
+        fi
+    fi
+}
+
+# Add iptables rules for a batch of domains/IPs/networks
+# Usage: add_iptables_rules_batch <action> <type> <config_var> [insert_mode]
+# type: "domains", "ips", or "networks"
+# config_var: pipe-separated list of addresses (e.g., "domain1:443|domain2")
+add_iptables_rules_batch() {
+    local action="$1"
+    local type="$2"
+    local config_var="$3"
+    local insert_mode="$4"
+
+    [ -z "$config_var" ] && return 0
+
+    IFS='|' read -ra items <<< "$config_var"
+    for item_spec in "${items[@]}"; do
+        local parsed
+        parsed=$(parse_ip_port "$item_spec")
+        local item="${parsed%%|*}"
+        local ports="${parsed#*|}"
+
+        if [ "$type" = "domains" ]; then
+            # Resolve domain to IPs
+            local resolved_ips
+            resolved_ips=$(resolve_domain "$item")
+            if [ -z "$resolved_ips" ]; then
+                echo "Warning: Could not resolve domain '$item', skipping..." >&2
+                continue
+            fi
+            while IFS= read -r ip; do
+                [ -n "$ip" ] && add_iptables_rule "$action" "$ip" "$ports" "$insert_mode"
+            done <<< "$resolved_ips"
+        else
+            # IPs or networks - add directly
+            add_iptables_rule "$action" "$item" "$ports" "$insert_mode"
+        fi
+    done
+}
+
+# Setup base iptables rules inside namespace
+# These are the foundation rules applied before allow/block lists
+setup_base_iptables() {
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] iptables -P INPUT DROP"
+        echo "[dry-run] iptables -P OUTPUT DROP"
+        echo "[dry-run] iptables -P FORWARD DROP"
+        echo "[dry-run] iptables -A INPUT -i lo -j ACCEPT"
+        echo "[dry-run] iptables -A OUTPUT -o lo -j ACCEPT"
+        echo "[dry-run] iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+        return 0
+    fi
+
+    # Default policy: DROP everything
+    iptables -P INPUT DROP
+    iptables -P OUTPUT DROP
+    iptables -P FORWARD DROP
+
+    # Allow loopback
+    iptables -A INPUT -i lo -j ACCEPT
+    iptables -A OUTPUT -o lo -j ACCEPT
+
+    # Allow established/related connections (so replies come back)
+    iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+}
+
+# Setup DNS rules for slirp4netns resolver
+# Must be called before other OUTPUT rules in allowlist mode
+setup_dns_rules() {
+    local slirp_dns="10.0.2.3"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] iptables -A OUTPUT -d $slirp_dns -p udp --dport 53 -j ACCEPT"
+        echo "[dry-run] iptables -A OUTPUT -d $slirp_dns -p tcp --dport 53 -j ACCEPT"
+        return 0
+    fi
+
+    # Allow DNS to slirp4netns resolver
+    iptables -A OUTPUT -d "$slirp_dns" -p udp --dport 53 -j ACCEPT
+    iptables -A OUTPUT -d "$slirp_dns" -p tcp --dport 53 -j ACCEPT
+}
+
+# Setup iptables rules inside namespace based on network mode
+# Called from inside the user+net namespace where we have CAP_NET_ADMIN
+# Usage: setup_namespace_iptables <mode> <allow_domains> <allow_ips> <allow_networks> <block_domains> <block_ips> <block_networks>
+setup_namespace_iptables() {
+    local mode="$1"
+    local allow_domains="$2"
+    local allow_ips="$3"
+    local allow_networks="$4"
+    local block_domains="$5"
+    local block_ips="$6"
+    local block_networks="$7"
+
+    if [ "$mode" = "disabled" ]; then
+        [ "$verbose" = true ] && echo "Network restrictions: disabled" >&2
+        return 0
+    fi
+
+    [ "$verbose" = true ] && echo "Setting up network restrictions (mode: $mode)..." >&2
+
+    # Setup base rules (default DROP, allow loopback, allow established)
+    setup_base_iptables
+
+    # Always allow DNS to slirp resolver
+    setup_dns_rules
+
+    if [ "$mode" = "allowlist" ]; then
+        # Allowlist mode: only allow specified destinations
+        # Default policy is already DROP, so we just add ACCEPT rules
+
+        add_iptables_rules_batch "ACCEPT" "domains" "$allow_domains"
+        add_iptables_rules_batch "ACCEPT" "ips" "$allow_ips"
+        add_iptables_rules_batch "ACCEPT" "networks" "$allow_networks"
+
+        # No catch-all needed - default DROP policy handles it
+
+    elif [ "$mode" = "blocklist" ]; then
+        # Blocklist mode: block specified, allow everything else
+        # Use REJECT instead of DROP so connections fail fast instead of hanging
+        # REJECT sends ICMP unreachable / TCP RST back to sender
+
+        # Add block rules first
+        add_iptables_rules_batch "REJECT" "domains" "$block_domains"
+        add_iptables_rules_batch "REJECT" "ips" "$block_ips"
+        add_iptables_rules_batch "REJECT" "networks" "$block_networks"
+
+        # Allow rules take precedence (inserted at beginning)
+        add_iptables_rules_batch "ACCEPT" "domains" "$allow_domains" "insert"
+        add_iptables_rules_batch "ACCEPT" "ips" "$allow_ips" "insert"
+        add_iptables_rules_batch "ACCEPT" "networks" "$allow_networks" "insert"
+
+        # Final catch-all: allow everything else
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] iptables -A OUTPUT -j ACCEPT"
+        else
+            iptables -A OUTPUT -j ACCEPT
+        fi
+    fi
+}
+
+# Check if host loopback (127.0.0.1 / 10.0.2.2) is accessible based on network rules
+# Arguments:
+#   $1 - mode: "allowlist" or "blocklist"
+#   $2 - allow_ips: pipe-separated allowed IPs (includes resolved domains like localhost)
+#   $3 - allow_networks: pipe-separated allowed networks
+#   $4 - block_ips: pipe-separated blocked IPs (includes resolved domains)
+#   $5 - resolved_allow_domains: pipe-separated IPs from resolved allowed domains
+#   $6 - resolved_block_domains: pipe-separated IPs from resolved blocked domains
+# Returns: 0 if accessible, 1 if blocked
+is_host_loopback_accessible() {
+    local mode="$1"
+    local allow_ips="$2"
+    local allow_networks="$3"
+    local block_ips="$4"
+    local resolved_allow="$5"
+    local resolved_block="$6"
+
+    # Check if an IP matches loopback (127.0.0.1 or 10.0.2.2)
+    local loopback_pattern='127\.0\.0\.1|10\.0\.2\.2'
+
+    # Combine IPs with resolved domains for checking
+    local all_allow_ips="${allow_ips}${allow_ips:+|}${resolved_allow}"
+    local all_block_ips="${block_ips}${block_ips:+|}${resolved_block}"
+
+    # Helper: check if loopback is in allow list (any port)
+    local in_allowlist=false
+    if echo "$all_allow_ips" | grep -qE "$loopback_pattern"; then
+        in_allowlist=true
+    fi
+    if echo "$allow_networks" | grep -qE '127\.|10\.0\.2\.|10\.0\.0\.0/8'; then
+        in_allowlist=true
+    fi
+
+    # Helper: check if loopback is fully blocked (no port restriction = all ports)
+    local fully_blocked=false
+    if echo "$all_block_ips" | grep -E "$loopback_pattern" | grep -qvE ':'; then
+        fully_blocked=true
+    fi
+
+    if [ "$mode" = "allowlist" ]; then
+        # In allowlist mode: accessible only if explicitly allowed
+        if [ "$in_allowlist" = true ]; then
+            return 0  # accessible
+        fi
+        return 1  # not accessible (not in allowlist)
+
+    elif [ "$mode" = "blocklist" ]; then
+        # In blocklist mode: allow rules take precedence (inserted first)
+        # So if loopback is in allowlist, it's accessible even if also blocked
+        if [ "$in_allowlist" = true ]; then
+            return 0  # accessible (allow takes precedence)
+        fi
+        # Not in allowlist - check if fully blocked
+        if [ "$fully_blocked" = true ]; then
+            return 1  # fully blocked
+        fi
+        return 0  # accessible (not blocked)
+    fi
+
+    return 0  # default: accessible
+}
+
+# Run command in network-isolated namespace with slirp4netns
+# This wraps the command in a user+net namespace, attaches slirp4netns,
+# configures iptables, then runs the command
+#
+# Usage: run_with_network_namespace <mode> <allow_domains> <allow_ips> <allow_networks> <block_domains> <block_ips> <block_networks> -- <command...>
+run_with_network_namespace() {
+    local mode="$1"
+    local allow_domains="$2"
+    local allow_ips="$3"
+    local allow_networks="$4"
+    local block_domains="$5"
+    local block_ips="$6"
+    local block_networks="$7"
+    shift 7
+
+    # Skip the -- separator if present
+    [ "$1" = "--" ] && shift
+
+    # If network mode is disabled, just run the command directly
+    if [ "$mode" = "disabled" ]; then
+        "$@"
+        return $?
+    fi
+
+    # Create synchronization primitives
+    local ready_pipe
+    ready_pipe=$(mktemp -u)
+    mkfifo "$ready_pipe"
+
+    local sandbox_pid_file
+    sandbox_pid_file=$(mktemp)
+
+    # Resolve domains BEFORE entering namespace (DNS works on host)
+    # We'll pass the resolved IPs to the inner process
+    local resolved_allow_domains=""
+    local resolved_block_domains=""
+
+    # Use pre-resolved values from main.sh if available
+    if [ "${domains_pre_resolved:-}" = true ]; then
+        resolved_allow_domains="${pre_resolved_allow_ips:-}"
+        resolved_block_domains="${pre_resolved_block_ips:-}"
+    else
+        if [ -n "$allow_domains" ]; then
+            [ "$verbose" = true ] && echo "Resolving allowed domains..." >&2
+            IFS='|' read -ra domains <<< "$allow_domains"
+            for domain_spec in "${domains[@]}"; do
+                local parsed
+                parsed=$(parse_ip_port "$domain_spec")
+                local domain="${parsed%%|*}"
+                local ports="${parsed#*|}"
+                local ips
+                ips=$(resolve_domain "$domain")
+                if [ -n "$ips" ]; then
+                    while IFS= read -r ip; do
+                        if [ -n "$ports" ]; then
+                            resolved_allow_domains="${resolved_allow_domains}${resolved_allow_domains:+|}${ip}:${ports}"
+                        else
+                            resolved_allow_domains="${resolved_allow_domains}${resolved_allow_domains:+|}${ip}"
+                        fi
+                    done <<< "$ips"
+                else
+                    echo "Warning: Could not resolve domain '$domain', skipping..." >&2
+                fi
+            done
+        fi
+
+        if [ -n "$block_domains" ]; then
+            [ "$verbose" = true ] && echo "Resolving blocked domains..." >&2
+            IFS='|' read -ra domains <<< "$block_domains"
+            for domain_spec in "${domains[@]}"; do
+                local parsed
+                parsed=$(parse_ip_port "$domain_spec")
+                local domain="${parsed%%|*}"
+                local ports="${parsed#*|}"
+                local ips
+                ips=$(resolve_domain "$domain")
+                if [ -n "$ips" ]; then
+                    while IFS= read -r ip; do
+                        if [ -n "$ports" ]; then
+                            resolved_block_domains="${resolved_block_domains}${resolved_block_domains:+|}${ip}:${ports}"
+                        else
+                            resolved_block_domains="${resolved_block_domains}${resolved_block_domains:+|}${ip}"
+                        fi
+                    done <<< "$ips"
+                else
+                    echo "Warning: Could not resolve domain '$domain', skipping..." >&2
+                fi
+            done
+        fi
+    fi
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] mkfifo $ready_pipe"
+        echo "[dry-run] unshare --user --map-root-user --net -- bash -c '...'"
+        echo "[dry-run]   # Inside namespace:"
+        echo "[dry-run]   echo \$\$ > $sandbox_pid_file"
+        echo "[dry-run]   read < $ready_pipe  # wait for slirp4netns"
+        setup_namespace_iptables "$mode" "$resolved_allow_domains" "$allow_ips" "$allow_networks" \
+                                 "$resolved_block_domains" "$block_ips" "$block_networks"
+        echo "[dry-run]   exec $*"
+        echo "[dry-run] # Outside namespace:"
+        echo "[dry-run] slirp4netns --ready-fd 3 --configure \$SANDBOX_PID tap0"
+        echo "[dry-run] echo go > $ready_pipe"
+        rm -f "$ready_pipe" "$sandbox_pid_file"
+        return 0
+    fi
+
+    # Export variables for the inner script
+    export NETWORK_MODE="$mode"
+    export NETWORK_ALLOW_IPS="$allow_ips"
+    export NETWORK_ALLOW_NETWORKS="$allow_networks"
+    export NETWORK_BLOCK_IPS="$block_ips"
+    export NETWORK_BLOCK_NETWORKS="$block_networks"
+    export NETWORK_RESOLVED_ALLOW="$resolved_allow_domains"
+    export NETWORK_RESOLVED_BLOCK="$resolved_block_domains"
+    export READY_PIPE="$ready_pipe"
+    export SANDBOX_PID_FILE="$sandbox_pid_file"
+    export NETWORK_VERBOSE="$verbose"
+    export NETWORK_DRY_RUN="$dry_run"
+
+    # Get the path to the main script for re-sourcing in subprocess
+    # This works whether running from src/ or from dist/
+    export CLAUDE_CAGE_SCRIPT
+    CLAUDE_CAGE_SCRIPT="$(realpath "$0")"
+
+    # Start slirp4netns handler in background
+    # This subshell waits for the namespace, starts slirp, signals ready, then waits
+    (
+        # Wait for the inner process to write its PID
+        local wait_count=0
+        while [ ! -s "$sandbox_pid_file" ] && [ $wait_count -lt 100 ]; do
+            sleep 0.05
+            wait_count=$((wait_count + 1))
+        done
+
+        if [ ! -s "$sandbox_pid_file" ]; then
+            echo "Error: Timed out waiting for sandbox PID" >&2
+            exit 1
+        fi
+
+        local sandbox_pid
+        sandbox_pid=$(cat "$sandbox_pid_file")
+
+        # Start slirp4netns (suppress output unless verbose)
+        if [ "$NETWORK_VERBOSE" = true ]; then
+            slirp4netns --configure "$sandbox_pid" tap0 &
+        else
+            slirp4netns --configure "$sandbox_pid" tap0 >/dev/null 2>&1 &
+        fi
+        local slirp_pid=$!
+
+        # Give slirp4netns a moment to set up the interface
+        sleep 0.3
+
+        # Check if slirp4netns is still running
+        if ! kill -0 $slirp_pid 2>/dev/null; then
+            echo "Error: slirp4netns failed to start" >&2
+            exit 1
+        fi
+
+        # Signal the inner process that networking is ready
+        echo "go" > "$ready_pipe"
+
+        # Wait for slirp4netns to finish (keeps it running)
+        wait $slirp_pid
+    ) &
+    local slirp_handler_pid=$!
+
+    # Note: We don't set an EXIT trap here because it would overwrite the
+    # cleanup_on_exit trap from main.sh. Cleanup is done inline below instead.
+
+    # Run unshare in foreground - this makes it receive terminal signals directly
+    unshare --user --map-root-user --net -- bash -c '
+        # Write our PID for the slirp handler
+        echo $$ > "$SANDBOX_PID_FILE"
+
+        # Wait for slirp4netns to be ready
+        read < "$READY_PIPE"
+
+        # Source the main script to get all function definitions
+        export CLAUDE_CAGE_SOURCING=1
+        source "$CLAUDE_CAGE_SCRIPT"
+
+        # Set up variables for iptables functions
+        verbose="$NETWORK_VERBOSE"
+        dry_run="$NETWORK_DRY_RUN"
+
+        # Configure iptables (we have CAP_NET_ADMIN here)
+        setup_namespace_iptables "$NETWORK_MODE" \
+            "$NETWORK_RESOLVED_ALLOW" "$NETWORK_ALLOW_IPS" "$NETWORK_ALLOW_NETWORKS" \
+            "$NETWORK_RESOLVED_BLOCK" "$NETWORK_BLOCK_IPS" "$NETWORK_BLOCK_NETWORKS"
+
+        # Execute the command
+        exec "$@"
+    ' -- "$@"
+
+    local exit_code=$?
+
+    # Cleanup slirp handler and temp files
+    kill $slirp_handler_pid 2>/dev/null
+    wait $slirp_handler_pid 2>/dev/null
+    rm -f "$ready_pipe" "$sandbox_pid_file"
+
+    return $exit_code
+}
+# ============================================================================
+# Shared mount logic for bwrap and docker
+# ============================================================================
+
+# Enumerate project directories for mounting
+# Populates global arrays: CAGE_WORK_PROJECTS and CAGE_INTERMEDIARY_PROJECTS
+# Each entry is "source_path|container_path"
+#
+# Arguments:
+#   $1 - branch_work_root
+#   $2 - branch_intermediary_root
+#   $3 - work_dir (current project)
+#   $4 - intermediary_dir (current project, empty for non-git mode)
+#   $5 - project_path (original path)
+enumerate_projects() {
+    local branch_work_root="$1"
+    local branch_intermediary_root="$2"
+    local work_dir="$3"
+    local intermediary_dir="$4"
+    local project_path="$5"
+
+    # Reset global arrays
+    CAGE_WORK_PROJECTS=()
+    CAGE_INTERMEDIARY_PROJECTS=()
+
+    # Non-git mode or isolated mode: don't enumerate
+    if [ -z "$intermediary_dir" ] || [ "$cfg_isolated" = "true" ]; then
+        return
+    fi
+
+    # Always include the current project (needed for dry-run when dirs don't exist yet)
+    CAGE_WORK_PROJECTS+=("$work_dir|$project_path")
+    CAGE_INTERMEDIARY_PROJECTS+=("$intermediary_dir|$project_path")
+
+    # Find any other project directories (those with .git) in branch work root
+    while IFS= read -r -d '' git_dir; do
+        local proj_dir="${git_dir%/.git}"
+        local orig_path="${proj_dir#"$branch_work_root"}"
+        # Skip if this is the current project (already added)
+        [ "$orig_path" = "$project_path" ] && continue
+        CAGE_WORK_PROJECTS+=("$proj_dir|$orig_path")
+    done < <(find "$branch_work_root" -name ".git" -type d -print0 2>/dev/null)
+
+    # Same for intermediary
+    while IFS= read -r -d '' git_dir; do
+        local proj_dir="${git_dir%/.git}"
+        local orig_path="${proj_dir#"$branch_intermediary_root"}"
+        [ "$orig_path" = "$project_path" ] && continue
+        CAGE_INTERMEDIARY_PROJECTS+=("$proj_dir|$orig_path")
+    done < <(find "$branch_intermediary_root" -name ".git" -type d -print0 2>/dev/null)
+}
+
+# Build mount specifications for the sandbox
+# Populates global array: CAGE_MOUNTS
+# Each entry is "type|source|dest|mode"
+# Types: bind, tmpfs, proc, dev, dev-bind, pipe
+# Mode: rw (default for bind), ro
+#
+# Arguments:
+#   $1 - intermediary_dir (empty for non-git mode)
+#   $2 - work_dir
+#   $3 - project_path
+#   $4 - pipe_path
+#   $5 - user_home (for tilde expansion in additional mounts)
+build_mount_specs() {
+    local intermediary_dir="$1"
+    local work_dir="$2"
+    local project_path="$3"
+    local pipe_path="$4"
+    local user_home="$5"
+
+    # Reset global array
+    CAGE_MOUNTS=()
+
+    # Additional mounts from config (come first so work dir can overlay)
+    for mount_entry in "${cfg_mounts[@]}"; do
+        IFS='|' read -r mount_source mount_dest mount_mode <<< "$mount_entry"
+        # Expand tilde to user home
+        mount_source="${mount_source/#\~/$user_home}"
+        mount_dest="${mount_dest/#\~/$user_home}"
+        if [ "$mount_mode" = "rw" ]; then
+            CAGE_MOUNTS+=("bind|$mount_source|$mount_dest|rw")
+        else
+            CAGE_MOUNTS+=("bind|$mount_source|$mount_dest|ro")
+        fi
+    done
+
+    # Temp filesystems
+    CAGE_MOUNTS+=("tmpfs||/tmp|")
+    CAGE_MOUNTS+=("tmpfs||/run|")
+
+    # Mount strategy depends on mode
+    if [ -z "$intermediary_dir" ]; then
+        # Non-git mode: mount source directory directly (read-write)
+        CAGE_MOUNTS+=("bind|$work_dir|$project_path|rw")
+    elif [ "$cfg_isolated" != "true" ]; then
+        # Non-isolated git mode: mount each project at its original path
+        for entry in "${CAGE_INTERMEDIARY_PROJECTS[@]}"; do
+            IFS='|' read -r proj_dir orig_path <<< "$entry"
+            CAGE_MOUNTS+=("bind|$proj_dir|/run$orig_path|rw")
+        done
+        for entry in "${CAGE_WORK_PROJECTS[@]}"; do
+            IFS='|' read -r proj_dir orig_path <<< "$entry"
+            CAGE_MOUNTS+=("bind|$proj_dir|$orig_path|rw")
+        done
+    else
+        # Isolated git mode: mount only the specific project
+        CAGE_MOUNTS+=("bind|$intermediary_dir|/run$project_path|rw")
+        CAGE_MOUNTS+=("bind|$work_dir|$project_path|rw")
+    fi
+
+    # Mount pipe for git hook communication (if it exists and we have an intermediary)
+    if [ -n "$intermediary_dir" ] && [ -p "$pipe_path" ]; then
+        CAGE_MOUNTS+=("pipe|$pipe_path|/tmp/claude-cage/pipe|rw")
+    fi
+}
+
+# Convert mount spec to bwrap argument
+# Arguments:
+#   $1 - mount spec (type|source|dest|mode)
+#   $2 - try flag: "try" to use -try variants, empty for required mounts
+# Outputs bwrap arguments (may be multiple for some types)
+mount_spec_to_bwrap() {
+    local spec="$1"
+    local try_flag="$2"
+    IFS='|' read -r type source dest mode <<< "$spec"
+
+    case "$type" in
+        bind)
+            if [ "$mode" = "ro" ]; then
+                if [ "$try_flag" = "try" ]; then
+                    echo "--ro-bind-try" "$source" "$dest"
+                else
+                    echo "--ro-bind" "$source" "$dest"
+                fi
+            else
+                if [ "$try_flag" = "try" ]; then
+                    echo "--bind-try" "$source" "$dest"
+                else
+                    echo "--bind" "$source" "$dest"
+                fi
+            fi
+            ;;
+        tmpfs)
+            echo "--tmpfs" "$dest"
+            ;;
+        proc)
+            echo "--proc" "$dest"
+            ;;
+        dev)
+            echo "--dev" "$dest"
+            ;;
+        dev-bind)
+            if [ "$try_flag" = "try" ]; then
+                echo "--dev-bind-try" "$source" "$dest"
+            else
+                echo "--dev-bind" "$source" "$dest"
+            fi
+            ;;
+        pipe)
+            echo "--bind" "$source" "$dest"
+            ;;
+    esac
+}
+
+# Convert mount spec to docker -v argument
+# Arguments:
+#   $1 - mount spec (type|source|dest|mode)
+# Outputs docker volume argument or empty if not applicable
+mount_spec_to_docker() {
+    local spec="$1"
+    IFS='|' read -r type source dest mode <<< "$spec"
+
+    case "$type" in
+        bind|pipe)
+            # Docker needs the source to exist
+            if [ -e "$source" ] || [ -p "$source" ]; then
+                if [ "$mode" = "ro" ]; then
+                    echo "-v" "$source:$dest:ro"
+                else
+                    echo "-v" "$source:$dest"
+                fi
+            fi
+            ;;
+        tmpfs|proc|dev|dev-bind)
+            # Docker handles these internally via its container image
+            ;;
+    esac
+}
+# ============================================================================
+# Bwrap sandbox (simplified - runs as current user, no sudo)
+# ============================================================================
+
+# Check if bwrap is available
+check_bwrap() {
+    if ! command -v bwrap >/dev/null 2>&1; then
+        echo "Hold on now. I need bubblewrap (bwrap) installed for sandboxing."
+        echo "Install it: sudo apt install bubblewrap"
+        exit 1
+    fi
+}
+
+# Run a command inside a bwrap sandbox
+# Usage: run_in_bwrap <branch_intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
+#
+# Arguments:
+#   branch_intermediary_root - Root of branch intermediary tree (mounted at /run in non-isolated mode)
+#   branch_work_root         - Root of branch work tree (mounted at / in non-isolated mode)
+#   intermediary_dir         - The specific project's intermediary (for isolated mode)
+#   work_dir                 - The specific project's work directory (for isolated mode)
+#   pipe_path                - Path to the communication pipe
+#   project_path             - Original project path (working directory, isolated mount point)
+#   [command...]             - Optional command to run (defaults to interactive shell)
+#
+# In non-isolated mode: branch_work_root is mounted at /, branch_intermediary_root at /run,
+# making all same-branch projects and their intermediaries visible at original paths.
+#
+# In isolated mode: only work_dir and intermediary_dir are mounted at their paths.
+run_in_bwrap() {
+    local branch_intermediary_root="$1"
+    local branch_work_root="$2"
+    local intermediary_dir="$3"
+    local work_dir="$4"
+    local pipe_path="$5"
+    local project_path="$6"
+    shift 6
+
+    # Use real UID/GID if passed from parent (when inside network namespace, we're root)
+    local user_uid user_gid username user_home
+    user_uid="${BWRAP_REAL_UID:-$(id -u)}"
+    user_gid="${BWRAP_REAL_GID:-$(id -g)}"
+    username="${BWRAP_REAL_USER:-$(whoami)}"
+    user_home="${BWRAP_REAL_HOME:-$HOME}"
+
+    # Hostname for the cage
+    local cage_hostname="caged.$(hostname)"
+
+    # Build bwrap arguments as an array
+    local -a bwrap_args=()
+
+    # Enumerate projects and build mount specs using shared functions
+    enumerate_projects "$branch_work_root" "$branch_intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
+    build_mount_specs "$intermediary_dir" "$work_dir" "$project_path" "$pipe_path" "$user_home"
+
+    # System binaries (read-only) - overlays the / mount
+    bwrap_args+=(--ro-bind /usr /usr)
+    bwrap_args+=(--ro-bind /bin /bin)
+    bwrap_args+=(--ro-bind /lib /lib)
+    bwrap_args+=(--ro-bind-try /lib64 /lib64)
+    bwrap_args+=(--ro-bind-try /sbin /sbin)
+
+    # System config (read-only)
+    bwrap_args+=(--ro-bind /etc/passwd /etc/passwd)
+    bwrap_args+=(--ro-bind /etc/group /etc/group)
+
+    # For slirp4netns network namespace, use its DNS resolver (10.0.2.3)
+    # Otherwise use host's resolv.conf
+    if [ "${SLIRP_NETWORK:-}" = "1" ]; then
+        local slirp_resolv
+        slirp_resolv=$(mktemp)
+        echo "nameserver 10.0.2.3" > "$slirp_resolv"
+        bwrap_args+=(--ro-bind "$slirp_resolv" /etc/resolv.conf)
+    else
+        bwrap_args+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
+    fi
+
+    bwrap_args+=(--ro-bind /etc/hosts /etc/hosts)
+    bwrap_args+=(--ro-bind /etc/nsswitch.conf /etc/nsswitch.conf)
+    bwrap_args+=(--ro-bind-try /etc/localtime /etc/localtime)
+    bwrap_args+=(--ro-bind-try /etc/timezone /etc/timezone)
+    bwrap_args+=(--ro-bind-try /etc/environment /etc/environment)
+    bwrap_args+=(--ro-bind-try /etc/ld.so.cache /etc/ld.so.cache)
+
+    # SSL/TLS certificates (distro-specific locations, public certs only)
+    bwrap_args+=(--ro-bind-try /etc/ssl/certs /etc/ssl/certs)            # Debian/Ubuntu/Arch
+    bwrap_args+=(--ro-bind-try /etc/ca-certificates /etc/ca-certificates) # Debian/Ubuntu
+    bwrap_args+=(--ro-bind-try /etc/pki/ca-trust /etc/pki/ca-trust)      # Fedora/RHEL CA trust
+    bwrap_args+=(--ro-bind-try /etc/pki/tls/certs /etc/pki/tls/certs)    # Fedora/RHEL public certs
+
+    # Shell config (read-only, distro-specific)
+    bwrap_args+=(--ro-bind-try /etc/inputrc /etc/inputrc)
+    bwrap_args+=(--ro-bind-try /etc/bash.bashrc /etc/bash.bashrc)        # Debian/Ubuntu/Arch
+    bwrap_args+=(--ro-bind-try /etc/bashrc /etc/bashrc)                  # Fedora/RHEL/CentOS
+    bwrap_args+=(--ro-bind-try /etc/profile /etc/profile)
+    bwrap_args+=(--ro-bind-try /etc/profile.d /etc/profile.d)
+    bwrap_args+=(--ro-bind-try /etc/bash_completion /etc/bash_completion)
+    bwrap_args+=(--ro-bind-try /etc/bash_completion.d /etc/bash_completion.d)
+    bwrap_args+=(--ro-bind-try /etc/alternatives /etc/alternatives)      # Debian/Ubuntu
+
+    # User home config (read-only)
+    bwrap_args+=(--ro-bind-try "$user_home/.gitconfig" "$user_home/.gitconfig")
+    bwrap_args+=(--ro-bind-try "$user_home/.config/git" "$user_home/.config/git")
+
+    # Apply mounts from shared CAGE_MOUNTS array
+    # This includes: additional config mounts, tmpfs, project mounts, pipe
+    for spec in "${CAGE_MOUNTS[@]}"; do
+        IFS='|' read -r type source dest mode <<< "$spec"
+        case "$type" in
+            bind)
+                # Additional mounts use -try (may not exist), project mounts are required
+                if [ "$mode" = "ro" ]; then
+                    bwrap_args+=(--ro-bind-try "$source" "$dest")
+                else
+                    # Project mounts should exist (or we're in dry-run)
+                    if [ -e "$source" ] || [ "$dry_run" = true ]; then
+                        bwrap_args+=(--bind "$source" "$dest")
+                    else
+                        bwrap_args+=(--bind-try "$source" "$dest")
+                    fi
+                fi
+                ;;
+            tmpfs)
+                bwrap_args+=(--tmpfs "$dest")
+                ;;
+            pipe)
+                bwrap_args+=(--bind "$source" "$dest")
+                ;;
+        esac
+    done
+
+    # Special filesystems
+    bwrap_args+=(--proc /proc)
+    bwrap_args+=(--dev /dev)
+    bwrap_args+=(--dev-bind /dev/pts /dev/pts)
+    bwrap_args+=(--dev-bind /dev/ptmx /dev/ptmx)
+    bwrap_args+=(--dev-bind-try /dev/tty /dev/tty)
+
+    # Environment variables
+    bwrap_args+=(--setenv HOME "$user_home")
+    bwrap_args+=(--setenv USER "$username")
+    bwrap_args+=(--setenv SHELL /bin/bash)
+    bwrap_args+=(--setenv PATH "/usr/local/bin:/usr/bin:/bin:$user_home/.local/bin")
+    bwrap_args+=(--setenv TERM "${TERM:-xterm-256color}")
+    bwrap_args+=(--setenv LANG "${LANG:-C.UTF-8}")
+    [ -n "${LC_ALL}" ] && bwrap_args+=(--setenv LC_ALL "$LC_ALL")
+
+    # User namespace with current user's UID/GID
+    bwrap_args+=(--unshare-user)
+    bwrap_args+=(--uid "$user_uid")
+    bwrap_args+=(--gid "$user_gid")
+
+    # Hostname isolation
+    bwrap_args+=(--unshare-uts)
+    bwrap_args+=(--hostname "$cage_hostname")
+
+    # Note: We intentionally don't use --unshare-pid for interactive shells
+    # PID namespace makes the shell PID 1, which has special signal handling
+    # that breaks Ctrl+C. User namespace already prevents accessing host processes.
+
+    # Cleanup on parent exit
+    bwrap_args+=(--die-with-parent)
+
+    # Working directory is the project path (where work/ is mounted)
+    bwrap_args+=(--chdir "$project_path")
+
+    # Add command or interactive shell
+    # Create custom rcfile that silences command_not_found_handle after sourcing configs
+    if [ $# -eq 0 ]; then
+        bwrap_args+=(/bin/bash -c '
+cat > /tmp/.cage-bashrc << "EOF"
+[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+[ -f ~/.bashrc ] && . ~/.bashrc
+unset -f command_not_found_handle 2>/dev/null
+# Cage prompt - red user@caged with bunny (Con Air style)
+PS1="\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\$ "
+EOF
+exec bash --rcfile /tmp/.cage-bashrc')
+    else
+        bwrap_args+=(/bin/bash -l -c "unset -f command_not_found_handle 2>/dev/null; $*")
+    fi
+
+    # Run bwrap
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] bwrap ${bwrap_args[*]}"
+        return 0
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo -e "${_yellow}[run] bwrap ${bwrap_args[*]}${_reset}" >&2
+    fi
+
+    bwrap "${bwrap_args[@]}"
+}
+
+# Run bwrap with network isolation via slirp4netns
+# This wraps run_in_bwrap in a network namespace with iptables filtering
+#
+# Usage: run_in_bwrap_with_network <branch_intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
+#
+# Uses global config variables:
+#   cfg_networkMode      - "disabled", "allowlist", or "blocklist"
+#   cfg_allow_domains    - pipe-separated allowed domains
+#   cfg_allow_ips        - pipe-separated allowed IPs
+#   cfg_allow_networks   - pipe-separated allowed networks
+#   cfg_block_domains    - pipe-separated blocked domains
+#   cfg_block_ips        - pipe-separated blocked IPs
+#   cfg_block_networks   - pipe-separated blocked networks
+run_in_bwrap_with_network() {
+    local branch_intermediary_root="$1"
+    local branch_work_root="$2"
+    local intermediary_dir="$3"
+    local work_dir="$4"
+    local pipe_path="$5"
+    local project_path="$6"
+    shift 6
+
+    # If network mode is disabled, just run bwrap directly
+    if [ "$cfg_networkMode" = "disabled" ] || [ -z "$cfg_networkMode" ]; then
+        run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" "$@"
+        return $?
+    fi
+
+    # Export bwrap-related variables for the inner call
+    # run_with_network_namespace sources the main script, so run_in_bwrap will be available
+    export BWRAP_BRANCH_INTERMEDIARY_ROOT="$branch_intermediary_root"
+    export BWRAP_BRANCH_WORK_ROOT="$branch_work_root"
+    export BWRAP_INTERMEDIARY_DIR="$intermediary_dir"
+    export BWRAP_WORK_DIR="$work_dir"
+    export BWRAP_PIPE_PATH="$pipe_path"
+    export BWRAP_PROJECT_PATH="$project_path"
+    export BWRAP_DRY_RUN="$dry_run"
+    export BWRAP_VERBOSE="$verbose"
+
+    # Capture real UID/GID before entering namespace (where we become root)
+    export BWRAP_REAL_UID="$(id -u)"
+    export BWRAP_REAL_GID="$(id -g)"
+    export BWRAP_REAL_USER="$(whoami)"
+    export BWRAP_REAL_HOME="$HOME"
+
+    # Signal to bwrap that we're in a slirp4netns network namespace
+    # This tells it to use 10.0.2.3 as DNS resolver instead of host's resolv.conf
+    export SLIRP_NETWORK="1"
+
+    # Export cfg_mounts array as a string (^-separated entries)
+    local mounts_str=""
+    for mount_entry in "${cfg_mounts[@]}"; do
+        mounts_str="${mounts_str}${mounts_str:+^}${mount_entry}"
+    done
+    export BWRAP_MOUNTS="$mounts_str"
+
+    # Build the command to run inside the network namespace
+    # We need to source the main script again because exec creates a new bash process
+    local inner_cmd
+    if [ $# -eq 0 ]; then
+        inner_cmd='
+            export CLAUDE_CAGE_SOURCING=1
+            source "$CLAUDE_CAGE_SCRIPT"
+            dry_run="$BWRAP_DRY_RUN"
+            verbose="$BWRAP_VERBOSE"
+            # Restore cfg_mounts array
+            IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
+            run_in_bwrap "$BWRAP_BRANCH_INTERMEDIARY_ROOT" "$BWRAP_BRANCH_WORK_ROOT" "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_PROJECT_PATH"
+        '
+    else
+        # Escape command arguments for passing through
+        local escaped_args=""
+        for arg in "$@"; do
+            escaped_args="$escaped_args '${arg//\'/\'\\\'\'}'"
+        done
+        inner_cmd='
+            export CLAUDE_CAGE_SOURCING=1
+            source "$CLAUDE_CAGE_SCRIPT"
+            dry_run="$BWRAP_DRY_RUN"
+            verbose="$BWRAP_VERBOSE"
+            # Restore cfg_mounts array
+            IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
+            run_in_bwrap "$BWRAP_BRANCH_INTERMEDIARY_ROOT" "$BWRAP_BRANCH_WORK_ROOT" "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_PROJECT_PATH" '"$escaped_args"'
+        '
+    fi
+
+    run_with_network_namespace \
+        "$cfg_networkMode" \
+        "$cfg_allow_domains" \
+        "$cfg_allow_ips" \
+        "$cfg_allow_networks" \
+        "$cfg_block_domains" \
+        "$cfg_block_ips" \
+        "$cfg_block_networks" \
+        -- \
+        bash -c "$inner_cmd"
+}
+# ============================================================================
+# Docker sandbox (alternative to bwrap)
+# ============================================================================
+
+# Check if docker is available
+check_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Gonna need docker for this one, and I ain't seein' it."
+        echo "Install it: https://docs.docker.com/get-docker/"
+        exit 1
+    fi
+}
+
+# Generate iptables setup script for Docker container
+# This runs as root inside container before dropping privileges
+# Arguments:
+#   $1 - mode: "allowlist" or "blocklist"
+#   $2 - resolved_allow_ips: pipe-separated IPs with optional ports
+#   $3 - allow_networks: pipe-separated networks
+#   $4 - resolved_block_ips: pipe-separated IPs with optional ports
+#   $5 - block_networks: pipe-separated networks
+generate_docker_iptables_script() {
+    local mode="$1"
+    local resolved_allow_ips="$2"
+    local allow_networks="$3"
+    local resolved_block_ips="$4"
+    local block_networks="$5"
+
+    cat << 'IPTABLES_HEADER'
+# Set up iptables rules (running as root)
+debug_echo() { [ "$CAGE_DEBUG" = "1" ] && echo "$@" >&2 || true; }
+
+# Check if iptables is available, try to install if not
+if ! command -v iptables >/dev/null 2>&1; then
+    echo "Installing iptables..." >&2
+    if command -v apt-get >/dev/null 2>&1; then
+        debug_echo "  Running apt-get update && install..."
+        if [ "$CAGE_DEBUG" = "1" ]; then
+            apt-get update && apt-get install -y iptables || true
+        else
+            { apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y iptables >/dev/null 2>&1; } &
+            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait $_pid || true
+            echo >&2
+        fi
+    elif command -v apk >/dev/null 2>&1; then
+        debug_echo "  Running apk add..."
+        if [ "$CAGE_DEBUG" = "1" ]; then
+            apk add iptables || true
+        else
+            apk add --quiet iptables >/dev/null 2>&1 &
+            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait $_pid || true
+            echo >&2
+        fi
+    elif command -v yum >/dev/null 2>&1; then
+        debug_echo "  Running yum install..."
+        if [ "$CAGE_DEBUG" = "1" ]; then
+            yum install -y iptables || true
+        else
+            yum install -q -y iptables >/dev/null 2>&1 &
+            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait $_pid || true
+            echo >&2
+        fi
+    fi
+
+    if ! command -v iptables >/dev/null 2>&1; then
+        echo "Network filtering requires iptables, but it ain't in this image and I couldn't install it." >&2
+        echo "Either set networkMode = \"disabled\" or use an image with iptables installed." >&2
+        exit 1
+    fi
+    debug_echo "  iptables installed successfully"
+fi
+
+debug_echo "Configuring iptables rules..."
+
+# Default policy: DROP everything
+if ! iptables -P INPUT DROP 2>&1; then
+    echo "ERROR: iptables failed - container may lack NET_ADMIN capability" >&2
+    exit 1
+fi
+iptables -P OUTPUT DROP
+iptables -P FORWARD DROP
+
+set -e
+
+# Allow loopback
+debug_echo "  Allowing loopback..."
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# Allow established/related connections
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# Allow DNS to any destination
+# Docker's DNS setup varies by network type: 127.0.0.11 on user-defined networks,
+# host nameservers (router IP, etc.) on default bridge. Allow all outbound port 53
+# rather than guessing - same approach as bwrap's slirp4netns resolver allowance.
+debug_echo "  Allowing DNS..."
+iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+
+debug_echo "  Adding network rules..."
+IPTABLES_HEADER
+
+    if [ "$mode" = "allowlist" ]; then
+        # Allowlist: add ACCEPT rules for allowed destinations
+        if [ -n "$resolved_allow_ips" ]; then
+            IFS='|' read -ra items <<< "$resolved_allow_ips"
+            for item in "${items[@]}"; do
+                local ip ports
+                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+                    ip="${BASH_REMATCH[1]}"
+                    ports="${BASH_REMATCH[2]}"
+                else
+                    ip="$item"
+                    ports=""
+                fi
+
+                if [ -z "$ports" ]; then
+                    echo "iptables -A OUTPUT -d $ip -j ACCEPT"
+                elif [[ "$ports" == *","* ]]; then
+                    echo "iptables -A OUTPUT -p tcp -d $ip -m multiport --dports $ports -j ACCEPT"
+                    echo "iptables -A OUTPUT -p udp -d $ip -m multiport --dports $ports -j ACCEPT"
+                else
+                    echo "iptables -A OUTPUT -p tcp -d $ip --dport $ports -j ACCEPT"
+                    echo "iptables -A OUTPUT -p udp -d $ip --dport $ports -j ACCEPT"
+                fi
+            done
+        fi
+
+        if [ -n "$allow_networks" ]; then
+            IFS='|' read -ra items <<< "$allow_networks"
+            for item in "${items[@]}"; do
+                local network ports
+                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+                    network="${BASH_REMATCH[1]}"
+                    ports="${BASH_REMATCH[2]}"
+                else
+                    network="$item"
+                    ports=""
+                fi
+
+                if [ -z "$ports" ]; then
+                    echo "iptables -A OUTPUT -d $network -j ACCEPT"
+                elif [[ "$ports" == *","* ]]; then
+                    echo "iptables -A OUTPUT -p tcp -d $network -m multiport --dports $ports -j ACCEPT"
+                    echo "iptables -A OUTPUT -p udp -d $network -m multiport --dports $ports -j ACCEPT"
+                else
+                    echo "iptables -A OUTPUT -p tcp -d $network --dport $ports -j ACCEPT"
+                    echo "iptables -A OUTPUT -p udp -d $network --dport $ports -j ACCEPT"
+                fi
+            done
+        fi
+        # Default DROP policy handles everything else
+
+    elif [ "$mode" = "blocklist" ]; then
+        # Blocklist: add REJECT rules for blocked destinations, then allow all
+
+        if [ -n "$resolved_block_ips" ]; then
+            IFS='|' read -ra items <<< "$resolved_block_ips"
+            for item in "${items[@]}"; do
+                local ip ports
+                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+                    ip="${BASH_REMATCH[1]}"
+                    ports="${BASH_REMATCH[2]}"
+                else
+                    ip="$item"
+                    ports=""
+                fi
+
+                if [ -z "$ports" ]; then
+                    echo "iptables -A OUTPUT -d $ip -j REJECT"
+                elif [[ "$ports" == *","* ]]; then
+                    echo "iptables -A OUTPUT -p tcp -d $ip -m multiport --dports $ports -j REJECT"
+                    echo "iptables -A OUTPUT -p udp -d $ip -m multiport --dports $ports -j REJECT"
+                else
+                    echo "iptables -A OUTPUT -p tcp -d $ip --dport $ports -j REJECT"
+                    echo "iptables -A OUTPUT -p udp -d $ip --dport $ports -j REJECT"
+                fi
+            done
+        fi
+
+        if [ -n "$block_networks" ]; then
+            IFS='|' read -ra items <<< "$block_networks"
+            for item in "${items[@]}"; do
+                local network ports
+                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+                    network="${BASH_REMATCH[1]}"
+                    ports="${BASH_REMATCH[2]}"
+                else
+                    network="$item"
+                    ports=""
+                fi
+
+                if [ -z "$ports" ]; then
+                    echo "iptables -A OUTPUT -d $network -j REJECT"
+                elif [[ "$ports" == *","* ]]; then
+                    echo "iptables -A OUTPUT -p tcp -d $network -m multiport --dports $ports -j REJECT"
+                    echo "iptables -A OUTPUT -p udp -d $network -m multiport --dports $ports -j REJECT"
+                else
+                    echo "iptables -A OUTPUT -p tcp -d $network --dport $ports -j REJECT"
+                    echo "iptables -A OUTPUT -p udp -d $network --dport $ports -j REJECT"
+                fi
+            done
+        fi
+
+        # Allow rules (inserted at beginning to take precedence)
+        if [ -n "$resolved_allow_ips" ]; then
+            IFS='|' read -ra items <<< "$resolved_allow_ips"
+            for item in "${items[@]}"; do
+                local ip ports
+                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+                    ip="${BASH_REMATCH[1]}"
+                    ports="${BASH_REMATCH[2]}"
+                else
+                    ip="$item"
+                    ports=""
+                fi
+
+                if [ -z "$ports" ]; then
+                    echo "iptables -I OUTPUT -d $ip -j ACCEPT"
+                elif [[ "$ports" == *","* ]]; then
+                    echo "iptables -I OUTPUT -p tcp -d $ip -m multiport --dports $ports -j ACCEPT"
+                    echo "iptables -I OUTPUT -p udp -d $ip -m multiport --dports $ports -j ACCEPT"
+                else
+                    echo "iptables -I OUTPUT -p tcp -d $ip --dport $ports -j ACCEPT"
+                    echo "iptables -I OUTPUT -p udp -d $ip --dport $ports -j ACCEPT"
+                fi
+            done
+        fi
+
+        if [ -n "$allow_networks" ]; then
+            IFS='|' read -ra items <<< "$allow_networks"
+            for item in "${items[@]}"; do
+                local network ports
+                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+                    network="${BASH_REMATCH[1]}"
+                    ports="${BASH_REMATCH[2]}"
+                else
+                    network="$item"
+                    ports=""
+                fi
+
+                if [ -z "$ports" ]; then
+                    echo "iptables -I OUTPUT -d $network -j ACCEPT"
+                elif [[ "$ports" == *","* ]]; then
+                    echo "iptables -I OUTPUT -p tcp -d $network -m multiport --dports $ports -j ACCEPT"
+                    echo "iptables -I OUTPUT -p udp -d $network -m multiport --dports $ports -j ACCEPT"
+                else
+                    echo "iptables -I OUTPUT -p tcp -d $network --dport $ports -j ACCEPT"
+                    echo "iptables -I OUTPUT -p udp -d $network --dport $ports -j ACCEPT"
+                fi
+            done
+        fi
+
+        # Final catch-all: allow everything else
+        echo "iptables -A OUTPUT -j ACCEPT"
+    fi
+}
+
+# Resolve domains to IPs for Docker network filtering
+# Must be done on host before container starts (DNS works on host)
+# Arguments:
+#   $1 - domains: pipe-separated domain specs (domain:port or just domain)
+# Returns: pipe-separated IP specs
+resolve_domains_for_docker() {
+    local domains="$1"
+    local resolved=""
+
+    [ -z "$domains" ] && return
+
+    IFS='|' read -ra items <<< "$domains"
+    for item in "${items[@]}"; do
+        local domain ports
+        if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+            domain="${BASH_REMATCH[1]}"
+            ports="${BASH_REMATCH[2]}"
+        else
+            domain="$item"
+            ports=""
+        fi
+
+        local ips
+        ips=$(getent ahosts "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
+
+        if [ -z "$ips" ]; then
+            echo "Warning: Could not resolve domain '$domain', skipping..." >&2
+            continue
+        fi
+
+        while IFS= read -r ip; do
+            [ -z "$ip" ] && continue
+            if [ -n "$ports" ]; then
+                resolved="${resolved}${resolved:+|}${ip}:${ports}"
+            else
+                resolved="${resolved}${resolved:+|}${ip}"
+            fi
+        done <<< "$ips"
+    done
+
+    echo "$resolved"
+}
+
+# Generate script to install packages in Docker container
+# Installs configured packages if not already present
+# This runs as root inside the container before dropping privileges
+# Arguments:
+#   $1 - pipe-separated list of packages to install (e.g., "curl|iputils-ping")
+generate_docker_tool_install_script() {
+    local packages="$1"
+
+    # Always define debug_echo (used by later setup steps too)
+    cat << 'TOOLS_HEADER'
+# Helper for debug output
+debug_echo() { [ "$CAGE_DEBUG" = "1" ] && echo "$@" >&2 || true; }
+TOOLS_HEADER
+
+    # No packages to install
+    [ -z "$packages" ] && return
+
+    # Convert pipe-separated list to space-separated for package managers
+    local pkg_list="${packages//|/ }"
+
+    # Pick the first package to use as presence check
+    local check_pkg="${packages%%|*}"
+
+    cat << TOOLS_EOF
+# Install packages if missing
+if ! dpkg -s $check_pkg >/dev/null 2>&1 && ! command -v $check_pkg >/dev/null 2>&1; then
+    debug_echo "Installing packages: $pkg_list"
+    if command -v apt-get >/dev/null 2>&1; then
+        if [ "\$CAGE_DEBUG" = "1" ]; then
+            apt-get update && apt-get install -y $pkg_list || true
+        else
+            { apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y $pkg_list >/dev/null 2>&1; } &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            echo >&2
+        fi
+    elif command -v apk >/dev/null 2>&1; then
+        if [ "\$CAGE_DEBUG" = "1" ]; then
+            apk add $pkg_list || true
+        else
+            apk add --quiet $pkg_list >/dev/null 2>&1 &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            echo >&2
+        fi
+    elif command -v yum >/dev/null 2>&1; then
+        if [ "\$CAGE_DEBUG" = "1" ]; then
+            yum install -y $pkg_list || true
+        else
+            yum install -q -y $pkg_list >/dev/null 2>&1 &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            echo >&2
+        fi
+    fi
+fi
+TOOLS_EOF
+}
+
+# Run a command inside a Docker container
+# Usage: run_in_docker <branch_intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
+#
+# Arguments:
+#   branch_intermediary_root - Root of branch intermediary tree (for mounting at /run)
+#   branch_work_root         - Root of branch work tree (for mounting all same-branch projects)
+#   intermediary_dir         - The specific project's intermediary (for isolated mode)
+#   work_dir                 - The specific project's work directory (for isolated mode)
+#   pipe_path                - Path to the communication pipe
+#   project_path             - Original project path (working directory, isolated mount point)
+#   [command...]             - Optional command to run (defaults to interactive shell)
+#
+# In non-isolated mode: mounts branch_work_root dirs at /, branch_intermediary_root at /run,
+# making all same-branch projects and intermediaries visible at original paths.
+#
+# In isolated mode: only work_dir and intermediary_dir are mounted.
+#
+# Network filtering (when networkMode is "allowlist" or "blocklist"):
+#   - Container starts as root with NET_ADMIN capability
+#   - iptables rules are configured
+#   - Drops to unprivileged user before running shell
+run_in_docker() {
+    local branch_intermediary_root="$1"
+    local branch_work_root="$2"
+    local intermediary_dir="$3"
+    local work_dir="$4"
+    local pipe_path="$5"
+    local project_path="$6"
+    shift 6
+
+    local user_uid user_gid user_home
+    user_uid=$(id -u)
+    user_gid=$(id -g)
+    user_home="$HOME"
+
+    # Container settings
+    local image="${cfg_docker_image:-node:lts-slim}"
+    local container_name="claude-cage-$$"
+    local hostname="caged.docker"
+
+    # Check if network filtering is enabled
+    local network_enabled=false
+    if [ "$cfg_networkMode" = "allowlist" ] || [ "$cfg_networkMode" = "blocklist" ]; then
+        network_enabled=true
+        [ "$verbose" = true ] && echo "Docker network filtering: $cfg_networkMode" >&2
+    fi
+
+    # Resolve domains before container starts (DNS works on host)
+    local resolved_allow_ips=""
+    local resolved_block_ips=""
+
+    if [ "$network_enabled" = true ]; then
+        # Use pre-resolved values from main.sh if available
+        if [ "${domains_pre_resolved:-}" = true ]; then
+            resolved_allow_ips="${pre_resolved_allow_ips:-}"
+            resolved_block_ips="${pre_resolved_block_ips:-}"
+        else
+            if [ -n "$cfg_allow_domains" ]; then
+                [ "$verbose" = true ] && echo "Resolving allowed domains..." >&2
+                resolved_allow_ips=$(resolve_domains_for_docker "$cfg_allow_domains")
+            fi
+            if [ -n "$cfg_block_domains" ]; then
+                [ "$verbose" = true ] && echo "Resolving blocked domains..." >&2
+                resolved_block_ips=$(resolve_domains_for_docker "$cfg_block_domains")
+            fi
+        fi
+
+        # Add configured IPs to resolved list
+        if [ -n "$cfg_allow_ips" ]; then
+            resolved_allow_ips="${resolved_allow_ips}${resolved_allow_ips:+|}${cfg_allow_ips}"
+        fi
+        if [ -n "$cfg_block_ips" ]; then
+            resolved_block_ips="${resolved_block_ips}${resolved_block_ips:+|}${cfg_block_ips}"
+        fi
+    fi
+
+    # Build docker arguments as an array
+    local -a docker_args=()
+
+    docker_args+=(run --rm -it)
+    docker_args+=(--name "$container_name")
+    docker_args+=(--hostname "$hostname")
+    docker_args+=(--add-host=host.docker.internal:host-gateway)
+
+    if [ "$network_enabled" = true ]; then
+        # Network filtering: add NET_ADMIN capability for iptables
+        docker_args+=(--cap-add=NET_ADMIN)
+    fi
+    # Always start as root to install packages, then drop privileges
+
+    # Enumerate projects and build mount specs using shared functions
+    enumerate_projects "$branch_work_root" "$branch_intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
+    build_mount_specs "$intermediary_dir" "$work_dir" "$project_path" "$pipe_path" "$user_home"
+
+    # Apply mounts from shared CAGE_MOUNTS array
+    # Docker skips tmpfs (uses container's own filesystem)
+    for spec in "${CAGE_MOUNTS[@]}"; do
+        IFS='|' read -r type source dest mode <<< "$spec"
+        case "$type" in
+            bind|pipe)
+                # Docker needs the source to exist (except in dry-run)
+                if [ -e "$source" ] || [ -p "$source" ] || [ "$dry_run" = true ]; then
+                    if [ "$mode" = "ro" ]; then
+                        docker_args+=(-v "$source:$dest:ro")
+                    else
+                        docker_args+=(-v "$source:$dest")
+                    fi
+                fi
+                ;;
+            tmpfs)
+                # Docker handles /tmp and /run internally via its container image
+                ;;
+        esac
+    done
+
+    # Working directory is the project path
+    docker_args+=(-w "$project_path")
+
+    # Environment
+    docker_args+=(-e "HOME=$user_home")
+    docker_args+=(-e "TERM=${TERM:-xterm-256color}")
+    docker_args+=(-e "LANG=${LANG:-C.UTF-8}")
+    [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")
+
+    # Image
+    docker_args+=("$image")
+
+    # Generate setup scripts
+    local tool_install_script
+    tool_install_script=$(generate_docker_tool_install_script "$cfg_docker_packages")
+
+    local iptables_script=""
+    if [ "$network_enabled" = true ]; then
+        iptables_script=$(generate_docker_iptables_script "$cfg_networkMode" \
+            "$resolved_allow_ips" "$cfg_allow_networks" \
+            "$resolved_block_ips" "$cfg_block_networks")
+    fi
+
+    # Add command or interactive shell
+    if [ $# -eq 0 ]; then
+        # Interactive shell
+        docker_args+=(/bin/bash -c "
+$tool_install_script
+
+$iptables_script
+
+# Create user with matching UID for privilege drop
+debug_echo \"Creating sandbox user (uid=${user_uid}, gid=${user_gid})...\"
+groupadd -g ${user_gid} -o cage 2>/dev/null || true
+useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cage 2>/dev/null || true
+
+# Create bashrc with cage prompt
+cat > /tmp/.cage-bashrc << 'RCEOF'
+[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+[ -f ~/.bashrc ] 2>/dev/null && . ~/.bashrc
+export PATH=\"\$HOME/.local/bin:\$PATH\"
+# Cage prompt - red user@caged with bunny (Con Air style)
+PS1=\"\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\\\$ \"
+RCEOF
+
+# Drop privileges and run shell
+debug_echo \"Launching shell...\"
+exec script -q -c \"su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'\" /dev/null 2>/dev/null || \\
+exec su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'
+")
+    else
+        # Command
+        docker_args+=(/bin/bash -c "
+$tool_install_script
+
+$iptables_script
+
+# Create user with matching UID for privilege drop
+debug_echo \"Creating sandbox user (uid=${user_uid}, gid=${user_gid})...\"
+groupadd -g ${user_gid} -o cage 2>/dev/null || true
+useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cage 2>/dev/null || true
+
+# Drop privileges and run command
+debug_echo \"Running: $*\"
+exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' cage
+")
+    fi
+
+    # Run docker
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] docker ${docker_args[*]}"
+        return 0
+    fi
+
+    if [ "$verbose" = true ]; then
+        echo -e "${_yellow}[run] docker ${docker_args[*]}${_reset}" >&2
+    fi
+
+    docker "${docker_args[@]}"
+}
+# Guard: if we're being sourced just for function definitions, stop here
+# This is used by run_with_network_namespace to get functions in subprocess
+if [ "${CLAUDE_CAGE_SOURCING:-}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+# Handle --help and --version early (before config loading)
+if [ "$show_help" = true ]; then
+    show_help
+    exit 0
+fi
+
+if [ "$show_version" = true ]; then
+    echo "claude-cage $CLAUDE_CAGE_VERSION"
+    exit 0
+fi
+
+# Handle completion subcommand early (doesn't need config)
+if [ "${1:-}" = "completion" ]; then
+    case "${2:-}" in
+        bash) output_bash_completion; exit 0 ;;
+        zsh) output_zsh_completion; exit 0 ;;
+        *)
+            echo "Usage: claude-cage completion [bash|zsh]"
+            echo "Output shell completion script for the specified shell."
+            exit 1
+            ;;
+    esac
+fi
+
+# Handle install-completions subcommand early (doesn't need config)
+if [ "${1:-}" = "install-completions" ]; then
+    config_builder_install_completions
+    exit $?
+fi
+
+# Parse additional flags and subcommands
+# Arguments we don't recognize get passed through to the launch command
+test_mode=false
+git_merge_mode=false
+clean_mode=false
+clean_all_mode=false
+clean_branch=""
+cli_direct_mount=false
+passthrough_args=()
+skip_next=false
+for i in "$@"; do
+    if [ "$skip_next" = true ]; then
+        skip_next=false
+        continue
+    fi
+    case "$i" in
+        --test) test_mode=true ;;
+        --direct-mount) cli_direct_mount=true ;;
+        --dry-run) ;; # handled by helpers.sh
+        --verbose|-v) ;; # handled by helpers.sh
+        --debug) ;; # handled by helpers.sh
+        git-merge) git_merge_mode=true ;;
+        clean) clean_mode=true ;;
+        clean-all) clean_all_mode=true ;;
+        --branch)
+            # Next arg is the branch name
+            skip_next=true
+            # Find the next argument
+            found_next=false
+            for j in "$@"; do
+                if [ "$found_next" = true ]; then
+                    clean_branch="$j"
+                    break
+                fi
+                [ "$j" = "--branch" ] && found_next=true
+            done
+            ;;
+        --branch=*) clean_branch="${i#--branch=}" ;;
+        *) passthrough_args+=("$i") ;;
+    esac
+done
+
+# Initialize and parse config
+init_config "$@"
+
+# Check for direct mount mode (CLI flag, config, or non-git directory)
+direct_mount_mode=false
+
+# Direct mount explicitly requested via CLI or config
+if [ "$cli_direct_mount" = true ] || [ "$cfg_directMount" = "true" ]; then
+    direct_mount_mode=true
+# Not a git repo - check allowNonGit setting
+elif ! is_git_repo "$cfg_source"; then
+    case "$cfg_allowNonGit" in
+        "true")
+            direct_mount_mode=true
+            ;;
+        "false")
+            echo "Hold on there. This ain't a git repository."
+            echo "And your config says allowNonGit = false."
+            echo "Either initialize a git repo here, or change your config."
+            exit 1
+            ;;
+        "unset"|*)
+            echo "Hold on there. This ain't a git repository."
+            echo "I can still sandbox it for you, but there won't be any git sync magic."
+            echo ""
+            if [ -t 0 ]; then
+                if config_builder_prompt_yesno "Mount it directly and continue?" "y"; then
+                    direct_mount_mode=true
+                    echo ""
+                    echo "To skip this prompt next time, add 'allowNonGit = true' to your config:"
+                    echo "  /etc/claude-cage.conf           (system-wide)"
+                    echo "  ~/.config/claude-cage/config    (user)"
+                    echo ""
+                else
+                    echo "Alright, catch you later."
+                    exit 0
+                fi
+            else
+                echo "Run interactively to configure, or add allowNonGit = true to your config."
+                exit 1
+            fi
+            ;;
+    esac
+fi
+
+# Handle --git-merge early (doesn't need sandbox)
+if [ "$git_merge_mode" = true ]; then
+    if [ "$direct_mount_mode" = true ]; then
+        echo "Can't do git-merge in direct mount mode. Nothin' to merge."
+        exit 1
+    fi
+    manual_git_merge "$cfg_source"
+    exit 0
+fi
+
+# Handle clean-all mode
+if [ "$clean_all_mode" = true ]; then
+    echo "This will remove ALL cached branches for: $cfg_source"
+    echo ""
+
+    cached_branches=$(list_cached_branches "$cfg_source")
+    if [ -z "$cached_branches" ]; then
+        echo "No cached branches found. Nothin' to clean."
+        exit 0
+    fi
+
+    echo "Branches to be removed:"
+    while IFS= read -r branch; do
+        work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
+        if is_work_dirty "$work_dir"; then
+            echo -e "  $branch ${_yellow}(has uncommitted changes!)${_reset}"
+        else
+            echo "  $branch"
+        fi
+    done <<< "$cached_branches"
+    echo ""
+
+    if ! config_builder_prompt_yesno "Are you sure you want to delete all these?" "n"; then
+        echo "Alright, nothin' deleted."
+        exit 0
+    fi
+
+    while IFS= read -r branch; do
+        echo ""
+        echo "Cleaning branch: $branch"
+        clean_branch_cache "$cfg_source" "$branch"
+    done <<< "$cached_branches"
+
+    # Clean up any stale state files
+    clean_stale_state_files "$cfg_source"
+
+    echo ""
+    echo "All clean."
+    exit 0
+fi
+
+# Handle clean mode (single branch)
+if [ "$clean_mode" = true ]; then
+    cached_branches=$(list_cached_branches "$cfg_source")
+    if [ -z "$cached_branches" ]; then
+        echo "No cached branches found. Nothin' to clean."
+        exit 0
+    fi
+
+    # If branch specified, use it; otherwise prompt
+    if [ -n "$clean_branch" ]; then
+        # Sanitize the provided branch name
+        clean_branch=$(sanitize_branch_name "$clean_branch")
+        if ! echo "$cached_branches" | grep -qx "$clean_branch"; then
+            echo "Branch '$clean_branch' not found in cache."
+            echo ""
+            echo "Available branches:"
+            echo "$cached_branches" | sed 's/^/  /'
+            exit 1
+        fi
+    else
+        # Interactive selection
+        echo "Which branch cache do you want to remove?"
+        echo ""
+        branch_array=()
+        idx=1
+        while IFS= read -r branch; do
+            branch_array+=("$branch")
+            work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
+            if is_work_dirty "$work_dir"; then
+                echo -e "  $idx) $branch ${_yellow}(has uncommitted changes!)${_reset}"
+            else
+                echo "  $idx) $branch"
+            fi
+            ((idx++))
+        done <<< "$cached_branches"
+        echo "  q) Cancel"
+        echo ""
+
+        while true; do
+            printf "Choice: "
+            read -r choice
+            if [ "$choice" = "q" ] || [ "$choice" = "Q" ]; then
+                echo "Alright, nothin' deleted."
+                exit 0
+            fi
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#branch_array[@]} ]; then
+                clean_branch="${branch_array[$((choice-1))]}"
+                break
+            fi
+            echo "Pick a number or 'q' to quit."
+        done
+    fi
+
+    work_dir="$CLAUDE_CAGE_CACHE/branches/$clean_branch/work$cfg_source"
+
+    echo ""
+    echo "This will remove the cache for branch: $clean_branch"
+    if is_work_dirty "$work_dir"; then
+        echo ""
+        echo -e "${_yellow}⚠️  WARNING: This branch has uncommitted changes that will be lost!${_reset}"
+    fi
+    echo ""
+
+    if ! config_builder_prompt_yesno "Are you sure?" "n"; then
+        echo "Alright, nothin' deleted."
+        exit 0
+    fi
+
+    clean_branch_cache "$cfg_source" "$clean_branch"
+    echo ""
+    echo "Done. Branch '$clean_branch' cleaned up."
+    exit 0
+fi
+
+# Check isolation tool is available
+if [ "$cfg_mode" = "docker" ]; then
+    check_docker
+else
+    check_bwrap
+    # Check slirp4netns and user namespaces if network filtering is enabled
+    if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+        check_userns
+        check_slirp4netns
+        check_iptables
+    fi
+fi
+
+# Clean up any orphaned hooks from crashed sessions (git mode only)
+if [ "$direct_mount_mode" = false ] && is_git_repo "$cfg_source"; then
+    cleanup_orphaned_hooks "$cfg_source"
+fi
+
+# Show banner if enabled
+if [ "$cfg_showBanner" = "true" ]; then
+    print_banner
+fi
+
+# Display parsed config - show config sources
+echo "Configuration loaded from:"
+for cfg in "${config_files[@]}"; do
+    if [ -f "$cfg" ]; then
+        echo "  $cfg"
+    fi
+done
+echo ""
+echo "  Project:       $cfg_project"
+echo "  Source:        $cfg_source"
+echo "  Mode:          $cfg_mode"
+echo "  Launch:        $cfg_launch"
+if [ "$direct_mount_mode" = false ]; then
+    echo "  Auto-merge:    $cfg_autoMerge"
+    echo "  Isolated:      $cfg_isolated"
+fi
+echo "  Network mode:  $cfg_networkMode"
+
+if [ "$direct_mount_mode" = false ] && [ ${#cfg_display_lines[@]} -gt 0 ]; then
+    echo ""
+    echo "Excludes by source:"
+    for line in "${cfg_display_lines[@]}"; do
+        IFS='|' read -r source patterns <<< "$line"
+        echo "  [$source] $patterns"
+    done
+fi
+
+if [ ${#cfg_mounts[@]} -gt 0 ]; then
+    echo ""
+    echo "Additional mounts:"
+    for mount_entry in "${cfg_mounts[@]}"; do
+        IFS='|' read -r mount_source mount_dest <<< "$mount_entry"
+        if [ "$mount_source" = "$mount_dest" ]; then
+            echo "  $mount_source"
+        else
+            echo "  $mount_source -> $mount_dest"
+        fi
+    done
+fi
+
+echo ""
+
+# Set up paths and git-related state (or skip for non-git mode)
+source_branch=""
+PIPE_LISTENER_PID=""
+intermediary_dir=""
+work_dir=""
+branch_work_root=""
+branch_intermediary_root=""
+pipe_path=""
+state_path=""
+project_path="$cfg_source"
+
+if [ "$direct_mount_mode" = true ]; then
+    # Direct mount mode: mount source directory directly (no git sync)
+    echo -e "${_cyan}Direct mount mode. Changes go straight to source.${_reset}"
+    echo ""
+
+    # Use source path directly - no intermediary or work dir needed
+    work_dir="$cfg_source"
+    branch_work_root=$(dirname "$cfg_source")
+
+else
+    # Git mode: full cage setup with intermediary and work directories
+
+    # Capture source branch before creating intermediary (for sync targeting)
+    source_branch=$(get_source_branch "$cfg_source")
+    if [ -z "$source_branch" ]; then
+        echo "Hold on. Can't figure out what branch you're on."
+        echo "You need to be on a branch (not detached HEAD) for auto-merge to work."
+        if [ "$cfg_autoMerge" = "true" ]; then
+            echo "Either switch to a branch or disable autoMerge in your config."
+            exit 1
+        fi
+    fi
+
+    # Set branch for path construction
+    CLAUDE_CAGE_BRANCH="$source_branch"
+    export CLAUDE_CAGE_BRANCH
+
+    # Check for pending patches from previous runs (interactive)
+    pending_branches=$(list_pending_patch_branches "$cfg_source")
+    if [ -n "$pending_branches" ]; then
+        handle_pending_patches "$cfg_source"
+        if [ "$PENDING_PATCHES_RESULT" = "quit" ]; then
+            echo "Catch you later."
+            exit 0
+        fi
+    fi
+
+    # Paths for bwrap/docker
+    intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
+    work_dir=$(get_cage_path "$cfg_source" "work")
+    branch_work_root=$(get_branch_work_root)
+    branch_intermediary_root=$(get_branch_intermediary_root)
+    pipe_path=$(get_pipe_path "$cfg_source")
+    state_path=$(get_state_path "$cfg_source")
+
+    # Check for other active sessions before doing anything destructive
+    other_session_active=false
+    if has_other_sessions "$cfg_source" "$source_branch"; then
+        other_session_active=true
+    fi
+
+    # Register our session early (before any destructive operations)
+    register_session "$cfg_source" "$source_branch"
+
+    # Check if existing cage is in sync with source
+    cage_state=$(check_cage_state "$cfg_source" "$work_dir" "$state_path")
+
+    case "$cage_state" in
+        "in_sync")
+            echo "Cage is in sync with source. Pickin' up where we left off."
+            ;;
+        "ahead_clean")
+            if [ "$other_session_active" = true ]; then
+                echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
+            else
+                echo "Source moved ahead but cage is clean. Startin' fresh."
+                create_intermediary_clone "$cfg_source"
+            fi
+            ;;
+        "ahead_dirty")
+            if [ "$other_session_active" = true ]; then
+                echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
+            else
+                handle_dirty_cage "$cfg_source" "$work_dir" "$intermediary_dir" "$state_path" "$cfg_exclude"
+                case "$DIRTY_CAGE_RESULT" in
+                    "recreate")
+                        create_intermediary_clone "$cfg_source"
+                        ;;
+                    "exit")
+                        echo "Alright, we'll sort this out later."
+                        exit 0
+                        ;;
+                    # "continue" - just proceed with existing cage
+                esac
+            fi
+            ;;
+        "no_cage"|*)
+            # No existing cage, create fresh
+            create_intermediary_clone "$cfg_source"
+            ;;
+    esac
+
+    # Set up .caged/ symlinks if enabled
+    if [ "$cfg_createCagedDir" = "true" ]; then
+        setup_caged_symlinks "$cfg_source"
+    fi
+
+    # Set up git hooks and communication pipe (if autoMerge enabled)
+    if [ "$cfg_autoMerge" = "true" ]; then
+        setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
+        setup_source_pre_commit "$cfg_source" "$cfg_exclude" "$source_branch"
+        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch" "$state_path" "$work_dir"
+    fi
+fi
+
+# Pre-resolve domains for network filtering (so warnings appear before sandbox info)
+pre_resolved_allow_ips=""
+pre_resolved_block_ips=""
+domains_pre_resolved=false
+if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+    [ -n "$cfg_allow_domains" ] && pre_resolved_allow_ips=$(resolve_domains_for_docker "$cfg_allow_domains")
+    [ -n "$cfg_block_domains" ] && pre_resolved_block_ips=$(resolve_domains_for_docker "$cfg_block_domains")
+    domains_pre_resolved=true
+fi
+
+echo ""
+echo "============================================"
+echo ""
+echo "Inside sandbox:"
+echo "  $project_path              (working dir)"
+if [ "$direct_mount_mode" = false ]; then
+    echo "  /run$project_path          (git origin)"
+fi
+echo ""
+
+# Start pipe listener if autoMerge enabled (git mode only)
+if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
+    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch" "$state_path" "$verbose"
+fi
+
+# Set up cleanup handler for signals
+cleanup_on_exit() {
+    local exit_code=$?
+    # Only run cleanup for git mode
+    if [ "$direct_mount_mode" = false ]; then
+        # Always unregister our session
+        if [ -n "$source_branch" ]; then
+            unregister_session "$cfg_source" "$source_branch"
+        fi
+        if [ -n "$PIPE_LISTENER_PID" ]; then
+            stop_pipe_listener "$PIPE_LISTENER_PID"
+            cleanup_pipe "$pipe_path"
+        fi
+        if [ "$cfg_autoMerge" = "true" ] && [ -n "$source_branch" ]; then
+            cleanup_source_hooks "$cfg_source" "$source_branch"
+        fi
+    fi
+    exit $exit_code
+}
+trap cleanup_on_exit EXIT INT TERM
+
+# Determine what to run
+if [ "$test_mode" = true ]; then
+    # Test mode: drop into interactive shell
+    launch_msg="Droppin' you into a shell for testing..."
+    launch_cmd=""
+else
+    # Normal mode: run the configured launch command with any passthrough args
+    if [ ${#passthrough_args[@]} -gt 0 ]; then
+        launch_cmd="$cfg_launch ${passthrough_args[*]}"
+        launch_msg="Launchin': $launch_cmd"
+    else
+        launch_cmd="$cfg_launch"
+        launch_msg="Launchin': $cfg_launch"
+    fi
+fi
+
+echo "$launch_msg"
+
+if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+    echo "Network filtering enabled (mode: $cfg_networkMode)"
+fi
+
+# Show info messages last, right before entering sandbox
+if [ "$direct_mount_mode" = true ]; then
+    echo ""
+    echo -e "${_cyan}⚠️  Direct mount: Changes are made directly to source files.${_reset}"
+elif [ "$cfg_autoMerge" != "true" ]; then
+    echo ""
+    echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
+    echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
+    echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
+fi
+
+# Show host loopback info (mode-specific)
+if [ "$cfg_mode" = "docker" ]; then
+    echo ""
+    echo -e "${_cyan}⚠️  Inside the sandbox, use host.docker.internal to reach host services${_reset}"
+else
+    echo ""
+    echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
+fi
+
+# Show confirmation prompt (unless hidden)
+if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
+    echo ""
+    echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
+    read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true
+    echo ""
+fi
+
+if [ "$cfg_mode" = "docker" ]; then
+    run_in_docker "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+else
+    # Use network-isolated bwrap if network filtering is enabled
+    if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
+        run_in_bwrap_with_network "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    else
+        run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    fi
+fi
+
+# Cleanup is handled by the trap (cleanup_on_exit)

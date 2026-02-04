@@ -242,6 +242,9 @@ setup_git_hooks() {
         cat > "$hook_path" << EOF
 #!/bin/bash
 while read oldrev newrev refname; do
+    if [ "\${CAGE_DEBUG:-}" = "1" ]; then
+        echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
+    fi
     echo "\$refname \$newrev" > "$mounted_pipe_path"
 done
 EOF

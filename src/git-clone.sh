@@ -365,6 +365,15 @@ create_intermediary_clone() {
 
     # Remove the cloned .git and reinitialize fresh (no history of excluded files)
     echo "  Startin' fresh, clean slate..."
+
+    # Capture source commit info for the initial commit message
+    local source_short_hash
+    source_short_hash=$(git -C "$source_dir" rev-parse --short=8 HEAD 2>/dev/null)
+    local source_commit_msg
+    source_commit_msg=$(git -C "$source_dir" log -1 --format=%B 2>/dev/null)
+
+    local cage_commit_msg="${source_short_hash}: ${source_commit_msg}"
+
     if [ "$dry_run" = true ]; then
         echo "[dry-run] rm -rf $intermediary_dir/.git && git init && git add . && git commit"
     else
@@ -372,9 +381,9 @@ create_intermediary_clone() {
         git -C "$intermediary_dir" init --quiet
         git -C "$intermediary_dir" add .
         if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] git -C $intermediary_dir commit -m 'Initial commit from claude-cage'${_reset}" >&2
+            echo -e "${_yellow}[run] git -C $intermediary_dir commit -m '${source_short_hash}: ...'${_reset}" >&2
         fi
-        git -C "$intermediary_dir" commit -m "Initial commit from claude-cage" >/dev/null
+        git -C "$intermediary_dir" commit -m "$cage_commit_msg" >/dev/null
     fi
 
     echo ""

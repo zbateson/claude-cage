@@ -502,21 +502,18 @@ if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
 fi
 
 # Show info messages last, right before entering sandbox
-if [ "$direct_mount_mode" = true ]; then
-    echo ""
-    echo -e "${_cyan}⚠️  Direct mount: Changes are made directly to source files.${_reset}"
-elif [ "$cfg_autoMerge" != "true" ]; then
-    echo ""
-    echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
-    echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
-    echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
-fi
+# Docker mode prints these from inside the container (after package installs)
+if [ "$cfg_mode" != "docker" ]; then
+    if [ "$direct_mount_mode" = true ]; then
+        echo ""
+        echo -e "${_cyan}⚠️  Direct mount: Changes are made directly to source files.${_reset}"
+    elif [ "$cfg_autoMerge" != "true" ]; then
+        echo ""
+        echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
+        echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
+        echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
+    fi
 
-# Show host loopback info (mode-specific)
-if [ "$cfg_mode" = "docker" ]; then
-    echo ""
-    echo -e "${_cyan}⚠️  Inside the sandbox, use host.docker.internal to reach host services${_reset}"
-else
     echo ""
     echo -e "${_cyan}⚠️  Inside the sandbox, 10.0.2.2 maps to host 127.0.0.1${_reset}"
 fi

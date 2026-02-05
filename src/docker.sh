@@ -315,6 +315,12 @@ generate_docker_tool_install_script() {
     cat << 'TOOLS_HEADER'
 # Helper for verbose output
 debug_echo() { [ "$CAGE_VERBOSE" = "1" ] && echo "$@" >&2 || true; }
+
+# Install apt-utils first to suppress debconf warnings during package installs
+if command -v apt-get >/dev/null 2>&1 && ! dpkg -s apt-utils >/dev/null 2>&1; then
+    debug_echo "Installing apt-utils..."
+    { apt-get update -qq && apt-get install -qq -y apt-utils; } >/dev/null 2>&1 || true
+fi
 TOOLS_HEADER
 
     # No packages to install
@@ -360,6 +366,23 @@ if ! dpkg -s $check_pkg >/dev/null 2>&1 && ! command -v $check_pkg >/dev/null 2>
     fi
 fi
 TOOLS_EOF
+}
+
+# Generate info messages to display after installs, right before launching
+# Uses container-side env vars: CAGE_DIRECT_MOUNT, CAGE_AUTO_MERGE, CAGE_SOURCE_BRANCH
+generate_docker_info_script() {
+    cat << 'INFO_EOF'
+# Info messages (after installs, before launch)
+_ci='\033[36m'; _cw='\033[97m'; _cr='\033[0m'
+if [ "$CAGE_DIRECT_MOUNT" = "true" ]; then
+    echo -e "\n${_ci}⚠️  Direct mount: Changes are made directly to source files.${_cr}" >&2
+elif [ "$CAGE_AUTO_MERGE" != "true" ]; then
+    echo -e "\n${_ci}⚠️  Auto-merge is OFF for this cage (branch: $CAGE_SOURCE_BRANCH).${_cr}" >&2
+    echo -e "${_ci}   To bring changes back to source, run: ${_cw}claude-cage git-merge${_cr}" >&2
+    echo -e "${_ci}   (Must be run from branch '$CAGE_SOURCE_BRANCH')${_cr}" >&2
+fi
+echo -e "\n${_ci}⚠️  Inside the sandbox, use host.docker.internal to reach host services${_cr}" >&2
+INFO_EOF
 }
 
 # Run a command inside a Docker container
@@ -485,6 +508,9 @@ run_in_docker() {
     docker_args+=(-e "TERM=${TERM:-xterm-256color}")
     docker_args+=(-e "LANG=C.UTF-8")
     docker_args+=(-e "DEBIAN_FRONTEND=noninteractive")
+    docker_args+=(-e "CAGE_DIRECT_MOUNT=${direct_mount_mode:-false}")
+    docker_args+=(-e "CAGE_AUTO_MERGE=${cfg_autoMerge:-false}")
+    docker_args+=(-e "CAGE_SOURCE_BRANCH=${source_branch:-}")
     [ "$verbose" = true ] && docker_args+=(-e "CAGE_VERBOSE=1")
     [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")
 
@@ -502,6 +528,9 @@ run_in_docker() {
             "$resolved_block_ips" "$cfg_block_networks")
     fi
 
+    local info_script
+    info_script=$(generate_docker_info_script)
+
     # Add command or interactive shell
     if [ $# -eq 0 ]; then
         # Interactive shell
@@ -509,6 +538,8 @@ run_in_docker() {
 $tool_install_script
 
 $iptables_script
+
+$info_script
 
 # Create user with matching UID for privilege drop
 debug_echo \"Creating sandbox user (uid=${user_uid}, gid=${user_gid})...\"
@@ -535,6 +566,8 @@ exec su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'
 $tool_install_script
 
 $iptables_script
+
+$info_script
 
 # Create user with matching UID for privilege drop
 debug_echo \"Creating sandbox user (uid=${user_uid}, gid=${user_gid})...\"

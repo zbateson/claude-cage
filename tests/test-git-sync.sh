@@ -177,7 +177,7 @@ git config user.name "Claude"
 echo "from claude" > claude-state.txt
 git add claude-state.txt
 git commit -q -m "Claude state test commit"
-git push origin claude 2>/dev/null
+git push origin "$STATE_BRANCH_NAME" 2>/dev/null
 
 # Switch source to master
 cd "$STATE_SOURCE_PATH"
@@ -195,7 +195,7 @@ state_test_path=$(get_state_path "$STATE_SOURCE_PATH")
 state_before=$(cat "$state_test_path" 2>/dev/null)
 
 echo "Test 5: State file should be updated after temp-index sync"
-sync_to_source "$STATE_SOURCE_PATH" "$STATE_INTERMEDIARY" "refs/heads/claude" "feature" "$state_test_path"
+sync_to_source "$STATE_SOURCE_PATH" "$STATE_INTERMEDIARY" "refs/heads/$STATE_BRANCH_NAME" "$STATE_BRANCH_NAME" "$state_test_path"
 
 state_after=$(cat "$state_test_path" 2>/dev/null)
 if [ "$state_before" = "$state_after" ]; then
@@ -319,7 +319,7 @@ echo "  PASS: Source commit synced to intermediary"
 
 echo "Test 6: Work can pull changes from intermediary"
 cd "$WORK_DIR"
-git pull origin claude
+git pull origin "$BRANCH_NAME"
 
 if [ ! -f "$WORK_DIR/source-file.txt" ]; then
     echo "FAIL: source-file.txt not in work after pull"
@@ -434,7 +434,7 @@ git config user.name "Claude"
 echo "claude work" > claude.txt
 git add claude.txt
 git commit -q -m "Claude's commit"
-git push origin claude 2>/dev/null
+git push origin "$BRANCH_NAME" 2>/dev/null
 
 # Now switch source to master (simulating user switching branches)
 cd "$TEST_TMP/source"
@@ -454,7 +454,7 @@ source "$CAGE_DIR/dist/claude-cage"
 
 echo "Test 11: sync_to_source should apply to feature branch (not master)"
 # Call sync_to_source directly with target_branch=feature
-sync_to_source "$TEST_TMP/source" "$INTERMEDIARY_DIR" "refs/heads/claude" "feature"
+sync_to_source "$TEST_TMP/source" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "feature"
 
 # Check that feature branch has the commit
 if ! git -C "$TEST_TMP/source" log feature --oneline | grep -q "Claude's commit"; then

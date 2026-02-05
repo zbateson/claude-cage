@@ -69,6 +69,17 @@ claude_cage {
     },
 
     -- =========================================================================
+    -- GIT OPTIONS
+    -- =========================================================================
+    -- Block commits containing force-added gitignored files (default: true).
+    -- Force-added ignored files break patch-based sync between cage and source.
+    -- Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+
+    -- git = {
+    --     blockForceAdd = true,
+    -- },
+
+    -- =========================================================================
     -- PERSONAL NETWORK RESTRICTIONS (optional)
     -- =========================================================================
 

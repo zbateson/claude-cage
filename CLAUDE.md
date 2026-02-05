@@ -652,6 +652,7 @@ Branch names are sanitized for filesystem paths: `/` becomes `--`, other special
 - `CLAUDE_CAGE_CACHE` - Override cache directory (default: `~/.cache/claude-cage`)
 - `CLAUDE_CAGE_RUNTIME` - Override runtime directory (default: `$XDG_RUNTIME_DIR/claude-cage`)
 - `CLAUDE_CAGE_BRANCH` - Override branch name for path construction (auto-detected from source)
+- `CLAUDE_CAGE_MOUNTED_PIPE` - Override pipe path baked into post-receive hook (default: `/tmp/claude-cage/pipe`). Used by tests to isolate hook pipes from live sessions.
 
 **Internal (set by claude-cage):**
 - `CLAUDE_CAGE_SOURCING` - Set to `1` when sourcing script for function definitions only

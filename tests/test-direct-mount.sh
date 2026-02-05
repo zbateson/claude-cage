@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
@@ -54,7 +55,7 @@ echo "Test 1: --direct-mount should skip git sync setup"
 cd "$TEST_TMP/git-project"
 # Use env -i for consistent behavior across different shell environments
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && echo "exit" | "$2" --direct-mount --test 2>&1' _ "$TEST_TMP/git-project" "$CAGE_DIR/dist/claude-cage") || true
 
 if echo "$output" | grep -q "Intermediary"; then
@@ -96,7 +97,7 @@ echo "Test 4: directMount config should enable direct mount"
 cd "$TEST_TMP/git-project"
 rm -rf "$CLAUDE_CAGE_CACHE"  # Clean up any previous test artifacts
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/git-project" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "direct"; then
@@ -123,7 +124,7 @@ EOF
 
 cd "$TEST_TMP/non-git-project"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/non-git-project" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "direct"; then
@@ -144,7 +145,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test 2>&1' _ "$TEST_TMP/non-git-project" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "git"; then
@@ -171,7 +172,7 @@ EOF
 
 echo "Test 7: git-merge should fail in direct mount mode"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" git-merge 2>&1' _ "$TEST_TMP/git-project" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "direct mount"; then
@@ -197,7 +198,7 @@ echo "Test 8: --direct-mount should work with passthrough args"
 cd "$TEST_TMP/git-project"
 # Use env -i for consistent behavior across different shell environments
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && echo "exit" | "$2" --direct-mount --test 2>&1' _ "$TEST_TMP/git-project" "$CAGE_DIR/dist/claude-cage") || true
 
 # Just verify it runs without error

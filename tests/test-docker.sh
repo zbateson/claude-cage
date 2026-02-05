@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
@@ -54,7 +55,7 @@ echo "=== Testing docker command generation (--test --dry-run) ==="
 # Need --test to trigger docker command generation
 echo "Test 1: Should generate docker command with --test --dry-run"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "docker run"; then
@@ -124,7 +125,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "ubuntu:22.04"; then
     echo "FAIL: Should use custom image"
@@ -150,7 +151,7 @@ EOF
 
 echo "Test 8: Should include additional mounts"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "\-v.*\.gitconfig"; then
@@ -244,7 +245,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "\-\-cap-add=NET_ADMIN"; then
     echo "FAIL: Should add NET_ADMIN capability"
@@ -278,7 +279,7 @@ EOF
 
 echo "Test 17: Should install default packages (curl)"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "curl"; then
     echo "FAIL: Should install curl by default"
@@ -300,7 +301,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "wget"; then
     echo "FAIL: Should install configured packages"

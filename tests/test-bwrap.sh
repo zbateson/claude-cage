@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
@@ -54,7 +55,7 @@ echo "=== Testing bwrap command generation (--test --dry-run) ==="
 # Need --test to trigger bwrap command generation
 echo "Test 1: Should generate bwrap command with --test --dry-run"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "bwrap"; then
@@ -145,7 +146,7 @@ EOF
 
 echo "Test 9: Should include additional mounts in bwrap command"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "\-\-ro-bind.*\.gitconfig"; then
@@ -187,7 +188,7 @@ EOF
 
 echo "Test 11: --test mode should create cage and attempt to run shell"
 test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "echo INSIDE_CAGE; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
@@ -211,7 +212,7 @@ echo "  PASS: --test runs inside cage"
 echo "Test 12: Should be able to see files in work directory"
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "ls -la; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
@@ -227,7 +228,7 @@ echo "  PASS: Can see files in work directory"
 echo "Test 13: Should be able to run git commands inside cage"
 rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "git status; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true

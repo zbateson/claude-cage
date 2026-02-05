@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
@@ -74,7 +75,7 @@ EOF
 
 echo "Test 1: Dry-run should show intermediary creation"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q "Buildin' your intermediary"; then
@@ -124,7 +125,7 @@ WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
 # Run without dry-run to actually create the intermediary
 echo "Test 5: Create intermediary and work directories"
 actual_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "exit" | "$2" 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true

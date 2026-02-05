@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
@@ -53,7 +54,7 @@ echo "Setting up cage..."
 cd "$TEST_TMP/source"
 # Use env -i for consistent behavior across different shell environments
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
@@ -161,7 +162,7 @@ EOF
 # Set up cage on feature branch
 echo "Setting up cage for state file test..."
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$STATE_SOURCE_PATH" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true

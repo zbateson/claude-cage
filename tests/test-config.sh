@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
@@ -49,7 +50,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project1" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "project1/.claude-cage"; then
     echo "FAIL: Should find config in current directory"
@@ -64,7 +65,7 @@ mkdir -p "$TEST_TMP/no-config"
 setup_git_repo "$TEST_TMP/no-config"
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1 </dev/null' _ "$TEST_TMP/no-config" "$CAGE_DIR/dist/claude-cage") || true
 if ! echo "$output" | grep -q "No config found"; then
     echo "FAIL: Should mention missing config"
@@ -88,7 +89,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "\.env"; then
     echo "FAIL: Should show .env exclude"
@@ -114,7 +115,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "Auto-merge:.*true"; then
     echo "FAIL: Should show autoMerge = true"
@@ -134,7 +135,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "Mode:.*docker"; then
     echo "FAIL: Should show mode = docker"
@@ -153,7 +154,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "Mode:.*bwrap"; then
     echo "FAIL: Default mode should be bwrap"
@@ -176,7 +177,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/myproject" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "Project:.*myproject"; then
     echo "FAIL: Should derive project name from directory"
@@ -201,7 +202,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/gitroot-test/subdir/deep" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "gitroot-test/.claude-cage"; then
     echo "FAIL: Should find config at git root from subdirectory"
@@ -249,7 +250,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/projects/grouped/myapp" "$CAGE_DIR/dist/claude-cage")
 # Should have both excludes (arrays merge)
 if ! echo "$output" | grep -q "grouped-exclude"; then
@@ -298,7 +299,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/other-project" "$CAGE_DIR/dist/claude-cage")
 if echo "$output" | grep -q "grouped-exclude"; then
     echo "FAIL: Should NOT include excludes from non-matching includeIf"
@@ -323,7 +324,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/syntax-error" "$CAGE_DIR/dist/claude-cage") || true
 if ! echo "$output" | grep -qi "error\|wrong\|fix"; then
     echo "FAIL: Should report Lua syntax error"
@@ -350,7 +351,7 @@ claude_cage {
 EOF
 
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/mounts-test" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "Additional mounts:\|\.npmrc"; then
     echo "FAIL: Should show additionalMounts"

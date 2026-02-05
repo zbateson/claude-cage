@@ -14,6 +14,7 @@ TEST_TMP=$(mktemp -d)
 # Use test-specific cache and runtime dirs to avoid polluting user's dirs
 export CLAUDE_CAGE_CACHE="$TEST_TMP/.cache/claude-cage"
 export CLAUDE_CAGE_RUNTIME="$TEST_TMP/.runtime/claude-cage"
+export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
@@ -51,7 +52,7 @@ echo "=== Testing --dry-run mode ==="
 
 echo "Test 1: --dry-run should not create cage directories"
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ -d "$INTERMEDIARY_DIR" ]; then
@@ -62,7 +63,7 @@ echo "  PASS: cage directories not created in dry-run"
 
 echo "Test 2: --dry-run should show [dry-run] prefix"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
 if ! echo "$output" | grep -q "\[dry-run\]"; then
@@ -91,7 +92,7 @@ echo "=== Testing --verbose mode ==="
 
 echo "Test 4: --verbose should show [run] prefix"
 verbose_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'echo "exit" | "$1" --verbose --test 2>&1' _ "$CAGE_DIR/dist/claude-cage") || true
@@ -109,7 +110,7 @@ rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 
 echo "Test 5: -v should be alias for --verbose"
 v_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'echo "exit" | "$1" -v --test 2>&1' _ "$CAGE_DIR/dist/claude-cage") || true
@@ -127,7 +128,7 @@ rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 
 echo "Test 6: --debug implies --verbose"
 debug_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'echo "exit" | "$1" --debug --test 2>&1' _ "$CAGE_DIR/dist/claude-cage") || true
@@ -146,7 +147,7 @@ rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
 # Use --test to get a shell (just exit immediately) rather than trying to launch claude
 # Use env -i for consistent behavior across different shell environments
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'echo "exit" | "$1" --test' _ "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true

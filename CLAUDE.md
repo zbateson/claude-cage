@@ -470,7 +470,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Cleanup on exit
 - [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (164 tests across 12 files)
+- [x] Comprehensive test suite (167 tests across 12 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
@@ -602,7 +602,9 @@ claude_cage {
 └── branches/
     └── <branch>/                         # Sanitized branch name (e.g., "main", "feature--foo")
         ├── intermediary/<project-path>/  # Sanitized repo (git origin for work)
-        │   └── .git/hooks/post-receive   # Triggers sync
+        │   └── .git/
+        │       ├── hooks/post-receive    # Triggers sync
+        │       └── sync.log             # Sync activity log (all hooks/pipe writes here)
         ├── work/<project-path>/          # Claude's working directory
         └── state-<path-hash>             # Last processed source commit ID (12-char md5)
 
@@ -617,7 +619,8 @@ project/
 │   ├── .gitignore                      # Self-ignoring (* and !.gitignore)
 │   └── <branch>/                       # One directory per caged branch
 │       ├── work         → ~/.cache/.../work/<project-path>/
-│       └── intermediary → ~/.cache/.../intermediary/<project-path>/
+│       ├── intermediary → ~/.cache/.../intermediary/<project-path>/
+│       └── sync.log     → ~/.cache/.../intermediary/<project-path>/.git/sync.log
 └── .git/hooks/
     ├── pre-commit                      # Dispatcher (runs all in pre-commit.d/)
     ├── pre-commit.d/
@@ -681,16 +684,16 @@ bash tests/run-all.sh
 | test-config.sh | config.sh | 16 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
-| test-git-hooks.sh | git-hooks.sh | 10 |
+| test-git-hooks.sh | git-hooks.sh | 12 |
 | test-git-patches.sh | git-patches.sh | 12 |
-| test-git-sync.sh | git-sync.sh | 18 |
+| test-git-sync.sh | git-sync.sh | 19 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 18 |
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 164 tests across 12 files**
+**Total: 167 tests across 12 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

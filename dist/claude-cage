@@ -1651,6 +1651,16 @@ setup_caged_symlinks() {
         ln -s "$intermediary_target" "$intermediary_symlink"
     fi
 
+    # Create/update sync.log symlink
+    local sync_log_target="$intermediary_target/.git/sync.log"
+    local sync_log_symlink="$branch_dir/sync.log"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $sync_log_target $sync_log_symlink"
+    else
+        rm -f "$sync_log_symlink"
+        ln -s "$sync_log_target" "$sync_log_symlink"
+    fi
+
     if [ "$verbose" = true ]; then
         echo "  Created .caged/$sanitized_branch/ symlinks"
     fi
@@ -1898,7 +1908,9 @@ setup_git_hooks() {
     else
         cat > "$hook_path" << EOF
 #!/bin/bash
+SYNC_LOG="\$(git rev-parse --git-dir 2>/dev/null)/sync.log"
 while read oldrev newrev refname; do
+    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\${newrev:0:8}" "post-recv" "refname=\$refname oldrev=\${oldrev:0:8} newrev=\${newrev:0:8}" >> "\$SYNC_LOG"
     if [ "\${CAGE_DEBUG:-}" = "1" ]; then
         echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
     fi
@@ -2117,14 +2129,22 @@ TARGET_BRANCH="$target_branch"
 STATE_FILE="$state_path"
 SOURCE_DIR="$source_dir"
 WORK_DIR="$work_dir"
+SYNC_LOG="\$INTERMEDIARY/.git/sync.log"
+
+_sync_log() {
+    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\$1" "\$2" "\$3" >> "\$SYNC_LOG"
+}
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet
 fi
 
+COMMIT_SHORT=\$(git rev-parse --short=8 HEAD)
+
 # Only sync commits from the branch that was active when cage started
 current_branch=\$(git branch --show-current)
 if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: on branch \$current_branch, target is \$TARGET_BRANCH"
     exit 0  # different branch, no sync needed
 fi
 
@@ -2134,23 +2154,27 @@ fi
 # when pathspec excludes all files (it outputs the parent commit instead of empty)
 # Note: Don't use "-- ." before excludes - it breaks pathspec exclude matching
 PATCH=\$(git format-patch HEAD~1..HEAD --stdout --$pathspec_excludes)
+SUBJECT=\$(git log -1 --format=%s | head -c 50)
 
 # Check if patch has any actual changes (not just empty)
 if echo "\$PATCH" | grep -q "^diff --git"; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
     # Ensure we're on claude branch and apply
     echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
-    if (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way); then
-        : # success
+    AM_OUTPUT=\$(cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way 2>&1) && AM_RC=0 || AM_RC=\$?
+    if [ "\$AM_RC" -eq 0 ]; then
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "git-am ok"
     else
         git -C "\$INTERMEDIARY" am --abort 2>/dev/null || true
         echo -e "\033[1;31mclaude-cage:\033[0m Patch didn't apply cleanly."
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "git-am FAILED rc=\$AM_RC: \$(echo "\$AM_OUTPUT" | tail -1)"
 
         # Save patch for manual recovery
         SANITIZED_BRANCH=\$(echo "\$TARGET_BRANCH" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g')
         TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
-        SUBJECT=\$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
+        SAFE_SUBJECT=\$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
         REL_PATH="claude-cage-failed-patches/to-intermediary/\$SANITIZED_BRANCH"
-        PATCH_FILE="\${TIMESTAMP}_\${SUBJECT}.patch"
+        PATCH_FILE="\${TIMESTAMP}_\${SAFE_SUBJECT}.patch"
 
         # Save to source directory
         mkdir -p "\$SOURCE_DIR/\$REL_PATH"
@@ -2166,11 +2190,13 @@ if echo "\$PATCH" | grep -q "^diff --git"; then
     fi
 else
     echo -e "\033[1;31mclaude-cage:\033[0m Only excluded files in this commit, nothin' to sync."
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "empty patch (excluded-only), skipped"
 fi
 
 # Update state file with current commit (even if only excluded files)
 # This tracks that we've processed this commit
 git rev-parse HEAD > "\$STATE_FILE"
+_sync_log "\$COMMIT_SHORT" ">>intermediary" "state updated to \$COMMIT_SHORT"
 EOF
         chmod +x "$hook_path"
     fi
@@ -2620,6 +2646,18 @@ handle_pending_patches() {
 # Git sync operations (fetch/merge from intermediary)
 # ============================================================================
 
+# Append a line to the sync log file (in intermediary's .git/)
+# Arguments: $1=log_file, $2=commit_short, $3=direction, $4=message
+sync_log() {
+    local log_file="$1"
+    local commit_short="$2"
+    local direction="$3"
+    local msg="$4"
+    if [ -n "$log_file" ]; then
+        printf '[%s] %s %-14s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$commit_short" "$direction" "$msg" >> "$log_file"
+    fi
+}
+
 # Check if existing cage is in sync with source
 # Returns: "no_cage" | "in_sync" | "ahead_clean" | "ahead_dirty"
 # Arguments:
@@ -2859,12 +2897,17 @@ sync_to_source() {
     local refname="$3"
     local target_branch="$4"
     local state_path="$5"
+    local log_file="$intermediary_dir/.git/sync.log"
+
+    local newrev_short
+    newrev_short=$(git -C "$intermediary_dir" rev-parse --short=8 "$refname" 2>/dev/null)
 
     # Skip the initial commit (it's just a copy of source files)
     local commit_msg
     commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$refname")
     if [ "$commit_msg" = "Initial commit from claude-cage" ]; then
         echo "First commit, nothin' to sync yet"
+        sync_log "$log_file" "$newrev_short" ">>source" "skipped initial commit"
         return 0
     fi
 
@@ -2877,6 +2920,7 @@ sync_to_source() {
     # Skip empty patches (e.g. empty commits, or commits with only non-tracked files)
     if ! echo "$patch" | grep -q "^diff --git"; then
         echo "  Empty patch, nothin' to apply."
+        sync_log "$log_file" "$newrev_short" ">>source" "empty patch, skipped (target=$target_branch msg=$(echo "$commit_msg" | head -c 50))"
         return 0
     fi
 
@@ -2884,14 +2928,20 @@ sync_to_source() {
     local current_branch
     current_branch=$(git -C "$source_dir" branch --show-current)
 
+    sync_log "$log_file" "$newrev_short" ">>source" "target=$target_branch current=$current_branch same_branch=$([ "$current_branch" = "$target_branch" ] && echo yes || echo no) msg=$(echo "$commit_msg" | head -c 50)"
+
     if [ "$current_branch" = "$target_branch" ]; then
         # Simple case - user still on same branch, use git am
-        if echo "$patch" | git -C "$source_dir" am --3way; then
+        local am_output am_rc
+        am_output=$(echo "$patch" | git -C "$source_dir" am --3way 2>&1) && am_rc=0 || am_rc=$?
+        if [ "$am_rc" -eq 0 ]; then
             echo "  Got it. Changes are in."
+            sync_log "$log_file" "$newrev_short" ">>source" "git-am ok (same branch)"
         else
             echo "  Well now, that didn't go smooth. Might need to merge this one yourself."
             git -C "$source_dir" am --abort 2>/dev/null || true
             save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
+            sync_log "$log_file" "$newrev_short" ">>source" "git-am FAILED rc=$am_rc: $(echo "$am_output" | tail -1)"
         fi
     else
         # User switched branches - apply to target branch via temp index
@@ -2913,7 +2963,9 @@ sync_to_source() {
             git read-tree "$target_branch"
 
             # Apply patch to temp index
-            if echo "$patch" | git apply --cached; then
+            local apply_output apply_rc
+            apply_output=$(echo "$patch" | git apply --cached 2>&1) && apply_rc=0 || apply_rc=$?
+            if [ "$apply_rc" -eq 0 ]; then
                 # Write new tree
                 local tree
                 tree=$(git write-tree)
@@ -2939,9 +2991,11 @@ sync_to_source() {
                 fi
 
                 echo "  Got it. Changes are on $target_branch."
+                sync_log "$log_file" "$newrev_short" ">>source" "applied via temp-index to $target_branch new_commit=${new_commit:0:8}"
             else
                 echo "  Patch didn't apply clean to $target_branch."
                 save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
+                sync_log "$log_file" "$newrev_short" ">>source" "git-apply FAILED rc=$apply_rc on $target_branch: $(echo "$apply_output" | tail -1)"
             fi
         )
 
@@ -2974,6 +3028,7 @@ start_pipe_listener() {
         exec 3<>"$pipe_path"
         while read -r refname newrev <&3; do
             if [ -n "$refname" ]; then
+                sync_log "$intermediary_dir/.git/sync.log" "${newrev:0:8}" "pipe-recv" "refname=$refname newrev=${newrev:0:8} target=$target_branch"
                 if [ "$debug" = true ]; then
                     echo -e "${_yellow}[pipe-listener] received: refname=$refname newrev=$newrev target=$target_branch$(date +" at %H:%M:%S")${_reset}" >&2
                 fi

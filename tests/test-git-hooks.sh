@@ -254,4 +254,68 @@ fi
 echo "  PASS: Empty dispatchers cleaned up"
 
 echo ""
+echo "=== Testing sync logging in hooks ==="
+
+echo "Test 17: Recreate cage with autoMerge to check hook logging"
+# Clean up from orphan tests
+rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
+rm -rf "$PIPE_PATH"
+rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
+rm -f "$TEST_TMP/source/.git/hooks/post-commit"
+rm -rf "$TEST_TMP/source/.git/hooks/pre-commit.d"
+rm -rf "$TEST_TMP/source/.git/hooks/post-commit.d"
+
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    autoMerge = true,
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
+
+hook_path="$INTERMEDIARY_DIR/.git/hooks/post-receive"
+if ! grep -q "sync.log" "$hook_path"; then
+    echo "FAIL: post-receive hook doesn't reference sync.log"
+    cat "$hook_path"
+    exit 1
+fi
+if ! grep -q "post-recv" "$hook_path"; then
+    echo "FAIL: post-receive hook doesn't log with post-recv direction"
+    cat "$hook_path"
+    exit 1
+fi
+echo "  PASS: post-receive hook logs to sync.log"
+
+echo "Test 18: post-commit hook should log to sync.log"
+# Source hooks are cleaned on sandbox exit, so generate one directly
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+unset CLAUDE_CAGE_SOURCING
+export CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
+state_path=$(get_state_path "$TEST_TMP/source")
+setup_source_post_commit "$TEST_TMP/source" "" "$INTERMEDIARY_DIR" "$BRANCH_NAME" "$state_path" "$WORK_DIR"
+post_commit_hook="$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME"
+if [ ! -f "$post_commit_hook" ]; then
+    echo "FAIL: post-commit hook not found at $post_commit_hook"
+    exit 1
+fi
+if ! grep -q "sync.log" "$post_commit_hook"; then
+    echo "FAIL: post-commit hook doesn't reference sync.log"
+    cat "$post_commit_hook"
+    exit 1
+fi
+if ! grep -q ">>intermediary" "$post_commit_hook"; then
+    echo "FAIL: post-commit hook doesn't log with >>intermediary direction"
+    cat "$post_commit_hook"
+    exit 1
+fi
+echo "  PASS: post-commit hook logs to sync.log"
+
+echo ""
 echo "=== All git-hooks tests passed! ==="

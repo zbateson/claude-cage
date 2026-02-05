@@ -214,6 +214,24 @@ if [ "$state_after" != "$feature_tip" ]; then
 fi
 echo "  PASS: State file updated to new feature branch tip after temp-index sync"
 
+echo "Test 5b: Sync log should contain entries from sync_to_source"
+SYNC_LOG_FILE="$STATE_INTERMEDIARY/.git/sync.log"
+if [ ! -f "$SYNC_LOG_FILE" ]; then
+    echo "FAIL: Sync log file was not created at $SYNC_LOG_FILE"
+    exit 1
+fi
+if ! grep -q ">>source" "$SYNC_LOG_FILE"; then
+    echo "FAIL: Sync log should contain >>source entries"
+    cat "$SYNC_LOG_FILE"
+    exit 1
+fi
+if ! grep -q "applied via temp-index" "$SYNC_LOG_FILE"; then
+    echo "FAIL: Sync log should show temp-index apply"
+    cat "$SYNC_LOG_FILE"
+    exit 1
+fi
+echo "  PASS: Sync log contains expected entries"
+
 echo ""
 echo "=== Testing active session detection ==="
 

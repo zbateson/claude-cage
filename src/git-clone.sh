@@ -483,6 +483,16 @@ setup_caged_symlinks() {
         ln -s "$intermediary_target" "$intermediary_symlink"
     fi
 
+    # Create/update sync.log symlink
+    local sync_log_target="$intermediary_target/.git/sync.log"
+    local sync_log_symlink="$branch_dir/sync.log"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $sync_log_target $sync_log_symlink"
+    else
+        rm -f "$sync_log_symlink"
+        ln -s "$sync_log_target" "$sync_log_symlink"
+    fi
+
     if [ "$verbose" = true ]; then
         echo "  Created .caged/$sanitized_branch/ symlinks"
     fi

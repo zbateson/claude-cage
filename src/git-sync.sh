@@ -2,6 +2,18 @@
 # Git sync operations (fetch/merge from intermediary)
 # ============================================================================
 
+# Append a line to the sync log file (in intermediary's .git/)
+# Arguments: $1=log_file, $2=commit_short, $3=direction, $4=message
+sync_log() {
+    local log_file="$1"
+    local commit_short="$2"
+    local direction="$3"
+    local msg="$4"
+    if [ -n "$log_file" ]; then
+        printf '[%s] %s %-14s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$commit_short" "$direction" "$msg" >> "$log_file"
+    fi
+}
+
 # Check if existing cage is in sync with source
 # Returns: "no_cage" | "in_sync" | "ahead_clean" | "ahead_dirty"
 # Arguments:
@@ -241,12 +253,17 @@ sync_to_source() {
     local refname="$3"
     local target_branch="$4"
     local state_path="$5"
+    local log_file="$intermediary_dir/.git/sync.log"
+
+    local newrev_short
+    newrev_short=$(git -C "$intermediary_dir" rev-parse --short=8 "$refname" 2>/dev/null)
 
     # Skip the initial commit (it's just a copy of source files)
     local commit_msg
     commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$refname")
     if [ "$commit_msg" = "Initial commit from claude-cage" ]; then
         echo "First commit, nothin' to sync yet"
+        sync_log "$log_file" "$newrev_short" ">>source" "skipped initial commit"
         return 0
     fi
 
@@ -259,6 +276,7 @@ sync_to_source() {
     # Skip empty patches (e.g. empty commits, or commits with only non-tracked files)
     if ! echo "$patch" | grep -q "^diff --git"; then
         echo "  Empty patch, nothin' to apply."
+        sync_log "$log_file" "$newrev_short" ">>source" "empty patch, skipped (target=$target_branch msg=$(echo "$commit_msg" | head -c 50))"
         return 0
     fi
 
@@ -266,14 +284,20 @@ sync_to_source() {
     local current_branch
     current_branch=$(git -C "$source_dir" branch --show-current)
 
+    sync_log "$log_file" "$newrev_short" ">>source" "target=$target_branch current=$current_branch same_branch=$([ "$current_branch" = "$target_branch" ] && echo yes || echo no) msg=$(echo "$commit_msg" | head -c 50)"
+
     if [ "$current_branch" = "$target_branch" ]; then
         # Simple case - user still on same branch, use git am
-        if echo "$patch" | git -C "$source_dir" am --3way; then
+        local am_output am_rc
+        am_output=$(echo "$patch" | git -C "$source_dir" am --3way 2>&1) && am_rc=0 || am_rc=$?
+        if [ "$am_rc" -eq 0 ]; then
             echo "  Got it. Changes are in."
+            sync_log "$log_file" "$newrev_short" ">>source" "git-am ok (same branch)"
         else
             echo "  Well now, that didn't go smooth. Might need to merge this one yourself."
             git -C "$source_dir" am --abort 2>/dev/null || true
             save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
+            sync_log "$log_file" "$newrev_short" ">>source" "git-am FAILED rc=$am_rc: $(echo "$am_output" | tail -1)"
         fi
     else
         # User switched branches - apply to target branch via temp index
@@ -295,7 +319,9 @@ sync_to_source() {
             git read-tree "$target_branch"
 
             # Apply patch to temp index
-            if echo "$patch" | git apply --cached; then
+            local apply_output apply_rc
+            apply_output=$(echo "$patch" | git apply --cached 2>&1) && apply_rc=0 || apply_rc=$?
+            if [ "$apply_rc" -eq 0 ]; then
                 # Write new tree
                 local tree
                 tree=$(git write-tree)
@@ -321,9 +347,11 @@ sync_to_source() {
                 fi
 
                 echo "  Got it. Changes are on $target_branch."
+                sync_log "$log_file" "$newrev_short" ">>source" "applied via temp-index to $target_branch new_commit=${new_commit:0:8}"
             else
                 echo "  Patch didn't apply clean to $target_branch."
                 save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
+                sync_log "$log_file" "$newrev_short" ">>source" "git-apply FAILED rc=$apply_rc on $target_branch: $(echo "$apply_output" | tail -1)"
             fi
         )
 
@@ -356,6 +384,7 @@ start_pipe_listener() {
         exec 3<>"$pipe_path"
         while read -r refname newrev <&3; do
             if [ -n "$refname" ]; then
+                sync_log "$intermediary_dir/.git/sync.log" "${newrev:0:8}" "pipe-recv" "refname=$refname newrev=${newrev:0:8} target=$target_branch"
                 if [ "$debug" = true ]; then
                     echo -e "${_yellow}[pipe-listener] received: refname=$refname newrev=$newrev target=$target_branch$(date +" at %H:%M:%S")${_reset}" >&2
                 fi

@@ -241,7 +241,9 @@ setup_git_hooks() {
     else
         cat > "$hook_path" << EOF
 #!/bin/bash
+SYNC_LOG="\$(git rev-parse --git-dir 2>/dev/null)/sync.log"
 while read oldrev newrev refname; do
+    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\${newrev:0:8}" "post-recv" "refname=\$refname oldrev=\${oldrev:0:8} newrev=\${newrev:0:8}" >> "\$SYNC_LOG"
     if [ "\${CAGE_DEBUG:-}" = "1" ]; then
         echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
     fi
@@ -460,14 +462,22 @@ TARGET_BRANCH="$target_branch"
 STATE_FILE="$state_path"
 SOURCE_DIR="$source_dir"
 WORK_DIR="$work_dir"
+SYNC_LOG="\$INTERMEDIARY/.git/sync.log"
+
+_sync_log() {
+    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\$1" "\$2" "\$3" >> "\$SYNC_LOG"
+}
 
 if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0  # cage not set up yet
 fi
 
+COMMIT_SHORT=\$(git rev-parse --short=8 HEAD)
+
 # Only sync commits from the branch that was active when cage started
 current_branch=\$(git branch --show-current)
 if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: on branch \$current_branch, target is \$TARGET_BRANCH"
     exit 0  # different branch, no sync needed
 fi
 
@@ -477,23 +487,27 @@ fi
 # when pathspec excludes all files (it outputs the parent commit instead of empty)
 # Note: Don't use "-- ." before excludes - it breaks pathspec exclude matching
 PATCH=\$(git format-patch HEAD~1..HEAD --stdout --$pathspec_excludes)
+SUBJECT=\$(git log -1 --format=%s | head -c 50)
 
 # Check if patch has any actual changes (not just empty)
 if echo "\$PATCH" | grep -q "^diff --git"; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
     # Ensure we're on claude branch and apply
     echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
-    if (cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way); then
-        : # success
+    AM_OUTPUT=\$(cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way 2>&1) && AM_RC=0 || AM_RC=\$?
+    if [ "\$AM_RC" -eq 0 ]; then
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "git-am ok"
     else
         git -C "\$INTERMEDIARY" am --abort 2>/dev/null || true
         echo -e "\033[1;31mclaude-cage:\033[0m Patch didn't apply cleanly."
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "git-am FAILED rc=\$AM_RC: \$(echo "\$AM_OUTPUT" | tail -1)"
 
         # Save patch for manual recovery
         SANITIZED_BRANCH=\$(echo "\$TARGET_BRANCH" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g')
         TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
-        SUBJECT=\$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
+        SAFE_SUBJECT=\$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
         REL_PATH="claude-cage-failed-patches/to-intermediary/\$SANITIZED_BRANCH"
-        PATCH_FILE="\${TIMESTAMP}_\${SUBJECT}.patch"
+        PATCH_FILE="\${TIMESTAMP}_\${SAFE_SUBJECT}.patch"
 
         # Save to source directory
         mkdir -p "\$SOURCE_DIR/\$REL_PATH"
@@ -509,11 +523,13 @@ if echo "\$PATCH" | grep -q "^diff --git"; then
     fi
 else
     echo -e "\033[1;31mclaude-cage:\033[0m Only excluded files in this commit, nothin' to sync."
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "empty patch (excluded-only), skipped"
 fi
 
 # Update state file with current commit (even if only excluded files)
 # This tracks that we've processed this commit
 git rev-parse HEAD > "\$STATE_FILE"
+_sync_log "\$COMMIT_SHORT" ">>intermediary" "state updated to \$COMMIT_SHORT"
 EOF
         chmod +x "$hook_path"
     fi

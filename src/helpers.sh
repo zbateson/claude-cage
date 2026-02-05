@@ -55,7 +55,7 @@ run_quiet() {
     if [ "$debug" = true ]; then
         "$@"
     else
-        "$@" >/dev/null 2>&1
+        "$@" >/dev/null
     fi
 }
 

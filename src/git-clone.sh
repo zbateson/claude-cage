@@ -392,7 +392,7 @@ create_intermediary_clone() {
     # Create branch in intermediary matching source (this is where source commits land)
     local branch_name="${CLAUDE_CAGE_BRANCH:-$source_branch}"
     echo "  Settin' up the $branch_name branch..."
-    run_quiet git -C "$intermediary_dir" checkout -b "$branch_name"
+    run_quiet git -C "$intermediary_dir" checkout --quiet -b "$branch_name"
 
     # Allow pushing to checked-out branch (updates working tree automatically)
     if ! run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead; then
@@ -407,7 +407,7 @@ create_intermediary_clone() {
     # Create work directory by cloning from intermediary
     echo ""
     echo "Settin' up your workspace..."
-    run_quiet git clone "$intermediary_dir" "$work_dir"
+    run_quiet git clone --quiet "$intermediary_dir" "$work_dir"
 
     # Update origin to use the path as it appears inside the cage
     # Intermediary is mounted at /run, so origin is /run<source_dir>

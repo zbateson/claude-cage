@@ -28,36 +28,39 @@ generate_docker_iptables_script() {
 
     cat << 'IPTABLES_HEADER'
 # Set up iptables rules (running as root)
-debug_echo() { [ "$CAGE_DEBUG" = "1" ] && echo "$@" >&2 || true; }
+debug_echo() { [ "$CAGE_VERBOSE" = "1" ] && echo "$@" >&2 || true; }
 
 # Check if iptables is available, try to install if not
 if ! command -v iptables >/dev/null 2>&1; then
     echo "Installing iptables..." >&2
     if command -v apt-get >/dev/null 2>&1; then
         debug_echo "  Running apt-get update && install..."
-        if [ "$CAGE_DEBUG" = "1" ]; then
-            apt-get update && apt-get install -y iptables || true
+        if [ "$CAGE_VERBOSE" = "1" ]; then
+            apt-get update && apt-get install -y iptables || { echo "iptables installation failed." >&2; exit 1; }
         else
-            { apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y iptables >/dev/null 2>&1; } &
-            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait $_pid || true
+            { apt-get update -qq >/dev/null && apt-get install -qq -y iptables >/dev/null; } &
+            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done
+            wait $_pid || { echo >&2; echo "iptables installation failed." >&2; exit 1; }
             echo >&2
         fi
     elif command -v apk >/dev/null 2>&1; then
         debug_echo "  Running apk add..."
-        if [ "$CAGE_DEBUG" = "1" ]; then
-            apk add iptables || true
+        if [ "$CAGE_VERBOSE" = "1" ]; then
+            apk add iptables || { echo "iptables installation failed." >&2; exit 1; }
         else
-            apk add --quiet iptables >/dev/null 2>&1 &
-            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait $_pid || true
+            apk add --quiet iptables >/dev/null &
+            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done
+            wait $_pid || { echo >&2; echo "iptables installation failed." >&2; exit 1; }
             echo >&2
         fi
     elif command -v yum >/dev/null 2>&1; then
         debug_echo "  Running yum install..."
-        if [ "$CAGE_DEBUG" = "1" ]; then
-            yum install -y iptables || true
+        if [ "$CAGE_VERBOSE" = "1" ]; then
+            yum install -y iptables || { echo "iptables installation failed." >&2; exit 1; }
         else
-            yum install -q -y iptables >/dev/null 2>&1 &
-            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait $_pid || true
+            yum install -q -y iptables >/dev/null &
+            _pid=$!; while kill -0 $_pid 2>/dev/null; do printf '.' >&2; sleep 1; done
+            wait $_pid || { echo >&2; echo "iptables installation failed." >&2; exit 1; }
             echo >&2
         fi
     fi
@@ -310,8 +313,8 @@ generate_docker_tool_install_script() {
 
     # Always define debug_echo (used by later setup steps too)
     cat << 'TOOLS_HEADER'
-# Helper for debug output
-debug_echo() { [ "$CAGE_DEBUG" = "1" ] && echo "$@" >&2 || true; }
+# Helper for verbose output
+debug_echo() { [ "$CAGE_VERBOSE" = "1" ] && echo "$@" >&2 || true; }
 TOOLS_HEADER
 
     # No packages to install
@@ -328,27 +331,30 @@ TOOLS_HEADER
 if ! dpkg -s $check_pkg >/dev/null 2>&1 && ! command -v $check_pkg >/dev/null 2>&1; then
     debug_echo "Installing packages: $pkg_list"
     if command -v apt-get >/dev/null 2>&1; then
-        if [ "\$CAGE_DEBUG" = "1" ]; then
-            apt-get update && apt-get install -y $pkg_list || true
+        if [ "\$CAGE_VERBOSE" = "1" ]; then
+            apt-get update && apt-get install -y $pkg_list || { echo "Package installation failed." >&2; exit 1; }
         else
-            { apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y $pkg_list >/dev/null 2>&1; } &
-            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            { apt-get update -qq >/dev/null && apt-get install -qq -y $pkg_list >/dev/null; } &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done
+            wait \$_pid || { echo >&2; echo "Package installation failed." >&2; exit 1; }
             echo >&2
         fi
     elif command -v apk >/dev/null 2>&1; then
-        if [ "\$CAGE_DEBUG" = "1" ]; then
-            apk add $pkg_list || true
+        if [ "\$CAGE_VERBOSE" = "1" ]; then
+            apk add $pkg_list || { echo "Package installation failed." >&2; exit 1; }
         else
-            apk add --quiet $pkg_list >/dev/null 2>&1 &
-            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            apk add --quiet $pkg_list >/dev/null &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done
+            wait \$_pid || { echo >&2; echo "Package installation failed." >&2; exit 1; }
             echo >&2
         fi
     elif command -v yum >/dev/null 2>&1; then
-        if [ "\$CAGE_DEBUG" = "1" ]; then
-            yum install -y $pkg_list || true
+        if [ "\$CAGE_VERBOSE" = "1" ]; then
+            yum install -y $pkg_list || { echo "Package installation failed." >&2; exit 1; }
         else
-            yum install -q -y $pkg_list >/dev/null 2>&1 &
-            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done; wait \$_pid || true
+            yum install -q -y $pkg_list >/dev/null &
+            _pid=\$!; while kill -0 \$_pid 2>/dev/null; do printf '.' >&2; sleep 1; done
+            wait \$_pid || { echo >&2; echo "Package installation failed." >&2; exit 1; }
             echo >&2
         fi
     fi
@@ -478,6 +484,7 @@ run_in_docker() {
     docker_args+=(-e "HOME=$user_home")
     docker_args+=(-e "TERM=${TERM:-xterm-256color}")
     docker_args+=(-e "LANG=${LANG:-C.UTF-8}")
+    [ "$verbose" = true ] && docker_args+=(-e "CAGE_VERBOSE=1")
     [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")
 
     # Image

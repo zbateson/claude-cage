@@ -55,12 +55,12 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 ### Three-Repository Model
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`~/.cache/claude-cage/branches/<branch>/intermediary/<project-path>/`) - Fresh git repo on `claude` branch, excluded files removed, no history of sensitive data
-3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary on `claude` branch where Claude works
+2. **Intermediary** (`~/.cache/claude-cage/branches/<branch>/intermediary/<project-path>/`) - Fresh git repo using same branch name as source (e.g., `main`), excluded files removed, no history of sensitive data
+3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary using same branch name as source where Claude works
 
 Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches. Inside the sandbox, each project's work directory is mounted at its original path, and intermediaries are mounted at `/run<project-path>`, so git origins are accessible there.
 
-Both intermediary and work use a single `claude` branch. Intermediary has `receive.denyCurrentBranch=updateInstead` to allow pushing to the checked-out branch.
+Both intermediary and work use the same branch name as your source project (e.g., if you're on `main`, they use `main`; if you're on `feature/foo`, they use `feature/foo`). Intermediary has `receive.denyCurrentBranch=updateInstead` to allow pushing to the checked-out branch.
 
 ### Why Intermediary?
 
@@ -137,7 +137,7 @@ When you commit to source:
 
 1. `post-commit` hook on source fires
 2. Creates patch excluding sensitive files using pathspec excludes
-3. Applies patch to intermediary's `claude` branch with `git am`
+3. Applies patch to intermediary's matching branch with `git am`
 4. Claude runs `git pull` when ready to get changes
 
 If commit only contains excluded files, shows: "Only excluded files in this commit, nothin' to sync."
@@ -457,7 +457,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Config parsing (Lua-based, same as main claude-cage)
 - [x] `create_intermediary_clone()` - git ls-files + tar with excludes
 - [x] Fresh git init (no history of excluded files)
-- [x] Work directory clone with `claude` branch
+- [x] Work directory clone using source branch name
 - [x] `run_in_bwrap()` - full bwrap sandbox
 - [x] `run_in_docker()` - Docker container sandbox
 - [x] Named pipe communication (`$XDG_RUNTIME_DIR/claude-cage/pipes/`)

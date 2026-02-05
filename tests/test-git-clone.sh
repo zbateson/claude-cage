@@ -86,14 +86,15 @@ if ! echo "$output" | grep -q "Buildin' your intermediary"; then
 fi
 echo "  PASS: Found intermediary creation message"
 
-echo "Test 2: Dry-run should show claude branch creation"
-if ! echo "$output" | grep -q "Settin' up the claude branch"; then
-    echo "FAIL: Did not find claude branch setup message"
+echo "Test 2: Dry-run should show branch creation"
+# Note: In dry-run, CLAUDE_CAGE_BRANCH isn't set so it uses source branch name
+if ! echo "$output" | grep -q "Settin' up the .* branch"; then
+    echo "FAIL: Did not find branch setup message"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Found claude branch creation"
+echo "  PASS: Found branch creation"
 
 echo "Test 3: Dry-run should show exclude patterns"
 if ! echo "$output" | grep -q "\.env"; then
@@ -142,21 +143,21 @@ if [ ! -d "$WORK_DIR" ]; then
 fi
 echo "  PASS: Work directory created"
 
-echo "Test 6: Intermediary should be on claude branch"
+echo "Test 6: Intermediary should be on source branch ($BRANCH_NAME)"
 branch=$(git -C "$INTERMEDIARY_DIR" branch --show-current)
-if [ "$branch" != "claude" ]; then
-    echo "FAIL: Intermediary branch is '$branch', expected 'claude'"
+if [ "$branch" != "$BRANCH_NAME" ]; then
+    echo "FAIL: Intermediary branch is '$branch', expected '$BRANCH_NAME'"
     exit 1
 fi
-echo "  PASS: Intermediary is on claude branch"
+echo "  PASS: Intermediary is on $BRANCH_NAME branch"
 
-echo "Test 7: Work should be on claude branch"
+echo "Test 7: Work should be on source branch ($BRANCH_NAME)"
 branch=$(git -C "$WORK_DIR" branch --show-current)
-if [ "$branch" != "claude" ]; then
-    echo "FAIL: Work branch is '$branch', expected 'claude'"
+if [ "$branch" != "$BRANCH_NAME" ]; then
+    echo "FAIL: Work branch is '$branch', expected '$BRANCH_NAME'"
     exit 1
 fi
-echo "  PASS: Work is on claude branch"
+echo "  PASS: Work is on $BRANCH_NAME branch"
 
 echo "Test 8: Intermediary should have receive.denyCurrentBranch=updateInstead"
 config_val=$(git -C "$INTERMEDIARY_DIR" config receive.denyCurrentBranch)

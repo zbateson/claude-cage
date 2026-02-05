@@ -50,6 +50,9 @@ claude_cage {
 }
 EOF
 
+# Capture source branch name for later assertions
+SOURCE_BRANCH=$(git -C "$TEST_TMP/source" branch --show-current)
+
 echo "=== Testing bwrap command generation (--test --dry-run) ==="
 
 # Need --test to trigger bwrap command generation
@@ -233,13 +236,13 @@ test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "git status; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
-if ! echo "$test_output" | grep -q "On branch claude"; then
-    echo "FAIL: Should be on claude branch inside cage"
+if ! echo "$test_output" | grep -q "On branch $SOURCE_BRANCH"; then
+    echo "FAIL: Should be on $SOURCE_BRANCH branch inside cage"
     echo "Output was:"
     echo "$test_output"
     exit 1
 fi
-echo "  PASS: Can run git commands, on claude branch"
+echo "  PASS: Can run git commands, on $SOURCE_BRANCH branch"
 
 echo ""
 echo "=== All bwrap tests passed! ==="

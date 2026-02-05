@@ -73,7 +73,7 @@ git config user.name "Claude"
 echo "new content from claude" > newfile.txt
 git add newfile.txt
 git commit -m "Add newfile from Claude"
-git push origin claude
+git push origin "$BRANCH_NAME"
 
 # Check intermediary has the file
 if [ ! -f "$INTERMEDIARY_DIR/newfile.txt" ]; then
@@ -98,8 +98,8 @@ cd "$TEST_TMP/source"
 git remote add intermediary "$INTERMEDIARY_DIR"
 git fetch intermediary
 
-if ! git branch -r | grep -q "intermediary/claude"; then
-    echo "FAIL: Should see intermediary/claude remote branch"
+if ! git branch -r | grep -q "intermediary/$BRANCH_NAME"; then
+    echo "FAIL: Should see intermediary/$BRANCH_NAME remote branch"
     git branch -r
     exit 1
 fi
@@ -107,7 +107,7 @@ echo "  PASS: intermediary remote added and fetched"
 
 echo "Test 4: Manual merge should bring changes to source"
 # Need --allow-unrelated-histories since intermediary has fresh history
-git merge intermediary/claude -m "Merge claude changes" --allow-unrelated-histories
+git merge "intermediary/$BRANCH_NAME" -m "Merge changes from cage" --allow-unrelated-histories
 
 if [ ! -f "$TEST_TMP/source/newfile.txt" ]; then
     echo "FAIL: newfile.txt not in source after merge"

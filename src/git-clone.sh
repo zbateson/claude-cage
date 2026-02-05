@@ -380,9 +380,10 @@ create_intermediary_clone() {
     echo ""
     echo "Intermediary's ready at: $intermediary_dir"
 
-    # Create claude branch in intermediary (this is where source commits land)
-    echo "  Settin' up the claude branch..."
-    run_quiet git -C "$intermediary_dir" checkout -b "claude"
+    # Create branch in intermediary matching source (this is where source commits land)
+    local branch_name="${CLAUDE_CAGE_BRANCH:-$source_branch}"
+    echo "  Settin' up the $branch_name branch..."
+    run_quiet git -C "$intermediary_dir" checkout -b "$branch_name"
 
     # Allow pushing to checked-out branch (updates working tree automatically)
     if ! run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead; then
@@ -410,7 +411,7 @@ create_intermediary_clone() {
 
     echo ""
     echo "Workspace is good to go: $work_dir"
-    echo "  Branch: claude"
+    echo "  Branch: $branch_name"
 
     # Show what files are in work (verbose only)
     if [ "$verbose" = true ] && [ "$dry_run" != true ]; then

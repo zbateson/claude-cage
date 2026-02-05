@@ -458,7 +458,7 @@ setup_source_post_commit() {
     else
         cat > "$hook_path" << EOF
 #!/bin/bash
-# claude-cage: sync commits to intermediary's claude branch (excluding sensitive files)
+# claude-cage: sync commits to intermediary (excluding sensitive files)
 INTERMEDIARY="$intermediary_dir"
 TARGET_BRANCH="$target_branch"
 STATE_FILE="$state_path"
@@ -494,9 +494,9 @@ SUBJECT=\$(git log -1 --format=%s | head -c 50)
 # Check if patch has any actual changes (not just empty)
 if echo "\$PATCH" | grep -q "^diff --git"; then
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
-    # Ensure we're on claude branch and apply
+    # Ensure we're on target branch and apply
     echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
-    AM_OUTPUT=\$(cd "\$INTERMEDIARY" && git checkout claude 2>/dev/null && echo "\$PATCH" | git am --3way 2>&1) && AM_RC=0 || AM_RC=\$?
+    AM_OUTPUT=\$(cd "\$INTERMEDIARY" && git checkout "\$TARGET_BRANCH" 2>/dev/null && echo "\$PATCH" | git am --3way 2>&1) && AM_RC=0 || AM_RC=\$?
     if [ "\$AM_RC" -eq 0 ]; then
         _sync_log "\$COMMIT_SHORT" ">>intermediary" "git-am ok"
     else

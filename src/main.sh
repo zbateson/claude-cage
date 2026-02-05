@@ -425,6 +425,12 @@ else
         setup_source_pre_commit "$cfg_source" "$cfg_exclude" "$source_branch"
         setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch" "$state_path" "$work_dir"
     fi
+
+    # Set up work repo pre-commit hook to block force-added ignored files
+    # Default is true - force-added ignored files break patch sync
+    if [ "$cfg_git_blockForceAdd" = "true" ]; then
+        setup_work_pre_commit "$work_dir"
+    fi
 fi
 
 # Pre-resolve domains for network filtering (so warnings appear before sandbox info)

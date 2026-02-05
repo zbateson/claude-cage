@@ -160,6 +160,11 @@ local function merge_config(base, override)
                     result.docker[subkey] = subval
                 end
             end
+        elseif k == "git" and type(v) == "table" then
+            result.git = result.git or {}
+            for subkey, subval in pairs(v) do
+                result.git[subkey] = subval
+            end
         else
             result[k] = v
         end
@@ -278,6 +283,11 @@ local allowNonGit = config.allowNonGit
 local directMount = config.directMount
 if directMount == nil then directMount = false end
 
+-- Git options
+local git = config.git or {}
+local git_blockForceAdd = git.blockForceAdd
+if git_blockForceAdd == nil then git_blockForceAdd = true end
+
 -- Docker options
 local docker = config.docker or {}
 local docker_image = docker.image or "node:lts-slim"
@@ -332,6 +342,8 @@ elseif #docker_packages == 0 then
 else
     print(array_to_string(docker_packages))
 end
+
+print(tostring(git_blockForceAdd))
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -406,6 +418,7 @@ LUAEOF
         read -r cfg_allowNonGit
         read -r cfg_directMount
         read -r cfg_docker_packages
+        read -r cfg_git_blockForceAdd
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do

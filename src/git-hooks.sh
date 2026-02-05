@@ -540,3 +540,53 @@ EOF
         echo "  Created source hook: $hook_path"
     fi
 }
+
+# Set up pre-commit hook on work repo to block force-added gitignored files
+# Force-added ignored files break patch-based sync between cage and source.
+# Override with CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+# Arguments:
+#   $1 - work_dir: The work directory (Claude's workspace)
+setup_work_pre_commit() {
+    local work_dir="$1"
+    local hook_path="$work_dir/.git/hooks/pre-commit"
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path (block force-added ignored files)"
+        return
+    fi
+
+    cat > "$hook_path" << 'HOOKEOF'
+#!/bin/bash
+# claude-cage: block commits containing force-added gitignored files
+# Force-added ignored files break patch-based sync between cage and source.
+# Override: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+
+if [ "${CLAUDE_CAGE_ALLOW_IGNORED:-}" = "1" ]; then
+    exit 0
+fi
+
+# Detect force-added ignored files staged for commit
+IGNORED=$(git ls-files -ic --exclude-standard 2>/dev/null)
+if [ -n "$IGNORED" ]; then
+    echo "Hold on there. You've got gitignored files force-added to this commit."
+    echo "That's gonna break the sync back to source."
+    echo ""
+    echo "Files:"
+    echo "$IGNORED" | sed 's/^/  /'
+    echo ""
+    echo "To unstage 'em:"
+    echo "  git reset HEAD <file>"
+    echo ""
+    echo "If you really know what you're doin':"
+    echo "  CLAUDE_CAGE_ALLOW_IGNORED=1 git commit"
+    exit 1
+fi
+
+exit 0
+HOOKEOF
+    chmod +x "$hook_path"
+
+    if [ "$verbose" = true ]; then
+        echo "  Created work hook: $hook_path (block force-added ignored files)"
+    fi
+}

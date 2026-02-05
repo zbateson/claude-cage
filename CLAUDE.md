@@ -243,7 +243,15 @@ claude_cage {
     block = {
         domains = { "internal.company.com" },
         ips = { "169.254.169.254" }  -- AWS metadata
-    }
+    },
+
+    -- Git options
+    git = {
+        -- Block commits containing force-added gitignored files (default: true).
+        -- Force-added ignored files break patch-based sync between cage and source.
+        -- Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+        blockForceAdd = true,
+    },
 }
 ```
 
@@ -269,6 +277,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
 | `docker.image` | `"node:lts-slim"` | Docker image to use (docker mode only) |
 | `docker.packages` | `{"curl", "iputils-ping"}` | Packages to install in Docker container (as root, before dropping privileges) |
+| `git.blockForceAdd` | `true` | Block commits containing force-added gitignored files in work repo |
 
 ### Direct Mount Mode
 
@@ -653,6 +662,7 @@ Branch names are sanitized for filesystem paths: `/` becomes `--`, other special
 - `CLAUDE_CAGE_RUNTIME` - Override runtime directory (default: `$XDG_RUNTIME_DIR/claude-cage`)
 - `CLAUDE_CAGE_BRANCH` - Override branch name for path construction (auto-detected from source)
 - `CLAUDE_CAGE_MOUNTED_PIPE` - Override pipe path baked into post-receive hook (default: `/tmp/claude-cage/pipe`). Used by tests to isolate hook pipes from live sessions.
+- `CLAUDE_CAGE_ALLOW_IGNORED` - Set to `1` inside sandbox to override `git.blockForceAdd` and allow committing force-added gitignored files.
 
 **Internal (set by claude-cage):**
 - `CLAUDE_CAGE_SOURCING` - Set to `1` when sourcing script for function definitions only

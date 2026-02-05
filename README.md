@@ -171,7 +171,11 @@ claude_cage {
     allow = {
         domains = { "github.com:443", "api.anthropic.com:443" },
         ips = { "8.8.8.8:53" }
-    }
+    },
+
+    -- Block commits with force-added gitignored files (default: true)
+    -- Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+    git = { blockForceAdd = true },
 }
 ```
 

@@ -259,9 +259,10 @@ sync_to_source() {
     newrev_short=$(git -C "$intermediary_dir" rev-parse --short=8 "$refname" 2>/dev/null)
 
     # Skip the initial commit (it's just a copy of source files)
+    # Detect by checking if the commit has no parent (root commit)
     local commit_msg
     commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$refname")
-    if [ "$commit_msg" = "Initial commit from claude-cage" ]; then
+    if ! git -C "$intermediary_dir" rev-parse "$refname^" >/dev/null 2>&1; then
         echo "First commit, nothin' to sync yet"
         sync_log "$log_file" "$newrev_short" ">>source" "skipped initial commit"
         return 0

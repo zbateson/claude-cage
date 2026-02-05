@@ -483,7 +483,8 @@ run_in_docker() {
     # Environment
     docker_args+=(-e "HOME=$user_home")
     docker_args+=(-e "TERM=${TERM:-xterm-256color}")
-    docker_args+=(-e "LANG=${LANG:-C.UTF-8}")
+    docker_args+=(-e "LANG=C.UTF-8")
+    docker_args+=(-e "DEBIAN_FRONTEND=noninteractive")
     [ "$verbose" = true ] && docker_args+=(-e "CAGE_VERBOSE=1")
     [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")
 

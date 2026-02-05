@@ -498,6 +498,11 @@ run_with_network_namespace() {
     export CLAUDE_CAGE_SCRIPT
     CLAUDE_CAGE_SCRIPT="$(realpath "$0")"
 
+    # Create a pipe for slirp4netns --ready-fd to signal when interface is configured
+    local slirp_ready_pipe
+    slirp_ready_pipe=$(mktemp -u)
+    mkfifo "$slirp_ready_pipe"
+
     # Start slirp4netns handler in background
     # This subshell waits for the namespace, starts slirp, signals ready, then waits
     (
@@ -516,16 +521,18 @@ run_with_network_namespace() {
         local sandbox_pid
         sandbox_pid=$(cat "$sandbox_pid_file")
 
-        # Start slirp4netns (suppress output unless verbose)
+        # Start slirp4netns with --ready-fd so it signals when the interface is configured
+        # fd 4 is redirected to the slirp_ready_pipe; slirp4netns writes to it when ready
         if [ "$NETWORK_VERBOSE" = true ]; then
-            slirp4netns --configure "$sandbox_pid" tap0 &
+            slirp4netns --ready-fd 4 --configure "$sandbox_pid" tap0 4>"$slirp_ready_pipe" &
         else
-            slirp4netns --configure "$sandbox_pid" tap0 >/dev/null 2>&1 &
+            slirp4netns --ready-fd 4 --configure "$sandbox_pid" tap0 4>"$slirp_ready_pipe" >/dev/null 2>&1 &
         fi
         local slirp_pid=$!
 
-        # Give slirp4netns a moment to set up the interface
-        sleep 0.3
+        # Block until slirp4netns signals the interface is configured (replaces sleep 0.3)
+        read < "$slirp_ready_pipe"
+        rm -f "$slirp_ready_pipe"
 
         # Check if slirp4netns is still running
         if ! kill -0 $slirp_pid 2>/dev/null; then
@@ -574,7 +581,7 @@ run_with_network_namespace() {
     # Cleanup slirp handler and temp files
     kill $slirp_handler_pid 2>/dev/null
     wait $slirp_handler_pid 2>/dev/null
-    rm -f "$ready_pipe" "$sandbox_pid_file"
+    rm -f "$ready_pipe" "$sandbox_pid_file" "$slirp_ready_pipe"
 
     return $exit_code
 }

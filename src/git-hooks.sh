@@ -234,7 +234,7 @@ setup_git_hooks() {
 
     # Create named pipe for communication (always fresh)
     run rm -f "$pipe_path"
-    run mkfifo "$pipe_path"
+    run mkfifo -m 0600 "$pipe_path"
 
     # Create post-receive hook on intermediary
     # This runs inside the sandbox when work/ pushes to intermediary/

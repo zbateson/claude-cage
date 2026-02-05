@@ -280,7 +280,21 @@ echo ""
 echo "  Project:       $cfg_project"
 echo "  Source:        $cfg_source"
 echo "  Mode:          $cfg_mode"
-echo "  Launch:        $cfg_launch"
+# Validate launch command against known-safe launchers
+_known_launchers="claude aider goose cline continue codex copilot"
+_launch_basename=$(basename "${cfg_launch%% *}")
+_launch_recognized=false
+for _launcher in $_known_launchers; do
+    if [ "$_launch_basename" = "$_launcher" ]; then
+        _launch_recognized=true
+        break
+    fi
+done
+if [ "$_launch_recognized" = true ]; then
+    echo "  Launch:        $cfg_launch"
+else
+    echo -e "  Launch:        ${_red}$cfg_launch${_reset}  ⚠️  unrecognized launch command"
+fi
 if [ "$direct_mount_mode" = false ]; then
     echo "  Auto-merge:    $cfg_autoMerge"
     echo "  Isolated:      $cfg_isolated"

@@ -45,11 +45,12 @@ git commit -m "Initial commit"
 SOURCE_PATH="$TEST_TMP/source"
 BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
 INTERMEDIARY_DIR=$(get_intermediary_path "$SOURCE_PATH")
-PIPE_PATH=$(CLAUDE_CAGE_BRANCH="$BRANCH_NAME" get_pipe_path "$SOURCE_PATH")
+SESSION_ID="test-session"
+PIPE_PATH=$(CLAUDE_CAGE_SESSION="$SESSION_ID" get_pipe_path "$SOURCE_PATH")
 
 # Set up variables needed by functions
-CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
-export CLAUDE_CAGE_BRANCH
+CLAUDE_CAGE_SESSION="$SESSION_ID"
+export CLAUDE_CAGE_SESSION
 cfg_exclude=""
 cfg_git_historyDepth=50
 cfg_git_defaultBranch="auto"
@@ -158,10 +159,11 @@ echo "=== Testing source post-commit hook ==="
 echo ""
 
 # Set up source post-commit hook
-setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR" "$BRANCH_NAME"
+setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR"
 
 echo "Test 6: Source post-commit hook created"
-post_commit_hook="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME"
+hook_path_hash=$(echo -n "$SOURCE_PATH" | md5sum | cut -c1-12)
+post_commit_hook="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$hook_path_hash"
 if [ ! -f "$post_commit_hook" ]; then
     echo "FAIL: post-commit hook not found at $post_commit_hook"
     exit 1
@@ -200,7 +202,7 @@ fi
 echo "  PASS: post-commit hook uses fast-export (not format-patch)"
 
 # Clean up source hooks for next tests
-cleanup_source_hooks "$SOURCE_PATH" "$BRANCH_NAME"
+cleanup_source_hooks "$SOURCE_PATH"
 
 echo ""
 echo "=== Testing orphaned hook cleanup ==="
@@ -345,8 +347,8 @@ git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
 # Install the hook (target branch is master)
 rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
 rm -f "$SOURCE_PATH/.git/hooks/post-commit"
-setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR" "$BRANCH_NAME"
-post_commit_hook="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME"
+setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR"
+post_commit_hook="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$hook_path_hash"
 
 echo "Test 12: Post-commit hook syncs in-scope branch (not just target)"
 # Switch to feature-branch (which exists in intermediary) and commit
@@ -386,7 +388,7 @@ fi
 
 # Go back to master for remaining tests
 git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
-cleanup_source_hooks "$SOURCE_PATH" "$BRANCH_NAME"
+cleanup_source_hooks "$SOURCE_PATH"
 
 echo ""
 echo "=== Testing autoMerge=false (no hooks) ==="
@@ -412,13 +414,13 @@ git -C "$SOURCE_PATH" fast-export HEAD 2>/dev/null \
 # - no source hooks exist
 # (We test the logic path, not the full main.sh flow)
 
-PIPE_PATH_FOR_TEST=$(CLAUDE_CAGE_BRANCH="$BRANCH_NAME" get_pipe_path "$SOURCE_PATH")
+PIPE_PATH_FOR_TEST=$(CLAUDE_CAGE_SESSION="$SESSION_ID" get_pipe_path "$SOURCE_PATH")
 if [ -p "$PIPE_PATH_FOR_TEST" ]; then
     echo "FAIL: Pipe should not exist without setup_git_hooks call"
     exit 1
 fi
 
-if [ -f "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME" ]; then
+if [ -f "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$hook_path_hash" ]; then
     echo "FAIL: source post-commit hook should not exist without setup_source_post_commit call"
     exit 1
 fi

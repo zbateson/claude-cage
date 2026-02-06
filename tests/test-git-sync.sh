@@ -60,8 +60,8 @@ setup_test_cage() {
 
     SOURCE_PATH="$source_dir"
     BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
-    CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
-    export CLAUDE_CAGE_BRANCH
+    CLAUDE_CAGE_SESSION="test-session-$$"
+    export CLAUDE_CAGE_SESSION
 
     # Compute expected paths for the new architecture
     INTERMEDIARY_DIR=$(get_intermediary_path "$SOURCE_PATH")
@@ -300,11 +300,11 @@ setup_test_cage "source11"
 sleep 300 &
 fake_session_pid=$!
 
-session_dir=$(get_session_dir "$SOURCE_PATH" "$BRANCH_NAME")
+session_dir=$(get_session_dir "$SOURCE_PATH")
 mkdir -p "$session_dir"
 echo "$fake_session_pid" > "$session_dir/$fake_session_pid"
 
-if ! has_other_sessions "$SOURCE_PATH" "$BRANCH_NAME"; then
+if ! has_other_sessions "$SOURCE_PATH"; then
     kill "$fake_session_pid" 2>/dev/null
     echo "FAIL: has_other_sessions should return true when active PID file exists"
     exit 1
@@ -321,7 +321,7 @@ wait "$fake_session_pid" 2>/dev/null || true
 echo "Test 12: has_other_sessions should clean stale PIDs"
 
 # Create a stale PID file (PID that definitely doesn't exist)
-session_dir=$(get_session_dir "$SOURCE_PATH" "$BRANCH_NAME")
+session_dir=$(get_session_dir "$SOURCE_PATH")
 mkdir -p "$session_dir"
 echo "999999999" > "$session_dir/999999999"
 
@@ -331,7 +331,7 @@ live_pid=$!
 echo "$live_pid" > "$session_dir/$live_pid"
 
 # has_other_sessions should clean up stale PID and still find our sleep process
-if ! has_other_sessions "$SOURCE_PATH" "$BRANCH_NAME"; then
+if ! has_other_sessions "$SOURCE_PATH"; then
     kill "$live_pid" 2>/dev/null
     echo "FAIL: Should still detect active PID after cleaning stale PID"
     exit 1
@@ -453,19 +453,16 @@ echo "feature" > "$SOURCE_PATH/feature.txt"
 git -C "$SOURCE_PATH" add feature.txt
 git -C "$SOURCE_PATH" commit -q -m "Feature commit"
 
-# Switch back to original branch for cage setup
-git -C "$SOURCE_PATH" checkout -q "$BRANCH_NAME"
-
-# Now set up a new cage on the feature branch
-CLAUDE_CAGE_BRANCH="feature"
-export CLAUDE_CAGE_BRANCH
+# Stay on feature branch for cage setup (create_intermediary_clone uses source's current branch)
+# Set up a new cage session for the feature branch
+CLAUDE_CAGE_SESSION="test-feature-session"
+export CLAUDE_CAGE_SESSION
 FEATURE_INTERMEDIARY_DIR=$(get_intermediary_path "$SOURCE_PATH")
 FEATURE_WORK_DIR=$(get_work_path "$SOURCE_PATH")
-# Note: intermediary is shared, but work dir is per-branch
 # Need to rebuild intermediary to include the feature branch
 rm -rf "$FEATURE_WORK_DIR"
 
-# Re-run create_intermediary_clone so feature branch appears in intermediary
+# Re-run create_intermediary_clone while source is on feature branch
 create_intermediary_clone "$SOURCE_PATH" >/dev/null 2>&1
 
 # Fix remote for work dir
@@ -524,9 +521,9 @@ if ! grep -q "temp-index" "$SYNC_LOG_FILE"; then
 fi
 echo "  PASS: sync_to_source with branch switch uses temp-index correctly"
 
-# Restore CLAUDE_CAGE_BRANCH
-CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
-export CLAUDE_CAGE_BRANCH
+# Restore CLAUDE_CAGE_SESSION
+CLAUDE_CAGE_SESSION="test-session-$$"
+export CLAUDE_CAGE_SESSION
 
 # ============================================================================
 # Test 17: Multi-commit push
@@ -596,8 +593,8 @@ git add . && git commit -q -m "Initial"
 
 SOURCE_PATH="$TEST_TMP/source18"
 BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
-CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
-export CLAUDE_CAGE_BRANCH
+CLAUDE_CAGE_SESSION="test-session-18"
+export CLAUDE_CAGE_SESSION
 
 # Create cage with .env excluded
 cfg_exclude=".env"

@@ -1,9 +1,9 @@
 #!/bin/bash
 # Test clean and clean-all commands
-# Tests cache cleanup functionality for the new architecture:
-#   - Intermediary is a bare repo shared across branches at $CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH
-#   - Work dirs are per-branch at $CLAUDE_CAGE_CACHE/branches/$BRANCH/work$SOURCE_PATH
-#   - clean_branch_cache removes work dir, post-commit hook, and shared intermediary only if no other branches remain
+# Tests cache cleanup functionality for session-based architecture:
+#   - Intermediary is a bare repo shared across sessions at $CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH
+#   - Work dirs are per-session at $CLAUDE_CAGE_CACHE/sessions/$SESSION/work$SOURCE_PATH
+#   - clean_session_cache removes work dir, post-commit hook, and shared intermediary only if no other sessions remain
 
 set -e
 
@@ -51,10 +51,11 @@ SOURCE_PATH="$TEST_TMP/source"
 BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
 # Intermediary is shared across branches (not per-branch)
 INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
-# Work dir is per-branch
-WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
+SESSION_ID="" # Will be populated after cage creation
+WORK_DIR="" # Will be populated after cage creation
 # Only post-commit hook exists (no pre-commit in new architecture)
-POST_COMMIT_HOOK="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME"
+HOOK_PATH_HASH=$(echo -n "$SOURCE_PATH" | md5sum | cut -c1-12)
+POST_COMMIT_HOOK="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$HOOK_PATH_HASH"
 
 echo "=== Setting up test cage ==="
 
@@ -66,6 +67,10 @@ env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
+
+# Discover the session ID from the created session directory
+SESSION_ID=$(ls -1 "$CLAUDE_CAGE_CACHE/sessions/" 2>/dev/null | head -1)
+WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$SESSION_ID/work$SOURCE_PATH"
 
 if [ ! -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should exist after cage creation"
@@ -98,32 +103,32 @@ fi
 echo "  PASS: Simulated orphaned post-commit hook created"
 
 echo ""
-echo "=== Testing clean with --branch flag ==="
+echo "=== Testing clean with --session flag ==="
 
-echo "Test 3: clean --branch with nonexistent branch should fail"
+echo "Test 3: clean --session with nonexistent session should fail"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && "$2" clean --branch nonexistent 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
+    bash -c 'cd "$1" && "$2" clean --session nonexistent 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q "not found"; then
-    echo "FAIL: Should report branch not found"
+    echo "FAIL: Should report session not found"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Reports nonexistent branch correctly"
+echo "  PASS: Reports nonexistent session correctly"
 
-echo "Test 4: clean --branch should remove specified branch work dir"
+echo "Test 4: clean --session should remove specified session work dir"
 # Answer 'y' to confirmation prompt
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "y" | "$2" clean --branch "'"$BRANCH_NAME"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
+    bash -c 'cd "$1" && echo "y" | "$2" clean --session "'"$SESSION_ID"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should be removed after clean"
     exit 1
 fi
-echo "  PASS: Branch work dir removed successfully"
+echo "  PASS: Session work dir removed successfully"
 
 echo "Test 5: clean should also remove post-commit hook"
 if [ -f "$POST_COMMIT_HOOK" ]; then
@@ -135,7 +140,7 @@ echo "  PASS: Post-commit hook removed"
 echo ""
 echo "=== Testing shared intermediary lifecycle ==="
 
-echo "Test 6: Shared intermediary preserved when other branches still have work dirs"
+echo "Test 6: Shared intermediary preserved when other sessions still have work dirs"
 # Recreate cage for main branch first
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
@@ -143,45 +148,49 @@ env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
 
-# Simulate a second branch's work directory (as if cage was started on "feature" branch)
-FEATURE_WORK_DIR="$CLAUDE_CAGE_CACHE/branches/feature/work$SOURCE_PATH"
+SESSION_ID=$(ls -1 "$CLAUDE_CAGE_CACHE/sessions/" 2>/dev/null | head -1)
+WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$SESSION_ID/work$SOURCE_PATH"
+
+# Simulate a second session's work directory (as if cage was started in another session)
+FEATURE_SESSION_ID="20250101120000"
+FEATURE_WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$FEATURE_SESSION_ID/work$SOURCE_PATH"
 mkdir -p "$FEATURE_WORK_DIR/.git"
 
 # Verify both exist before cleaning
 if [ ! -d "$WORK_DIR" ] || [ ! -d "$FEATURE_WORK_DIR" ]; then
-    echo "FAIL: Both branch work dirs should exist before test"
+    echo "FAIL: Both session work dirs should exist before test"
     exit 1
 fi
 
-# Clean main branch - intermediary should survive because feature's work dir still exists
+# Clean main session - intermediary should survive because feature session's work dir still exists
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "y" | "$2" clean --branch "'"$BRANCH_NAME"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
+    bash -c 'cd "$1" && echo "y" | "$2" clean --session "'"$SESSION_ID"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ ! -d "$INTERMEDIARY_DIR" ]; then
-    echo "FAIL: Shared intermediary should still exist when other branches have work dirs"
+    echo "FAIL: Shared intermediary should still exist when other sessions have work dirs"
     exit 1
 fi
-echo "  PASS: Shared intermediary preserved when other branches exist"
+echo "  PASS: Shared intermediary preserved when other sessions exist"
 
-echo "Test 7: Shared intermediary removed when ALL branches cleaned"
-# Now clean the feature branch too - use the function directly via sourcing
+echo "Test 7: Shared intermediary removed when ALL sessions cleaned"
+# Now clean the feature session too - use the function directly via sourcing
 export CLAUDE_CAGE_SOURCING=1
 source "$CAGE_DIR/dist/claude-cage"
 unset CLAUDE_CAGE_SOURCING
 
-CLAUDE_CAGE_BRANCH="feature"
-export CLAUDE_CAGE_BRANCH
+CLAUDE_CAGE_SESSION="$FEATURE_SESSION_ID"
+export CLAUDE_CAGE_SESSION
 dry_run=false
 verbose=false
 
-clean_branch_cache "$SOURCE_PATH" "feature"
+clean_session_cache "$SOURCE_PATH" "$FEATURE_SESSION_ID"
 
 if [ -d "$INTERMEDIARY_DIR" ]; then
-    echo "FAIL: Shared intermediary should be removed when no branches have work dirs"
+    echo "FAIL: Shared intermediary should be removed when no sessions have work dirs"
     exit 1
 fi
-echo "  PASS: Shared intermediary removed when all branches cleaned"
+echo "  PASS: Shared intermediary removed when all sessions cleaned"
 
 echo ""
 echo "=== Testing clean-all ==="
@@ -193,6 +202,9 @@ env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
+
+SESSION_ID=$(ls -1 "$CLAUDE_CAGE_CACHE/sessions/" 2>/dev/null | head -1)
+WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$SESSION_ID/work$SOURCE_PATH"
 
 if [ ! -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should exist after cage recreation"
@@ -233,7 +245,7 @@ echo "  PASS: Reports no caches correctly"
 echo ""
 echo "=== Testing dirty work directory warnings ==="
 
-echo "Test 10: clean should show warning for dirty branch"
+echo "Test 10: clean should show warning for dirty session"
 # Recreate cage and make it dirty
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
@@ -241,13 +253,16 @@ env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
     bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
 
+SESSION_ID=$(ls -1 "$CLAUDE_CAGE_CACHE/sessions/" 2>/dev/null | head -1)
+WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$SESSION_ID/work$SOURCE_PATH"
+
 # Make the work directory dirty
 echo "dirty change" >> "$WORK_DIR/file.txt"
 
 # Don't actually clean, just check the output shows warning
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "n" | "$2" clean --branch "'"$BRANCH_NAME"'" 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
+    bash -c 'cd "$1" && echo "n" | "$2" clean --session "'"$SESSION_ID"'" 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "uncommitted"; then
     echo "FAIL: Should warn about uncommitted changes"
@@ -257,7 +272,7 @@ if ! echo "$output" | grep -q -i "uncommitted"; then
 fi
 echo "  PASS: Shows uncommitted changes warning"
 
-echo "Test 11: clean-all should show warning for dirty branch"
+echo "Test 11: clean-all should show warning for dirty session"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && echo "n" | "$2" clean-all 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true

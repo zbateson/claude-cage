@@ -49,7 +49,7 @@ echo "content" > "$TEST_TMP/non-git-project/file.txt"
 echo "=== Testing --direct-mount flag in git repo ==="
 
 BRANCH_NAME=$(git -C "$TEST_TMP/git-project" branch --show-current)
-WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$TEST_TMP/git-project"
+WORK_DIR="" # Would be set by session discovery, but direct mount doesn't create one
 
 echo "Test 1: --direct-mount should skip git sync setup"
 cd "$TEST_TMP/git-project"
@@ -67,8 +67,8 @@ fi
 echo "  PASS: Direct mount skips intermediary setup"
 
 echo "Test 2: --direct-mount should not create work directory"
-if [ -d "$WORK_DIR" ]; then
-    echo "FAIL: Work directory should not be created in direct mount mode"
+if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+    echo "FAIL: Sessions directory should not be created in direct mount mode"
     exit 1
 fi
 echo "  PASS: No work directory created"

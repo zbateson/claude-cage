@@ -15,17 +15,17 @@ sanitize_branch_name() {
     echo "$branch" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g'
 }
 
-# Current branch for path construction (set by main.sh before calling get_work_path)
-CLAUDE_CAGE_BRANCH=""
+# Current session ID for path construction (set by main.sh before calling get_work_path)
+# Format: YYYYMMDDHHMMSS timestamp
+CLAUDE_CAGE_SESSION=""
 
 # Get the work directory path for a source directory
-# Work dirs are per-branch: branches/<branch>/work$source_dir
+# Work dirs are per-session: sessions/<session_id>/work$source_dir
 # Arguments: $1 = source directory
 get_work_path() {
     local source_dir="$1"
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work$source_dir"
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
+    echo "$CLAUDE_CAGE_CACHE/sessions/$session_id/work$source_dir"
 }
 
 # Get the intermediary path for a source directory
@@ -69,33 +69,43 @@ get_exclude_hash_path() {
     echo "$intermediary_dir/claude-cage-exclude-hash"
 }
 
-# Backward compat: get_cage_path for work type
-# Arguments: $1 = source directory, $2 = type (work only, intermediary uses get_intermediary_path)
-get_cage_path() {
-    local source_dir="$1"
-    local type="$2"
-    if [ "$type" = "intermediary" ]; then
-        get_intermediary_path "$source_dir"
-    else
-        get_work_path "$source_dir"
-    fi
-}
-
 # Get the pipe path for a source directory
-# Uses CLAUDE_CAGE_BRANCH if set
+# Uses CLAUDE_CAGE_SESSION if set
 get_pipe_path() {
     local source_dir="$1"
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_RUNTIME/pipes/$branch_dir$source_dir"
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
+    echo "$CLAUDE_CAGE_RUNTIME/pipes/$session_id$source_dir"
 }
 
-# Get the branch work root directory (contains all projects for a branch)
-# This is mounted at / so all same-branch projects are visible at original paths
-get_branch_work_root() {
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work"
+# Get the session work root directory (contains all projects for a session)
+# This is mounted at / so all same-session projects are visible at original paths
+get_session_work_root() {
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
+    echo "$CLAUDE_CAGE_CACHE/sessions/$session_id/work"
+}
+
+# Get the latest session file path (inside bare intermediary)
+get_latest_session_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-latest-session"
+}
+
+# Write the latest session ID to the intermediary
+write_latest_session() {
+    local intermediary_dir="$1"
+    local session_id="$2"
+    echo "$session_id" > "$(get_latest_session_path "$intermediary_dir")"
+}
+
+# Read the latest session ID from the intermediary
+# Returns empty string if not set
+read_latest_session() {
+    local intermediary_dir="$1"
+    local path
+    path=$(get_latest_session_path "$intermediary_dir")
+    if [ -f "$path" ]; then
+        cat "$path"
+    fi
 }
 
 # Get the intermediary root directory (contains all intermediaries across all branches)
@@ -118,20 +128,24 @@ is_git_repo() {
     git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-# List all cached branches for a source directory
-# Returns sanitized branch names (one per line)
-list_cached_branches() {
+# List all cached sessions for a source directory (newest first)
+# Output: one line per session: "<session_id> <branch>"
+list_cached_sessions() {
     local source_dir="$1"
 
-    # Check each branch directory in cache (work dirs are per-branch)
-    if [ -d "$CLAUDE_CAGE_CACHE/branches" ]; then
-        for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
-            [ -d "$branch_dir" ] || continue
-            local branch_name
-            branch_name=$(basename "$branch_dir")
-            # Check if this branch has a work directory for our source
-            if [ -d "$branch_dir/work$source_dir" ]; then
-                echo "$branch_name"
+    # Check each session directory in cache (work dirs are per-session)
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        # List sessions newest first (reverse sort on timestamp dirs)
+        local session_id
+        for session_dir in $(ls -1dr "$CLAUDE_CAGE_CACHE/sessions"/* 2>/dev/null); do
+            [ -d "$session_dir" ] || continue
+            session_id=$(basename "$session_dir")
+            # Check if this session has a work directory for our source
+            local work="$session_dir/work$source_dir"
+            if [ -d "$work" ]; then
+                local branch
+                branch=$(get_work_branch "$work")
+                echo "$session_id $branch"
             fi
         done
     fi
@@ -149,24 +163,142 @@ is_work_dirty() {
     return 1
 }
 
-# Clean up cache for a specific branch
-# Arguments: $1 = source directory, $2 = sanitized branch name
-clean_branch_cache() {
+# Check if a work directory has unpushed commits
+# Returns 0 if unpushed exist, 1 if all pushed (or not a git repo)
+work_has_unpushed() {
+    local work_dir="$1"
+    [ -d "$work_dir/.git" ] || return 1
+    local branch
+    branch=$(git -C "$work_dir" branch --show-current 2>/dev/null)
+    [ -z "$branch" ] && return 1
+    # Check if origin/<branch> exists
+    if ! git -C "$work_dir" rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
+        # No tracking branch — if there are commits, they're unpushed
+        local count
+        count=$(git -C "$work_dir" rev-list --count HEAD 2>/dev/null) || return 1
+        [ "$count" -gt 0 ]
+        return
+    fi
+    # Check for unpushed commits
+    local ahead
+    ahead=$(git -C "$work_dir" rev-list --count "origin/$branch..HEAD" 2>/dev/null) || return 1
+    [ "$ahead" -gt 0 ]
+}
+
+# Get the current branch of a work directory
+get_work_branch() {
+    local work_dir="$1"
+    git -C "$work_dir" branch --show-current 2>/dev/null
+}
+
+# Find a reusable session for a source directory
+# Sets globals:
+#   REUSE_SESSION_ID      - session ID (or empty)
+#   REUSE_SESSION_STATE   - "active" | "clean" | "dirty" | "none"
+#   REUSE_SESSION_BRANCH  - branch name of the session's work dir
+#   REUSE_ACTIVE_SESSIONS - newline-separated list of "session_id branch" for active sessions
+find_reusable_session() {
     local source_dir="$1"
-    local branch_name="$2"
-    local branch_cache="$CLAUDE_CAGE_CACHE/branches/$branch_name"
-    local work_dir="$branch_cache/work$source_dir"
+
+    REUSE_SESSION_ID=""
+    REUSE_SESSION_STATE="none"
+    REUSE_SESSION_BRANCH=""
+    REUSE_ACTIVE_SESSIONS=""
+
+    if [ ! -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        return
+    fi
+
+    local -a active_sessions=()
+    local -a inactive_clean=()
+    local -a inactive_dirty=()
+
+    # Scan sessions newest first
+    local session_id session_dir work branch
+    for session_dir in $(ls -1dr "$CLAUDE_CAGE_CACHE/sessions"/* 2>/dev/null); do
+        [ -d "$session_dir" ] || continue
+        session_id=$(basename "$session_dir")
+        work="$session_dir/work$source_dir"
+        [ -d "$work" ] || continue
+
+        branch=$(get_work_branch "$work")
+
+        # Check if session has a live PID
+        if session_is_active "$source_dir" "$session_id"; then
+            active_sessions+=("$session_id $branch")
+        elif is_work_dirty "$work" || work_has_unpushed "$work"; then
+            inactive_dirty+=("$session_id $branch")
+        else
+            inactive_clean+=("$session_id $branch")
+        fi
+    done
+
+    # Build active sessions list
+    if [ ${#active_sessions[@]} -gt 0 ]; then
+        REUSE_ACTIVE_SESSIONS=$(printf '%s\n' "${active_sessions[@]}")
+    fi
+
+    # Priority: active > inactive dirty > inactive clean
+    if [ ${#active_sessions[@]} -gt 0 ]; then
+        REUSE_SESSION_ID="${active_sessions[0]%% *}"
+        REUSE_SESSION_BRANCH="${active_sessions[0]#* }"
+        REUSE_SESSION_STATE="active"
+    elif [ ${#inactive_dirty[@]} -gt 0 ]; then
+        REUSE_SESSION_ID="${inactive_dirty[0]%% *}"
+        REUSE_SESSION_BRANCH="${inactive_dirty[0]#* }"
+        REUSE_SESSION_STATE="dirty"
+    elif [ ${#inactive_clean[@]} -gt 0 ]; then
+        REUSE_SESSION_ID="${inactive_clean[0]%% *}"
+        REUSE_SESSION_BRANCH="${inactive_clean[0]#* }"
+        REUSE_SESSION_STATE="clean"
+    fi
+}
+
+# Check if a specific session has a live PID for a project
+# Arguments: $1 = source_dir, $2 = session_id
+session_is_active() {
+    local source_dir="$1"
+    local session_id="$2"
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    local session_dir="$CLAUDE_CAGE_RUNTIME/sessions/$path_hash"
+
+    [ -d "$session_dir" ] || return 1
+
+    for pidfile in "$session_dir"/*; do
+        [ -f "$pidfile" ] || continue
+        local pid
+        pid=$(basename "$pidfile")
+        # Read session ID from file content
+        local file_session
+        file_session=$(cat "$pidfile" 2>/dev/null)
+        if [ "$file_session" = "$session_id" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Clean up cache for a specific session
+# Arguments: $1 = source directory, $2 = session_id (timestamp)
+clean_session_cache() {
+    local source_dir="$1"
+    local session_id="$2"
+    local session_cache="$CLAUDE_CAGE_CACHE/sessions/$session_id"
+    local work_dir="$session_cache/work$source_dir"
     local intermediary_dir
     intermediary_dir=$(get_intermediary_path "$source_dir")
-    local caged_link="$source_dir/.caged/$branch_name"
+    local caged_link="$source_dir/.caged/sessions/$session_id"
 
-    # Remove source hooks for this branch
+    # Remove source hooks for this project (only if no other sessions active)
     local git_root
     git_root=$(get_git_root "$source_dir" 2>/dev/null)
     if [ -n "$git_root" ]; then
-        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$branch_name"
+        local path_hash
+        path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$path_hash"
 
-        if [ -f "$post_commit_hook" ]; then
+        if [ -f "$post_commit_hook" ] && ! has_other_sessions "$source_dir"; then
             run rm -f "$post_commit_hook"
             echo "Removed post-commit hook: $post_commit_hook"
             maybe_remove_dispatcher "$git_root" "post-commit"
@@ -179,35 +311,43 @@ clean_branch_cache() {
         echo "Removed work directory: $work_dir"
     fi
 
-    # Remove .caged symlink for this branch
-    if [ -L "$caged_link/work" ] || [ -L "$caged_link/intermediary" ]; then
+    # Remove .caged symlink for this session
+    if [ -d "$caged_link" ]; then
         run rm -rf "$caged_link"
         echo "Removed .caged symlink: $caged_link"
     fi
 
-    # Clean up empty branch directory if no other projects use it
-    if [ -d "$branch_cache/work" ] && [ -z "$(ls -A "$branch_cache/work" 2>/dev/null)" ]; then
-        run rm -rf "$branch_cache/work"
+    # Clean up empty parent directories between work_dir and session_cache/work
+    local parent_dir
+    parent_dir=$(dirname "$work_dir")
+    while [ "$parent_dir" != "$session_cache/work" ] && [ "$parent_dir" != "$session_cache" ]; do
+        [ -d "$parent_dir" ] && [ -z "$(ls -A "$parent_dir" 2>/dev/null)" ] && run rm -rf "$parent_dir" || break
+        parent_dir=$(dirname "$parent_dir")
+    done
+
+    # Clean up empty session directory if no other projects use it
+    if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
+        run rm -rf "$session_cache/work"
     fi
-    if [ -d "$branch_cache" ] && [ -z "$(ls -A "$branch_cache" 2>/dev/null)" ]; then
-        run rm -rf "$branch_cache"
-        echo "Removed empty branch cache: $branch_cache"
+    if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
+        run rm -rf "$session_cache"
+        echo "Removed empty session cache: $session_cache"
     fi
 
     # Check if shared intermediary should be removed
-    # Only remove if no other branches use it (no work dirs reference this source)
-    local other_branches_exist=false
-    if [ -d "$CLAUDE_CAGE_CACHE/branches" ]; then
-        for bd in "$CLAUDE_CAGE_CACHE/branches"/*; do
-            [ -d "$bd" ] || continue
-            if [ -d "$bd/work$source_dir" ]; then
-                other_branches_exist=true
+    # Only remove if no other sessions use it (no work dirs reference this source)
+    local other_sessions_exist=false
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        for sd in "$CLAUDE_CAGE_CACHE/sessions"/*; do
+            [ -d "$sd" ] || continue
+            if [ -d "$sd/work$source_dir" ]; then
+                other_sessions_exist=true
                 break
             fi
         done
     fi
 
-    if [ "$other_branches_exist" = false ] && [ -d "$intermediary_dir" ]; then
+    if [ "$other_sessions_exist" = false ] && [ -d "$intermediary_dir" ]; then
         run rm -rf "$intermediary_dir"
         echo "Removed shared intermediary: $intermediary_dir"
         # Clean up empty parent dirs
@@ -396,7 +536,7 @@ create_intermediary_clone() {
     # Capture source branch before we start
     local source_branch
     source_branch=$(get_source_branch "$source_dir")
-    local branch_name="${CLAUDE_CAGE_BRANCH:-$source_branch}"
+    local branch_name="${source_branch}"
 
     # Detect default branch for history anchoring
     local default_branch
@@ -709,6 +849,11 @@ create_intermediary_clone() {
         echo "Warning: Failed to set push.autoSetupRemote config"
     fi
 
+    # Record this session as the latest for the project
+    if [ "$dry_run" != true ]; then
+        write_latest_session "$intermediary_dir" "${CLAUDE_CAGE_SESSION:-}"
+    fi
+
     echo ""
     echo "Workspace is good to go: $work_dir"
     echo "  Branch: $branch_name"
@@ -791,8 +936,7 @@ setup_caged_symlinks() {
     fi
 
     local caged_dir="$git_root/.caged"
-    local sanitized_branch
-    sanitized_branch=$(sanitize_branch_name "${CLAUDE_CAGE_BRANCH:-default}")
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
 
     # Target paths in cache
     local work_target
@@ -800,9 +944,8 @@ setup_caged_symlinks() {
     local intermediary_target
     intermediary_target=$(get_intermediary_path "$source_dir")
 
-    # Create .caged and branch directories
-    local branch_dir="$caged_dir/$sanitized_branch"
-    run mkdir -p "$branch_dir"
+    # Create .caged directory
+    run mkdir -p "$caged_dir"
 
     # Create self-ignoring .gitignore if missing
     if [ ! -f "$caged_dir/.gitignore" ]; then
@@ -813,17 +956,8 @@ setup_caged_symlinks() {
         fi
     fi
 
-    # Create/update work symlink
-    local work_symlink="$branch_dir/work"
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] ln -sf $work_target $work_symlink"
-    else
-        rm -f "$work_symlink"
-        ln -s "$work_target" "$work_symlink"
-    fi
-
-    # Create/update intermediary symlink (shared bare repo)
-    local intermediary_symlink="$branch_dir/intermediary"
+    # Create/update top-level intermediary symlink (shared bare repo)
+    local intermediary_symlink="$caged_dir/intermediary"
     if [ "$dry_run" = true ]; then
         echo "[dry-run] ln -sf $intermediary_target $intermediary_symlink"
     else
@@ -831,9 +965,9 @@ setup_caged_symlinks() {
         ln -s "$intermediary_target" "$intermediary_symlink"
     fi
 
-    # Create/update sync.log symlink (sync.log is inside bare repo)
+    # Create/update top-level sync.log symlink
     local sync_log_target="$intermediary_target/sync.log"
-    local sync_log_symlink="$branch_dir/sync.log"
+    local sync_log_symlink="$caged_dir/sync.log"
     if [ "$dry_run" = true ]; then
         echo "[dry-run] ln -sf $sync_log_target $sync_log_symlink"
     else
@@ -841,7 +975,19 @@ setup_caged_symlinks() {
         ln -s "$sync_log_target" "$sync_log_symlink"
     fi
 
+    # Create session-specific directory with work symlink
+    local session_dir="$caged_dir/sessions/$session_id"
+    run mkdir -p "$session_dir"
+
+    local work_symlink="$session_dir/work"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $work_target $work_symlink"
+    else
+        rm -f "$work_symlink"
+        ln -s "$work_target" "$work_symlink"
+    fi
+
     if [ "$verbose" = true ]; then
-        echo "  Created .caged/$sanitized_branch/ symlinks"
+        echo "  Created .caged/ symlinks (session: $session_id)"
     fi
 }

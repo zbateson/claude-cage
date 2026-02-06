@@ -40,8 +40,10 @@ test_mode=false
 git_merge_mode=false
 clean_mode=false
 clean_all_mode=false
-clean_branch=""
+clean_session=""
 cli_direct_mount=false
+cli_attach_session=""
+cli_attach_session_mode=false
 passthrough_args=()
 skip_next=false
 for i in "$@"; do
@@ -58,20 +60,36 @@ for i in "$@"; do
         git-merge) git_merge_mode=true ;;
         clean) clean_mode=true ;;
         clean-all) clean_all_mode=true ;;
-        --branch)
-            # Next arg is the branch name
+        --session)
+            # Next arg is the session ID
             skip_next=true
-            # Find the next argument
             found_next=false
             for j in "$@"; do
                 if [ "$found_next" = true ]; then
-                    clean_branch="$j"
+                    clean_session="$j"
                     break
                 fi
-                [ "$j" = "--branch" ] && found_next=true
+                [ "$j" = "--session" ] && found_next=true
             done
             ;;
-        --branch=*) clean_branch="${i#--branch=}" ;;
+        --session=*) clean_session="${i#--session=}" ;;
+        --attach-session)
+            cli_attach_session_mode=true
+            # Check if next arg looks like a timestamp (not a flag)
+            skip_next=false
+            found_next=false
+            for j in "$@"; do
+                if [ "$found_next" = true ]; then
+                    if [[ "$j" =~ ^[0-9]{14}$ ]]; then
+                        cli_attach_session="$j"
+                        skip_next=true
+                    fi
+                    break
+                fi
+                [ "$j" = "--attach-session" ] && found_next=true
+            done
+            ;;
+        --attach-session=*) cli_attach_session_mode=true; cli_attach_session="${i#--attach-session=}" ;;
         *) passthrough_args+=("$i") ;;
     esac
 done
@@ -133,24 +151,24 @@ fi
 
 # Handle clean-all mode
 if [ "$clean_all_mode" = true ]; then
-    echo "This will remove ALL cached branches for: $cfg_source"
+    echo "This will remove ALL cached sessions for: $cfg_source"
     echo ""
 
-    cached_branches=$(list_cached_branches "$cfg_source")
-    if [ -z "$cached_branches" ]; then
-        echo "No cached branches found. Nothin' to clean."
+    cached_sessions=$(list_cached_sessions "$cfg_source")
+    if [ -z "$cached_sessions" ]; then
+        echo "No cached sessions found. Nothin' to clean."
         exit 0
     fi
 
-    echo "Branches to be removed:"
-    while IFS= read -r branch; do
-        work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
+    echo "Sessions to be removed:"
+    while IFS=' ' read -r sid sbranch; do
+        work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$cfg_source"
         if is_work_dirty "$work_dir"; then
-            echo -e "  $branch ${_yellow}(has uncommitted changes!)${_reset}"
+            echo -e "  $sid  branch: $sbranch ${_yellow}(has uncommitted changes!)${_reset}"
         else
-            echo "  $branch"
+            echo "  $sid  branch: $sbranch"
         fi
-    done <<< "$cached_branches"
+    done <<< "$cached_sessions"
     echo ""
 
     if ! config_builder_prompt_yesno "Are you sure you want to delete all these?" "n"; then
@@ -158,52 +176,52 @@ if [ "$clean_all_mode" = true ]; then
         exit 0
     fi
 
-    while IFS= read -r branch; do
+    while IFS=' ' read -r sid sbranch; do
         echo ""
-        echo "Cleaning branch: $branch"
-        clean_branch_cache "$cfg_source" "$branch"
-    done <<< "$cached_branches"
+        echo "Cleaning session: $sid"
+        clean_session_cache "$cfg_source" "$sid"
+    done <<< "$cached_sessions"
 
     echo ""
     echo "All clean."
     exit 0
 fi
 
-# Handle clean mode (single branch)
+# Handle clean mode (single session)
 if [ "$clean_mode" = true ]; then
-    cached_branches=$(list_cached_branches "$cfg_source")
-    if [ -z "$cached_branches" ]; then
-        echo "No cached branches found. Nothin' to clean."
+    cached_sessions=$(list_cached_sessions "$cfg_source")
+    if [ -z "$cached_sessions" ]; then
+        echo "No cached sessions found. Nothin' to clean."
         exit 0
     fi
 
-    # If branch specified, use it; otherwise prompt
-    if [ -n "$clean_branch" ]; then
-        # Sanitize the provided branch name
-        clean_branch=$(sanitize_branch_name "$clean_branch")
-        if ! echo "$cached_branches" | grep -qx "$clean_branch"; then
-            echo "Branch '$clean_branch' not found in cache."
+    # If session specified, use it; otherwise prompt
+    if [ -n "$clean_session" ]; then
+        if ! echo "$cached_sessions" | grep -q "^$clean_session "; then
+            echo "Session '$clean_session' not found in cache."
             echo ""
-            echo "Available branches:"
-            echo "$cached_branches" | sed 's/^/  /'
+            echo "Available sessions:"
+            while IFS=' ' read -r sid sbranch; do
+                echo "  $sid  branch: $sbranch"
+            done <<< "$cached_sessions"
             exit 1
         fi
     else
         # Interactive selection
-        echo "Which branch cache do you want to remove?"
+        echo "Which session cache do you want to remove?"
         echo ""
-        branch_array=()
+        session_array=()
         idx=1
-        while IFS= read -r branch; do
-            branch_array+=("$branch")
-            work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
+        while IFS=' ' read -r sid sbranch; do
+            session_array+=("$sid")
+            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$cfg_source"
             if is_work_dirty "$work_dir"; then
-                echo -e "  $idx) $branch ${_yellow}(has uncommitted changes!)${_reset}"
+                echo -e "  $idx) $sid  branch: $sbranch ${_yellow}(has uncommitted changes!)${_reset}"
             else
-                echo "  $idx) $branch"
+                echo "  $idx) $sid  branch: $sbranch"
             fi
             ((idx++))
-        done <<< "$cached_branches"
+        done <<< "$cached_sessions"
         echo "  q) Cancel"
         echo ""
 
@@ -214,21 +232,21 @@ if [ "$clean_mode" = true ]; then
                 echo "Alright, nothin' deleted."
                 exit 0
             fi
-            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#branch_array[@]} ]; then
-                clean_branch="${branch_array[$((choice-1))]}"
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#session_array[@]} ]; then
+                clean_session="${session_array[$((choice-1))]}"
                 break
             fi
             echo "Pick a number or 'q' to quit."
         done
     fi
 
-    work_dir="$CLAUDE_CAGE_CACHE/branches/$clean_branch/work$cfg_source"
+    work_dir="$CLAUDE_CAGE_CACHE/sessions/$clean_session/work$cfg_source"
 
     echo ""
-    echo "This will remove the cache for branch: $clean_branch"
+    echo "This will remove the cache for session: $clean_session"
     if is_work_dirty "$work_dir"; then
         echo ""
-        echo -e "${_yellow}⚠️  WARNING: This branch has uncommitted changes that will be lost!${_reset}"
+        echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
     fi
     echo ""
 
@@ -237,9 +255,9 @@ if [ "$clean_mode" = true ]; then
         exit 0
     fi
 
-    clean_branch_cache "$cfg_source" "$clean_branch"
+    clean_session_cache "$cfg_source" "$clean_session"
     echo ""
-    echo "Done. Branch '$clean_branch' cleaned up."
+    echo "Done. Session '$clean_session' cleaned up."
     exit 0
 fi
 
@@ -327,7 +345,7 @@ source_branch=""
 PIPE_LISTENER_PID=""
 intermediary_dir=""
 work_dir=""
-branch_work_root=""
+session_work_root=""
 intermediary_root=""
 pipe_path=""
 project_path="$cfg_source"
@@ -339,7 +357,7 @@ if [ "$direct_mount_mode" = true ]; then
 
     # Use source path directly - no intermediary or work dir needed
     work_dir="$cfg_source"
-    branch_work_root=$(dirname "$cfg_source")
+    session_work_root=$(dirname "$cfg_source")
 
 else
     # Git mode: full cage setup with intermediary and work directories
@@ -355,10 +373,6 @@ else
         fi
     fi
 
-    # Set branch for path construction
-    CLAUDE_CAGE_BRANCH="$source_branch"
-    export CLAUDE_CAGE_BRANCH
-
     # Check for pending patches from previous runs (interactive)
     pending_branches=$(list_pending_patch_branches "$cfg_source")
     if [ -n "$pending_branches" ]; then
@@ -369,21 +383,132 @@ else
         fi
     fi
 
-    # Paths for bwrap/docker
     intermediary_dir=$(get_intermediary_path "$cfg_source")
-    work_dir=$(get_work_path "$cfg_source")
-    branch_work_root=$(get_branch_work_root)
     intermediary_root=$(get_intermediary_root)
+
+    # Session selection flow: find reusable sessions, handle --attach-session
+    find_reusable_session "$cfg_source"
+
+    if [ "$cli_attach_session_mode" = true ]; then
+        # --attach-session mode
+        if [ -n "$cli_attach_session" ]; then
+            # --attach-session <ts>: target specific session, must be active
+            if ! session_is_active "$cfg_source" "$cli_attach_session"; then
+                echo "Session $cli_attach_session ain't active. Use without a timestamp to pick up an inactive session."
+                exit 1
+            fi
+            CLAUDE_CAGE_SESSION="$cli_attach_session"
+            echo "Attachin' to session $cli_attach_session."
+        else
+            # --attach-session (no arg): auto-select or prompt
+            active_count=0
+            if [ -n "$REUSE_ACTIVE_SESSIONS" ]; then
+                active_count=$(echo "$REUSE_ACTIVE_SESSIONS" | wc -l)
+            fi
+
+            if [ "$active_count" -eq 0 ]; then
+                echo "No active sessions found to attach to."
+                exit 1
+            elif [ "$active_count" -eq 1 ]; then
+                read -r asid abranch <<< "$REUSE_ACTIVE_SESSIONS"
+                CLAUDE_CAGE_SESSION="$asid"
+                echo "Attachin' to session $asid on branch '$abranch'."
+            else
+                echo "Multiple active sessions found:"
+                echo ""
+                attach_ids=()
+                aidx=1
+                while IFS=' ' read -r asid abranch; do
+                    attach_ids+=("$asid")
+                    echo "  $aidx) $asid  branch: $abranch"
+                    ((aidx++))
+                done <<< "$REUSE_ACTIVE_SESSIONS"
+                echo ""
+
+                while true; do
+                    printf "Which session do you wanna attach to? "
+                    read -r choice
+                    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#attach_ids[@]} ]; then
+                        CLAUDE_CAGE_SESSION="${attach_ids[$((choice-1))]}"
+                        break
+                    fi
+                    echo "Pick a number."
+                done
+            fi
+        fi
+    else
+        # Default mode (no --attach-session)
+        case "$REUSE_SESSION_STATE" in
+            "active")
+                # Another session is running - create a fresh one alongside it
+                echo "Another session's runnin' ($REUSE_SESSION_ID). Firin' up a fresh one alongside it."
+                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                # Handle timestamp collision
+                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
+                    sleep 1
+                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                fi
+                ;;
+            "clean")
+                # Inactive clean session - reuse it
+                CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"
+                echo "Pickin' up clean session $REUSE_SESSION_ID on branch '$REUSE_SESSION_BRANCH'."
+                ;;
+            "dirty")
+                # Inactive dirty session - prompt
+                echo "Found an existing cage ($REUSE_SESSION_ID) on branch '$REUSE_SESSION_BRANCH'."
+                echo "  It's got uncommitted changes."
+                echo ""
+                echo "What do you wanna do?"
+                echo "  1) Pick it up (cage stays on branch '$REUSE_SESSION_BRANCH')"
+                echo "  2) Start fresh (new session)"
+                echo "  q) Quit"
+                echo ""
+                while true; do
+                    printf "Choice: "
+                    read -r choice
+                    case "$choice" in
+                        1) CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"; break ;;
+                        2)
+                            CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                            if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
+                                sleep 1
+                                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                            fi
+                            break
+                            ;;
+                        q|Q) echo "Catch you later."; exit 0 ;;
+                        *) echo "Pick 1, 2, or q." ;;
+                    esac
+                done
+                ;;
+            "none"|*)
+                # No existing session - create fresh
+                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                # Handle timestamp collision
+                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
+                    sleep 1
+                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                fi
+                ;;
+        esac
+    fi
+
+    export CLAUDE_CAGE_SESSION
+
+    # Now compute paths using the selected session
+    work_dir=$(get_work_path "$cfg_source")
+    session_work_root=$(get_session_work_root)
     pipe_path=$(get_pipe_path "$cfg_source")
 
     # Check for other active sessions before doing anything destructive
     other_session_active=false
-    if has_other_sessions "$cfg_source" "$source_branch"; then
+    if has_other_sessions "$cfg_source"; then
         other_session_active=true
     fi
 
     # Register our session early (before any destructive operations)
-    register_session "$cfg_source" "$source_branch"
+    register_session "$cfg_source"
 
     # Check if existing cage is in sync with source
     cage_state=$(check_cage_state "$cfg_source" "$intermediary_dir" "$work_dir")
@@ -393,8 +518,8 @@ else
             echo "Cage is in sync with source. Pickin' up where we left off."
             ;;
         "needs_work_dir")
-            if [ "$other_session_active" = true ]; then
-                echo "Another session's runnin'. Joinin' the existing cage."
+            if [ "$other_session_active" = true ] && [ "$cli_attach_session_mode" = true ]; then
+                echo "Attachin' to active session's workspace."
             else
                 echo "Intermediary exists but work dir is gone. Rebuildin' workspace..."
                 create_intermediary_clone "$cfg_source"
@@ -422,7 +547,7 @@ else
     # Set up git hooks and communication pipe (if autoMerge enabled)
     if [ "$cfg_autoMerge" = "true" ]; then
         setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
-        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch"
+        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
     fi
 
     # Set up work repo pre-commit hook to block force-added ignored files
@@ -463,15 +588,13 @@ cleanup_on_exit() {
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
         # Always unregister our session
-        if [ -n "$source_branch" ]; then
-            unregister_session "$cfg_source" "$source_branch"
-        fi
+        unregister_session "$cfg_source"
         if [ -n "$PIPE_LISTENER_PID" ]; then
             stop_pipe_listener "$PIPE_LISTENER_PID"
             cleanup_pipe "$pipe_path"
         fi
-        if [ "$cfg_autoMerge" = "true" ] && [ -n "$source_branch" ]; then
-            cleanup_source_hooks "$cfg_source" "$source_branch"
+        if [ "$cfg_autoMerge" = "true" ]; then
+            cleanup_source_hooks "$cfg_source"
         fi
     fi
     exit $exit_code
@@ -526,13 +649,13 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
 fi
 
 if [ "$cfg_mode" = "docker" ]; then
-    run_in_docker "$intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    run_in_docker "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
 else
     # Use network-isolated bwrap if network filtering is enabled
     if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
-        run_in_bwrap_with_network "$intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap_with_network "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
     else
-        run_in_bwrap "$intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
     fi
 fi
 

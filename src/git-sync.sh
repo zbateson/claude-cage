@@ -38,7 +38,8 @@ check_cage_state() {
     fi
 
     # Check if current branch exists in intermediary
-    local branch_name="${CLAUDE_CAGE_BRANCH:-}"
+    local branch_name
+    branch_name=$(get_source_branch "$source_dir")
     if [ -n "$branch_name" ] && ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
         echo "needs_update"
         return
@@ -403,10 +404,6 @@ stop_pipe_listener() {
 #   $1 - source_dir: The original source directory
 manual_git_merge() {
     local source_dir="$1"
-
-    # Need to set branch for path helpers
-    CLAUDE_CAGE_BRANCH=$(get_source_branch "$source_dir")
-    export CLAUDE_CAGE_BRANCH
 
     local intermediary_dir
     intermediary_dir=$(get_intermediary_path "$source_dir")

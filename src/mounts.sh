@@ -7,13 +7,13 @@
 # Each entry is "source_path|container_path"
 #
 # Arguments:
-#   $1 - branch_work_root (per-branch: branches/<branch>/work)
+#   $1 - session_work_root (per-session: sessions/<session_id>/work)
 #   $2 - intermediary_root (shared: intermediary/)
 #   $3 - work_dir (current project)
 #   $4 - intermediary_dir (current project bare repo, empty for non-git mode)
 #   $5 - project_path (original path)
 enumerate_projects() {
-    local branch_work_root="$1"
+    local session_work_root="$1"
     local intermediary_root="$2"
     local work_dir="$3"
     local intermediary_dir="$4"
@@ -32,21 +32,17 @@ enumerate_projects() {
     CAGE_WORK_PROJECTS+=("$work_dir|$project_path")
     CAGE_INTERMEDIARY_PROJECTS+=("$intermediary_dir|$project_path")
 
-    # Find any other project directories (those with .git) in branch work root
-    while IFS= read -r -d '' git_dir; do
-        local proj_dir="${git_dir%/.git}"
-        local orig_path="${proj_dir#"$branch_work_root"}"
-        # Skip if this is the current project (already added)
-        [ "$orig_path" = "$project_path" ] && continue
-        CAGE_WORK_PROJECTS+=("$proj_dir|$orig_path")
-    done < <(find "$branch_work_root" -name ".git" -type d -print0 2>/dev/null)
-
-    # Find other bare intermediaries in the shared intermediary root
-    # Bare repos have a HEAD file directly (no .git subdirectory)
+    # Find other projects by scanning intermediaries and looking up their latest session work dir
     while IFS= read -r head_file; do
         local bare_dir="${head_file%/HEAD}"
         local orig_path="${bare_dir#"$intermediary_root"}"
         [ "$orig_path" = "$project_path" ] && continue
+
+        # Look for this project's work dir in our session
+        local other_work="$session_work_root$orig_path"
+        if [ -d "$other_work/.git" ]; then
+            CAGE_WORK_PROJECTS+=("$other_work|$orig_path")
+        fi
         CAGE_INTERMEDIARY_PROJECTS+=("$bare_dir|$orig_path")
     done < <(find "$intermediary_root" -name "HEAD" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
         # Only include if it looks like a bare repo (has objects/ dir)

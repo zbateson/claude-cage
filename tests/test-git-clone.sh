@@ -64,11 +64,11 @@ BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
 # Intermediary is shared across branches (NOT per-branch)
 INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
 # Work dir is still per-branch
-WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
+SESSION_ID="test-session"; WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$SESSION_ID/work$SOURCE_PATH"
 
 # Set variables needed by create_intermediary_clone
-CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
-export CLAUDE_CAGE_BRANCH
+CLAUDE_CAGE_SESSION="$SESSION_ID"
+export CLAUDE_CAGE_SESSION
 cfg_exclude=".env|config/prod.yml|*.tmp|*.log|**/__pycache__|secrets/**"
 cfg_git_historyDepth=50
 cfg_git_defaultBranch="auto"

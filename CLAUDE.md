@@ -57,11 +57,11 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 
 1. **Source** - Your actual project with full git history
 2. **Intermediary** (`~/.cache/claude-cage/intermediary/<project-path>/`) - Persistent bare repo shared across branches, with real commit history (configurable depth). Excluded file content is filtered via `:(exclude,glob)` pathspec during fast-export — no excluded data ever enters the intermediary object store.
-3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary where Claude works
+3. **Work** (`~/.cache/claude-cage/sessions/<timestamp>/work/<project-path>/`) - Clone of intermediary where Claude works
 
-The intermediary is shared across all branches for a given project. Work directories are per-branch, allowing concurrent sessions on different branches. Inside the sandbox, each project's work directory is mounted at its original path, and intermediaries are mounted at `/run<intermediary-path>`, so git origins are accessible there.
+The intermediary is shared across all sessions for a given project. Work directories are per-session (identified by `YYYYMMDDHHMMSS` timestamps), allowing concurrent sessions. Inside the sandbox, each project's work directory is mounted at its original path, and intermediaries are mounted at `/run<intermediary-path>`, so git origins are accessible there.
 
-Both intermediary and work use the same branch name as your source project (e.g., if you're on `main`, they use `main`; if you're on `feature/foo`, they use `feature/foo`). The intermediary is a bare repo with `receive.denyNonFastForwards=true` to prevent force pushes.
+The work directory uses the same branch as your source project (e.g., if you're on `main`, the work checks out `main`). The intermediary is a bare repo with `receive.denyNonFastForwards=true` to prevent force pushes.
 
 ### Why Intermediary?
 
@@ -194,19 +194,22 @@ The `:(exclude,glob)` pathspec handles commits that touch both excluded and non-
 
 ### Multiple Sessions
 
-Multiple claude-cage sessions can run concurrently on the same project (even on different branches). Session tracking prevents cleanup race conditions and protects running sessions:
+Multiple claude-cage sessions can run concurrently on the same project. Session tracking prevents cleanup race conditions and protects running sessions:
 
-1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<branch>/<path-hash>/` early at startup (before any destructive operations), regardless of autoMerge setting
-2. **Rebuild protection** - If another session is active for the same branch+project, the cage is never rebuilt (even if source has moved ahead). New sessions join the existing cage instead.
+1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<path-hash>/` early at startup (before any destructive operations), regardless of autoMerge setting
+2. **Rebuild protection** - If another session is active for the same project, the cage is never rebuilt (even if source has moved ahead). New sessions get their own work directory.
 3. **Hook dispatcher** - Source `post-commit` hook uses a dispatcher pattern (`.git/hooks/post-commit` runs all scripts in `post-commit.d/`)
-4. **Branch-specific hooks** - Each branch gets its own hook file: `post-commit.d/claude-cage-<branch>`
+4. **Project-scoped hooks** - Each project gets one hook file: `post-commit.d/claude-cage-<path-hash>`
 5. **Safe cleanup** - Sessions are unregistered on exit. Hooks are only removed when no other sessions need them.
+6. **Session reuse** - On startup, inactive clean sessions are automatically reused. Inactive dirty sessions prompt the user to pick up or start fresh.
+7. **`--attach-session`** - Share an existing active session's work directory (separate sandbox, same workspace).
 
 This means:
-- Two sessions on `main` branch share the same hook and the same cage (safe, content is identical)
-- One session on `main`, another on `feature` → separate hooks, no conflict
+- Each session gets its own work directory (identified by timestamp)
+- Multiple sessions on the same project share the same intermediary and hook
 - Exiting one session doesn't break another session's hooks
 - Starting a second session never destroys a running session's work directory
+- `--attach-session` lets two terminals work in the same cage workspace
 
 ### Failed Patch Recovery
 
@@ -318,7 +321,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 | `isolated` | `false` | Only mount single project instead of all same-branch projects |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip the auto-merge info message and key press when autoMerge is off |
-| `createCagedDir` | `false` | Create `.caged/` symlinks to branch caches (see below) |
+| `createCagedDir` | `false` | Create `.caged/` symlinks to session caches (see below) |
 | `additionalMounts` | `{}` | Extra mounts for sandbox (see below) |
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
 | `allow` | `{}` | Allowed destinations (domains, ips, networks with optional ports) |
@@ -399,26 +402,20 @@ claude_cage {
 
 ### Caged Directory Shortcuts
 
-When `createCagedDir = true`, claude-cage creates a `.caged/` directory in your project root with symlinks to each branch's cache directories. This provides easy visibility into your sandboxed branches without changin' where the actual storage lives.
+When `createCagedDir = true`, claude-cage creates a `.caged/` directory in your project root with symlinks to cache directories. This provides easy visibility into your sandboxed sessions without changin' where the actual storage lives.
 
 ```
 project/.caged/
 ├── .gitignore           # Self-ignoring: contains "* \n !.gitignore"
-├── main/
-│   ├── work         → ~/.cache/claude-cage/branches/main/work/<project-path>/
-│   ├── intermediary → ~/.cache/claude-cage/intermediary/<project-path>/
-│   └── sync.log     → ~/.cache/claude-cage/intermediary/<project-path>/sync.log
-├── feature--foo/
-│   ├── work         → ~/.cache/.../branches/feature--foo/work/<project-path>/
-│   ├── intermediary → ~/.cache/.../intermediary/<project-path>/
-│   └── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
+├── intermediary     → ~/.cache/claude-cage/intermediary/<project-path>/
+├── sync.log         → ~/.cache/claude-cage/intermediary/<project-path>/sync.log
+└── sessions/
+    └── <timestamp>/
+        └── work     → ~/.cache/claude-cage/sessions/<timestamp>/work/<project-path>/
 ```
 
-Note: The intermediary symlink points to the same shared bare repo for all branches (it's not per-branch).
-
 **Benefits:**
-- `ls .caged/` shows all caged branches at a glance
-- `ls .caged/<branch>/` shows work and intermediary - exactly what you need to poke around
+- `ls .caged/sessions/` shows all caged sessions at a glance
 - Symlinks point directly to project-specific paths (no noise from other projects)
 - `rm -rf .caged/` only removes symlinks, actual cache data stays safe
 - Multi-project visibility preserved (storage still in `~/.cache/`)
@@ -445,10 +442,14 @@ Note: The intermediary symlink points to the same shared bare repo for all branc
 # Manual merge (fetch refs from intermediary)
 ./claude-cage git-merge
 
-# Clean up cached branches
-./claude-cage clean                    # Interactive selection
-./claude-cage clean --branch main      # Specific branch
-./claude-cage clean-all                # All branches for this project
+# Attach to an existing active session
+./claude-cage --attach-session                     # Auto-select or prompt
+./claude-cage --attach-session 20250206143022      # Specific session
+
+# Clean up cached sessions
+./claude-cage clean                                # Interactive selection
+./claude-cage clean --session 20250206143022       # Specific session
+./claude-cage clean-all                            # All sessions for this project
 
 # Shell completions
 ./claude-cage completion bash          # Output bash completion script
@@ -523,7 +524,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Configurable history depth (`git.historyDepth`, default 50 first-parent steps)
 - [x] Commit hash mapping for bidirectional sync and loop prevention
 - [x] `build_exclude_pathspecs()` for converting exclude patterns to `:(exclude,glob)` pathspec args
-- [x] Work directory clone with per-branch isolation
+- [x] Work directory clone with per-session isolation
 - [x] `run_in_bwrap()` - full bwrap sandbox
 - [x] `run_in_docker()` - Docker container sandbox
 - [x] Named pipe communication (`$XDG_RUNTIME_DIR/claude-cage/pipes/`)
@@ -536,13 +537,14 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] `manual_git_merge()` for manual sync
 - [x] Cleanup on exit
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (191 tests across 13 files)
+- [x] Comprehensive test suite (~198 assertions across 13 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
-- [x] Multi-project visibility (same-branch projects see each other in sandbox)
+- [x] Multi-project visibility (same-session projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
 - [x] Optional `.caged/` symlinks for easy cache access (`createCagedDir` option)
 - [x] Shell completions for bash and zsh (`completion` and `install-completions` commands)
-- [x] Cache cleanup commands (`clean`, `clean --branch`, `clean-all`)
+- [x] Cache cleanup commands (`clean`, `clean --session`, `clean-all`)
+- [x] Session-based work directories (timestamp-identified, with reuse and `--attach-session`)
 - [x] Direct mount mode for non-git directories or skipping git sync
 
 ### Known Issues / TODO
@@ -673,28 +675,30 @@ claude_cage {
 │   ├── claude-cage-import-marks          # Fast-import marks (intermediary side)
 │   ├── claude-cage-source-branches       # All source branch names (for pre-receive guard)
 │   ├── claude-cage-exclude-hash          # Hash of exclude patterns (rebuild detection)
+│   ├── claude-cage-latest-session        # Timestamp of latest session for this project
 │   └── sync.log                          # Sync activity log
-└── branches/
-    └── <branch>/                         # Sanitized branch name (e.g., "main", "feature--foo")
+└── sessions/
+    └── <timestamp>/                      # Session ID (YYYYMMDDHHMMSS)
         └── work/<project-path>/          # Claude's working directory
 
 $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
-├── pipes/<branch>/<project-path>       # Named pipe for communication
-└── sessions/<branch>/<path-hash>/      # Session tracking (PID files)
+├── pipes/<timestamp>/<project-path>    # Named pipe for communication
+└── sessions/<path-hash>/               # Session tracking (PID files)
     └── <pid>                           # One file per active session
 
 project/
 ├── .claude-cage                        # Project config file (at git root)
 ├── .caged/                             # Optional symlinks to cache (createCagedDir = true)
 │   ├── .gitignore                      # Self-ignoring (* and !.gitignore)
-│   └── <branch>/                       # One directory per caged branch
-│       ├── work         → ~/.cache/.../branches/<branch>/work/<project-path>/
-│       ├── intermediary → ~/.cache/.../intermediary/<project-path>/
-│       └── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
+│   ├── intermediary → ~/.cache/.../intermediary/<project-path>/
+│   ├── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
+│   └── sessions/
+│       └── <timestamp>/
+│           └── work → ~/.cache/.../sessions/<timestamp>/work/<project-path>/
 └── .git/hooks/
     ├── post-commit                     # Dispatcher (runs all in post-commit.d/)
     └── post-commit.d/
-        └── claude-cage-<branch>        # Branch-specific hook (fast-export to intermediary)
+        └── claude-cage-<path-hash>     # Project-scoped hook (fast-export to intermediary)
 ```
 
 ### Sandbox Mount Structure
@@ -703,22 +707,20 @@ Inside the sandbox, directories are mounted to preserve original paths:
 
 | Host Path | Sandbox Path | Purpose |
 |-----------|--------------|---------|
-| `branches/<branch>/work/<project>/` | `/<project>/` | Work dirs visible at original paths |
+| `sessions/<timestamp>/work/<project>/` | `/<project>/` | Work dirs visible at original paths |
 | `intermediary/<project>/` | `/run<intermediary-path>/` | Bare intermediaries as git origins |
 | Named pipe | `/tmp/claude-cage/pipe` | Git hook communication |
 
-This means if you have projects at `/home/user/project-a` and `/home/user/project-b` on the same branch, both are visible inside the sandbox at their original paths, and their git origins are at `/run/.cache/claude-cage/intermediary/home/user/project-a` etc.
+This means if you have projects at `/home/user/project-a` and `/home/user/project-b` in the same session, both are visible inside the sandbox at their original paths, and their git origins are at `/run/.cache/claude-cage/intermediary/home/user/project-a` etc.
 
 With `isolated = true`, only the single project's work and intermediary are mounted.
-
-Branch names are sanitized for filesystem paths: `/` becomes `--`, other special chars become `-`.
 
 ### Environment Variables
 
 **User-configurable:**
 - `CLAUDE_CAGE_CACHE` - Override cache directory (default: `~/.cache/claude-cage`)
 - `CLAUDE_CAGE_RUNTIME` - Override runtime directory (default: `$XDG_RUNTIME_DIR/claude-cage`)
-- `CLAUDE_CAGE_BRANCH` - Override branch name for path construction (auto-detected from source)
+- `CLAUDE_CAGE_SESSION` - Override session ID for path construction (auto-generated as `YYYYMMDDHHMMSS` timestamp)
 - `CLAUDE_CAGE_MOUNTED_PIPE` - Override pipe path baked into post-receive hook (default: `/tmp/claude-cage/pipe`). Used by tests to isolate hook pipes from live sessions.
 - `CLAUDE_CAGE_ALLOW_IGNORED` - Set to `1` inside sandbox to override `git.blockForceAdd` and allow committing force-added gitignored files.
 
@@ -754,16 +756,16 @@ bash tests/run-all.sh
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
-| test-git-hooks.sh | git-hooks.sh | 12 |
+| test-git-hooks.sh | git-hooks.sh | 14 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 19 |
 | test-network.sh | network.sh | 31 |
-| test-bwrap.sh | bwrap.sh | 13 |
+| test-bwrap.sh | bwrap.sh | 11 |
 | test-docker.sh | docker.sh | 18 |
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 191 tests across 13 files**
+**Total: ~198 assertions across 13 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

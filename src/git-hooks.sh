@@ -6,39 +6,34 @@
 # Session tracking (prevents cleanup race conditions with multiple sessions)
 # ============================================================================
 
-# Get the session directory for a source/branch combo
-# Sessions are tracked in runtime dir (cleared on reboot)
+# Get the session directory for a source project
+# Sessions are tracked in runtime dir (cleared on reboot), per-project (path hash)
 get_session_dir() {
     local source_dir="$1"
-    local branch="$2"
-    local sanitized_branch
-    sanitized_branch=$(sanitize_branch_name "$branch")
     local path_hash
     path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-    echo "$CLAUDE_CAGE_RUNTIME/sessions/$sanitized_branch/$path_hash"
+    echo "$CLAUDE_CAGE_RUNTIME/sessions/$path_hash"
 }
 
-# Register this session (create PID file)
+# Register this session (create PID file containing session ID)
 register_session() {
     local source_dir="$1"
-    local branch="$2"
     local session_dir
-    session_dir=$(get_session_dir "$source_dir" "$branch")
+    session_dir=$(get_session_dir "$source_dir")
 
     if [ "$dry_run" = true ]; then
         echo "[dry-run] register session at $session_dir/$$"
     else
         mkdir -p "$session_dir"
-        echo $$ > "$session_dir/$$"
+        echo "${CLAUDE_CAGE_SESSION:-}" > "$session_dir/$$"
     fi
 }
 
 # Unregister this session (remove PID file)
 unregister_session() {
     local source_dir="$1"
-    local branch="$2"
     local session_dir
-    session_dir=$(get_session_dir "$source_dir" "$branch")
+    session_dir=$(get_session_dir "$source_dir")
 
     if [ "$dry_run" = true ]; then
         echo "[dry-run] unregister session at $session_dir/$$"
@@ -46,17 +41,15 @@ unregister_session() {
         rm -f "$session_dir/$$"
         # Clean up empty directories
         rmdir "$session_dir" 2>/dev/null || true
-        rmdir "$(dirname "$session_dir")" 2>/dev/null || true
     fi
 }
 
-# Check if other sessions exist for this source/branch
+# Check if other sessions exist for this source project
 # Returns 0 (true) if other sessions exist, 1 (false) if not
 has_other_sessions() {
     local source_dir="$1"
-    local branch="$2"
     local session_dir
-    session_dir=$(get_session_dir "$source_dir" "$branch")
+    session_dir=$(get_session_dir "$source_dir")
 
     if [ ! -d "$session_dir" ]; then
         return 1  # no sessions at all
@@ -82,31 +75,26 @@ has_other_sessions() {
     [ $count -gt 0 ]
 }
 
-# Check if ANY sessions exist for a source directory (across all branches)
+# Check if ANY sessions exist for a source directory (including our own)
 # Returns 0 (true) if any sessions exist, 1 (false) if not
 has_any_sessions() {
     local source_dir="$1"
-    local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    local session_dir
+    session_dir=$(get_session_dir "$source_dir")
 
-    if [ ! -d "$CLAUDE_CAGE_RUNTIME/sessions" ]; then
+    if [ ! -d "$session_dir" ]; then
         return 1
     fi
 
-    for branch_dir in "$CLAUDE_CAGE_RUNTIME/sessions"/*; do
-        [ -d "$branch_dir" ] || continue
-        local session_dir="$branch_dir/$path_hash"
-        [ -d "$session_dir" ] || continue
-        for pidfile in "$session_dir"/*; do
-            [ -f "$pidfile" ] || continue
-            local pid
-            pid=$(basename "$pidfile")
-            if kill -0 "$pid" 2>/dev/null; then
-                return 0
-            else
-                rm -f "$pidfile"
-            fi
-        done
+    for pidfile in "$session_dir"/*; do
+        [ -f "$pidfile" ] || continue
+        local pid
+        pid=$(basename "$pidfile")
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        else
+            rm -f "$pidfile"
+        fi
     done
 
     return 1
@@ -289,17 +277,13 @@ cleanup_pipe() {
 # Only removes hooks if no other sessions are using them
 # Arguments:
 #   $1 - source_dir: The source project directory
-#   $2 - target_branch: The branch that was active when cage started
 cleanup_source_hooks() {
     local source_dir="$1"
-    local target_branch="$2"
-    local sanitized_branch
-    sanitized_branch=$(sanitize_branch_name "$target_branch")
 
     # Check if other sessions still need the hooks
-    if has_other_sessions "$source_dir" "$target_branch"; then
+    if has_other_sessions "$source_dir"; then
         if [ "$verbose" = true ]; then
-            echo "  Other sessions active, keepin' hooks for branch: $target_branch"
+            echo "  Other sessions active, keepin' hooks for this project"
         fi
         return 0
     fi
@@ -308,8 +292,10 @@ cleanup_source_hooks() {
     local git_root
     git_root=$(get_git_root "$source_dir")
 
-    # No other sessions, safe to remove our branch-specific hooks
-    local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+    # No other sessions, safe to remove project-specific hooks
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$path_hash"
 
     if [ -f "$post_commit_hook" ]; then
         run rm -f "$post_commit_hook"
@@ -326,18 +312,16 @@ cleanup_source_hooks() {
 #   $1 - source_dir: The source project directory
 #   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
 #   $3 - intermediary_dir: The bare intermediary directory
-#   $4 - target_branch: The branch that was active when cage started
 setup_source_post_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
     local intermediary_dir="$3"
-    local target_branch="$4"
-    local sanitized_branch
-    sanitized_branch=$(sanitize_branch_name "$target_branch")
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
     # Use git root for hook installation (supports running from subdirectories)
     local git_root
     git_root=$(get_git_root "$source_dir")
-    local hook_path="$git_root/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
+    local hook_path="$git_root/.git/hooks/post-commit.d/claude-cage-$path_hash"
 
     # Ensure dispatcher exists (at git root, not source_dir)
     if [ "$dry_run" != true ]; then
@@ -379,7 +363,6 @@ setup_source_post_commit() {
 #!/bin/bash
 # claude-cage: sync commits to intermediary using fast-export + pathspec excludes
 INTERMEDIARY="$intermediary_dir"
-TARGET_BRANCH="$target_branch"
 SOURCE_DIR="$source_dir"
 SOURCE_MARKS="$source_marks_path"
 IMPORT_MARKS="$import_marks_path"

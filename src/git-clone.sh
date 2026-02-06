@@ -698,6 +698,9 @@ create_intermediary_clone() {
             local exclude_hash_path
             exclude_hash_path=$(get_exclude_hash_path "$intermediary_dir")
             echo "$current_exclude_hash" > "$exclude_hash_path"
+
+            # Create empty sync.log so symlinks aren't broken before first sync
+            touch "$intermediary_dir/sync.log"
         fi
 
         echo ""

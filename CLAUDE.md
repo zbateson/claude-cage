@@ -79,7 +79,7 @@ The intermediary repo serves as a buffer:
 `create_intermediary_clone()` uses `git fast-export` with `:(exclude,glob)` pathspec piped into `git fast-import` to create a bare repo with real history but no excluded content.
 
 1. `git init --bare` the intermediary directory
-2. Calculate export range: `default_branch~historyDepth..HEAD` (widened to include merge-base if on a feature branch)
+2. Calculate export range: `default_branch~historyDepth..HEAD` (first-parent depth; widened to include merge-base if on a feature branch)
 3. Discover in-scope branches (any branch whose merge-base falls within the range)
 4. `git fast-export` with `:(exclude,glob)` pathspec args (built by `build_exclude_pathspecs()`) piped into `git fast-import` on the bare intermediary
 5. Build commit hash mapping from fast-export/fast-import marks files
@@ -291,7 +291,7 @@ claude_cage {
 
     -- Git options
     git = {
-        historyDepth = 50,    -- Number of commits to include in intermediary (default: 50)
+        historyDepth = 50,    -- First-parent depth on default branch (default: 50, actual count may be higher)
         defaultBranch = "auto", -- Branch detection: "auto" or explicit name
         -- Block commits containing force-added gitignored files (default: true).
         -- Force-added ignored files break patch-based sync between cage and source.
@@ -323,7 +323,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
 | `docker.image` | `"node:lts-slim"` | Docker image to use (docker mode only) |
 | `docker.packages` | `{"curl", "iputils-ping"}` | Packages to install in Docker container (as root, before dropping privileges) |
-| `git.historyDepth` | `50` | Number of commits to include in intermediary history |
+| `git.historyDepth` | `50` | First-parent depth on default branch (actual commit count may be higher due to merge history, feature branches, and in-scope branch discovery) |
 | `git.defaultBranch` | `"auto"` | Default branch for history anchoring (`"auto"` detects from remote/main/master) |
 | `git.blockForceAdd` | `true` | Block commits containing force-added gitignored files in work repo |
 
@@ -518,7 +518,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Config parsing (Lua-based, system/user/includeIf/local merge)
 - [x] `create_intermediary_clone()` - bare repo via fast-export/fast-import with `:(exclude,glob)` pathspec
 - [x] Persistent intermediary shared across branches (only rebuilt on exclude change)
-- [x] Configurable history depth (`git.historyDepth`, default 50 commits)
+- [x] Configurable history depth (`git.historyDepth`, default 50 first-parent steps)
 - [x] Commit hash mapping for bidirectional sync and loop prevention
 - [x] `build_exclude_pathspecs()` for converting exclude patterns to `:(exclude,glob)` pathspec args
 - [x] Work directory clone with per-branch isolation

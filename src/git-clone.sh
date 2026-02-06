@@ -481,6 +481,128 @@ build_commit_map_from_marks() {
     fi
 }
 
+# Catch up all intermediary branches to match source
+# Adds the current branch if missing, then incrementally fast-exports
+# new commits for every branch in the intermediary.
+# Arguments: $1 = source_dir, $2 = intermediary_dir
+# Returns 0 if any branches were updated, 1 if all already in sync
+catchup_intermediary_branches() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+
+    local source_marks_path
+    source_marks_path=$(get_source_marks_path "$intermediary_dir")
+    local import_marks_path
+    import_marks_path=$(get_import_marks_path "$intermediary_dir")
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
+
+    local any_updated=false
+
+    # Check if current branch exists in intermediary
+    local branch_name
+    branch_name=$(get_source_branch "$source_dir")
+    if [ -n "$branch_name" ] && ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+        echo "  Addin' branch $branch_name to intermediary..."
+        any_updated=true
+
+        # Calculate range base from existing intermediary's oldest commit
+        local existing_range_base
+        existing_range_base=$(git -C "$intermediary_dir" rev-list --all --reverse 2>/dev/null | head -1)
+
+        # Map back to source hash
+        local source_range_base=""
+        if [ -f "$commit_map_path" ]; then
+            source_range_base=$(awk -v ih="$existing_range_base" '$1 == ih { print $2; exit }' "$commit_map_path")
+        fi
+
+        if [ -n "$source_range_base" ] && [ "$dry_run" != true ]; then
+            local -a exclude_args=()
+            if [ -n "$cfg_exclude" ]; then
+                while IFS= read -r _ea; do
+                    exclude_args+=("$_ea")
+                done < <(build_exclude_pathspecs "$cfg_exclude")
+            fi
+            git -C "$source_dir" fast-export \
+                --import-marks="$source_marks_path" \
+                --export-marks="$source_marks_path" \
+                "${source_range_base}..${branch_name}" \
+                ${exclude_args:+-- "${exclude_args[@]}"} \
+                2>/dev/null \
+                | git -C "$intermediary_dir" fast-import \
+                    --import-marks="$import_marks_path" \
+                    --export-marks="$import_marks_path" \
+                    --quiet 2>/dev/null
+
+            # Update commit map
+            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${source_range_base}..${branch_name}"
+        fi
+    fi
+
+    # Catch up all intermediary branches to source
+    local ib
+    while IFS= read -r ib; do
+        ib="${ib#  }"  # strip leading spaces from git branch output
+        ib="${ib#\* }"  # strip active branch marker
+        [ -z "$ib" ] && continue
+
+        # Check if source has this branch
+        if ! git -C "$source_dir" rev-parse --verify "$ib" >/dev/null 2>&1; then
+            continue
+        fi
+
+        local source_head
+        source_head=$(git -C "$source_dir" rev-parse "$ib" 2>/dev/null)
+        local intermediary_head
+        intermediary_head=$(git -C "$intermediary_dir" rev-parse "$ib" 2>/dev/null)
+
+        # Check if source is ahead (source HEAD not mapped)
+        if [ -f "$commit_map_path" ]; then
+            if grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
+                continue  # Already in sync
+            fi
+            # Also check if intermediary head maps to source head
+            if grep -q "^${intermediary_head} ${source_head}$" "$commit_map_path" 2>/dev/null; then
+                continue  # Already in sync
+            fi
+        fi
+
+        echo "  Catching up branch $ib..."
+        any_updated=true
+        if [ "$dry_run" != true ]; then
+            local -a exclude_args=()
+            if [ -n "$cfg_exclude" ]; then
+                while IFS= read -r _ea; do
+                    exclude_args+=("$_ea")
+                done < <(build_exclude_pathspecs "$cfg_exclude")
+            fi
+            git -C "$source_dir" fast-export \
+                --import-marks="$source_marks_path" \
+                --export-marks="$source_marks_path" \
+                "${intermediary_head}..${ib}" \
+                ${exclude_args:+-- "${exclude_args[@]}"} \
+                2>/dev/null \
+                | git -C "$intermediary_dir" fast-import \
+                    --import-marks="$import_marks_path" \
+                    --export-marks="$import_marks_path" \
+                    --quiet 2>/dev/null || true
+
+            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${intermediary_head}..${ib}"
+        fi
+    done < <(git -C "$intermediary_dir" branch --list 2>/dev/null)
+
+    # Update source branches file
+    local source_branches_path
+    source_branches_path=$(get_source_branches_path "$intermediary_dir")
+    git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/ > "$source_branches_path"
+
+    if [ "$any_updated" = true ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Detect the default branch for a source repository
 # Detection order:
 # 1. cfg_git_defaultBranch if not "auto"
@@ -733,105 +855,7 @@ create_intermediary_clone() {
         echo ""
         echo "Intermediary exists, checkin' for updates..."
 
-        local source_marks_path
-        source_marks_path=$(get_source_marks_path "$intermediary_dir")
-        local import_marks_path
-        import_marks_path=$(get_import_marks_path "$intermediary_dir")
-        local commit_map_path
-        commit_map_path=$(get_commit_map_path "$intermediary_dir")
-
-        # Check if current branch exists in intermediary
-        if ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
-            echo "  Addin' branch $branch_name to intermediary..."
-
-            # Calculate range base from existing intermediary's oldest commit
-            local existing_range_base
-            existing_range_base=$(git -C "$intermediary_dir" rev-list --all --reverse 2>/dev/null | head -1)
-
-            # Map back to source hash
-            local source_range_base=""
-            if [ -f "$commit_map_path" ]; then
-                source_range_base=$(awk -v ih="$existing_range_base" '$1 == ih { print $2; exit }' "$commit_map_path")
-            fi
-
-            if [ -n "$source_range_base" ] && [ "$dry_run" != true ]; then
-                local -a exclude_args=()
-                if [ -n "$cfg_exclude" ]; then
-                    while IFS= read -r _ea; do
-                        exclude_args+=("$_ea")
-                    done < <(build_exclude_pathspecs "$cfg_exclude")
-                fi
-                git -C "$source_dir" fast-export \
-                    --import-marks="$source_marks_path" \
-                    --export-marks="$source_marks_path" \
-                    "${source_range_base}..${branch_name}" \
-                    ${exclude_args:+-- "${exclude_args[@]}"} \
-                    2>/dev/null \
-                    | git -C "$intermediary_dir" fast-import \
-                        --import-marks="$import_marks_path" \
-                        --export-marks="$import_marks_path" \
-                        --quiet 2>/dev/null
-
-                # Update commit map
-                build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${source_range_base}..${branch_name}"
-            fi
-        fi
-
-        # Catch up all intermediary branches to source
-        local ib
-        while IFS= read -r ib; do
-            ib="${ib#  }"  # strip leading spaces from git branch output
-            ib="${ib#\* }"  # strip active branch marker
-            [ -z "$ib" ] && continue
-
-            # Check if source has this branch
-            if ! git -C "$source_dir" rev-parse --verify "$ib" >/dev/null 2>&1; then
-                continue
-            fi
-
-            local source_head
-            source_head=$(git -C "$source_dir" rev-parse "$ib" 2>/dev/null)
-            local intermediary_head
-            intermediary_head=$(git -C "$intermediary_dir" rev-parse "$ib" 2>/dev/null)
-
-            # Check if source is ahead (source HEAD not mapped)
-            if [ -f "$commit_map_path" ]; then
-                if grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
-                    continue  # Already in sync
-                fi
-                # Also check if intermediary head maps to source head
-                if grep -q "^${intermediary_head} ${source_head}$" "$commit_map_path" 2>/dev/null; then
-                    continue  # Already in sync
-                fi
-            fi
-
-            echo "  Catching up branch $ib..."
-            if [ "$dry_run" != true ]; then
-                local -a exclude_args=()
-                if [ -n "$cfg_exclude" ]; then
-                    while IFS= read -r _ea; do
-                        exclude_args+=("$_ea")
-                    done < <(build_exclude_pathspecs "$cfg_exclude")
-                fi
-                git -C "$source_dir" fast-export \
-                    --import-marks="$source_marks_path" \
-                    --export-marks="$source_marks_path" \
-                    "${intermediary_head}..${ib}" \
-                    ${exclude_args:+-- "${exclude_args[@]}"} \
-                    2>/dev/null \
-                    | git -C "$intermediary_dir" fast-import \
-                        --import-marks="$import_marks_path" \
-                        --export-marks="$import_marks_path" \
-                        --quiet 2>/dev/null || true
-
-                build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${intermediary_head}..${ib}"
-            fi
-        done < <(git -C "$intermediary_dir" branch --list 2>/dev/null)
-
-        # Update source branches file
-        local source_branches_path
-        source_branches_path=$(get_source_branches_path "$intermediary_dir")
-        git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/ > "$source_branches_path"
+        catchup_intermediary_branches "$source_dir" "$intermediary_dir" || true
     fi
 
     # Install hooks on bare intermediary

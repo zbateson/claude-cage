@@ -573,7 +573,12 @@ else
 
     case "$cage_state" in
         "in_sync")
-            echo "Cage is in sync with source. Pickin' up where we left off."
+            echo "Pickin' up where we left off."
+            # Current branch is in sync, but other branches may have new commits
+            if catchup_intermediary_branches "$cfg_source" "$intermediary_dir"; then
+                # Branches were updated - refresh work dir's remote-tracking refs
+                git -C "$work_dir" fetch "$intermediary_dir" '+refs/heads/*:refs/remotes/origin/*' --quiet 2>/dev/null || true
+            fi
             ;;
         "needs_work_dir")
             if [ "$other_session_active" = true ] && [ "$cli_attach_session_mode" = true ]; then

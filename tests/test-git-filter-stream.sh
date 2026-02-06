@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test git-filter-stream.sh functionality
-# Tests filter_fast_export_stream with various exclusion patterns
+# Test :(exclude,glob) pathspec filtering on git fast-export
+# Tests that exclude patterns correctly filter files via pathspec
 
 set -euo pipefail
 
@@ -30,6 +30,36 @@ init_repo() {
     git -C "$dir" config user.name "Test"
 }
 
+# Helper: run fast-export with pathspec excludes and capture file list
+# Arguments: $1=src $2=dst, remaining args are raw exclude patterns (not pathspecs)
+run_export() {
+    local src="$1" dst="$2"
+    shift 2
+    git init --bare "$dst" --quiet
+
+    # Build pathspec args using the same logic as build_exclude_pathspecs
+    local -a exclude_args=()
+    local pat pathspec base
+    for pat in "$@"; do
+        if [[ "$pat" == */* ]]; then
+            pathspec="$pat"
+        else
+            pathspec="**/$pat"
+        fi
+        exclude_args+=(":(exclude,glob)$pathspec")
+        # Add /** variant to match files inside matching directories
+        base="${pathspec%/}"
+        base="${base%/\*}"
+        exclude_args+=(":(exclude,glob)${base}/**")
+    done
+
+    git -C "$src" fast-export --all \
+        ${exclude_args:+-- "${exclude_args[@]}"} \
+        2>/dev/null \
+        | git -C "$dst" fast-import --quiet 2>/dev/null
+    git -C "$dst" ls-tree -r --name-only HEAD 2>/dev/null || true
+}
+
 # --------------------------------------------------------------------------
 # Test 1: No patterns - passthrough
 # --------------------------------------------------------------------------
@@ -44,8 +74,7 @@ echo "hello" > "$SRC/file.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add file" --quiet
 
 git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream \
+git -C "$SRC" fast-export --all 2>/dev/null \
     | git -C "$DST" fast-import --quiet 2>/dev/null
 
 file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
@@ -76,12 +105,7 @@ echo "public" > "$SRC/readme.txt"
 echo "secret" > "$SRC/.env"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream ".env" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
-
-file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
+file_list=$(run_export "$SRC" "$DST" ".env")
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
     echo "FAIL: readme.txt should be present"
     exit 1
@@ -109,12 +133,7 @@ echo "key" > "$SRC/secrets/key.pem"
 echo "cert" > "$SRC/secrets/cert.pem"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream "secrets/" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
-
-file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
+file_list=$(run_export "$SRC" "$DST" "secrets/")
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
     echo "FAIL: readme.txt should be present"
     exit 1
@@ -143,12 +162,7 @@ mkdir -p "$SRC/logs"
 echo "log2" > "$SRC/logs/debug.log"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream "*.log" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
-
-file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
+file_list=$(run_export "$SRC" "$DST" "*.log")
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
     echo "FAIL: readme.txt should be present"
     exit 1
@@ -179,12 +193,7 @@ echo "updated" > "$SRC/readme.txt"
 echo "secret" > "$SRC/.env"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Mixed commit" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream ".env" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
-
-file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
+file_list=$(run_export "$SRC" "$DST" ".env")
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
     echo "FAIL: readme.txt should be present"
     exit 1
@@ -204,10 +213,10 @@ echo "  PASS: Mixed commit preservation"
 passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# Test 6: Exclude-only commit becomes empty (preserved for 1:1 mapping)
+# Test 6: Exclude-only commit is dropped by fast-export (no tree change)
 # --------------------------------------------------------------------------
 total=$((total + 1))
-echo "Test $total: Exclude-only commit becomes empty but is preserved"
+echo "Test $total: Exclude-only commit dropped (fewer commits in dest)"
 
 SRC="$TEST_TMP/test_6_src"
 DST="$TEST_TMP/test_6_dst"
@@ -224,29 +233,31 @@ git -C "$SRC" add -A && git -C "$SRC" commit -m "Add secret only" --quiet
 echo "more public" > "$SRC/other.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add other" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream ".env" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
+file_list=$(run_export "$SRC" "$DST" ".env")
 
-# All three commits should exist in destination (1:1 mapping)
+# fast-export with pathspec drops commits that become empty
+# Source has 3 commits, but dest should have 2 (exclude-only commit dropped)
 src_count=$(git -C "$SRC" rev-list --all --count)
 dst_count=$(git -C "$DST" rev-list --all --count)
-if [ "$src_count" != "$dst_count" ]; then
-    echo "FAIL: commit count mismatch ($dst_count in dst vs $src_count in src)"
+if [ "$src_count" != "3" ]; then
+    echo "FAIL: expected 3 commits in source, got $src_count"
+    exit 1
+fi
+if [ "$dst_count" != "2" ]; then
+    echo "FAIL: expected 2 commits in dest (exclude-only dropped), got $dst_count"
     exit 1
 fi
 
-# The second commit should be empty (no tree change from its parent)
-# Get the second commit (one before HEAD)
-second_commit=$(git -C "$DST" rev-parse HEAD~1)
-diff_output=$(git -C "$DST" diff-tree --no-commit-id -r "$second_commit" 2>/dev/null || true)
-if [ -n "$diff_output" ]; then
-    echo "FAIL: second commit should be empty after filtering"
-    echo "Diff: $diff_output"
+# Verify content is correct
+if ! echo "$file_list" | grep -q "^readme\.txt$"; then
+    echo "FAIL: readme.txt should be present"
     exit 1
 fi
-echo "  PASS: Exclude-only commit becomes empty but is preserved"
+if ! echo "$file_list" | grep -q "^other\.txt$"; then
+    echo "FAIL: other.txt should be present"
+    exit 1
+fi
+echo "  PASS: Exclude-only commit dropped ($src_count source -> $dst_count dest)"
 passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
@@ -267,12 +278,7 @@ echo "key" > "$SRC/secrets/key.pem"
 echo "data" > "$SRC/data.csv"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream ".env" "*.log" "secrets/" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
-
-file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
+file_list=$(run_export "$SRC" "$DST" ".env" "*.log" "secrets/")
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
     echo "FAIL: readme.txt should be present"
     exit 1
@@ -297,10 +303,10 @@ echo "  PASS: Multiple exclusion patterns"
 passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# Test 8: Commit count preserved (1:1 mapping guarantee)
+# Test 8: Commit count preserved for non-excluded-only commits
 # --------------------------------------------------------------------------
 total=$((total + 1))
-echo "Test $total: Commit count preserved across filter"
+echo "Test $total: Commit count preserved for commits with non-excluded content"
 
 SRC="$TEST_TMP/test_8_src"
 DST="$TEST_TMP/test_8_dst"
@@ -323,22 +329,20 @@ git -C "$SRC" add -A && git -C "$SRC" commit -m "Commit 4 (mixed)" --quiet
 echo "d" > "$SRC/file.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Commit 5" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream ".env" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
+file_list=$(run_export "$SRC" "$DST" ".env")
 
 src_count=$(git -C "$SRC" rev-list --all --count)
 dst_count=$(git -C "$DST" rev-list --all --count)
-if [ "$src_count" != "$dst_count" ]; then
-    echo "FAIL: commit count $dst_count in dst vs $src_count in src"
-    exit 1
-fi
+# Source has 5, dest should have 4 (Commit 2 is excluded-only, gets dropped)
 if [ "$src_count" != "5" ]; then
     echo "FAIL: expected 5 commits in source, got $src_count"
     exit 1
 fi
-echo "  PASS: Commit count preserved ($src_count commits)"
+if [ "$dst_count" != "4" ]; then
+    echo "FAIL: expected 4 commits in dest (1 excluded-only dropped), got $dst_count"
+    exit 1
+fi
+echo "  PASS: Commit count correct ($src_count source -> $dst_count dest, 1 excluded-only dropped)"
 passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
@@ -356,12 +360,7 @@ echo "has space" > "$SRC/my file.txt"
 echo "secret" > "$SRC/my secret.env"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files with spaces" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream "my secret.env" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
-
-file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
+file_list=$(run_export "$SRC" "$DST" "my secret.env")
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
     echo "FAIL: readme.txt should be present"
     exit 1
@@ -395,12 +394,7 @@ echo "cache1" > "$SRC/src/__pycache__/main.cpython-311.pyc"
 echo "cache2" > "$SRC/src/sub/__pycache__/sub.cpython-311.pyc"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add python project" --quiet
 
-git init --bare "$DST" --quiet
-git -C "$SRC" fast-export --all \
-    | filter_fast_export_stream "src/__pycache__/" "src/sub/__pycache__/" \
-    | git -C "$DST" fast-import --quiet 2>/dev/null
-
-file_list=$(git -C "$DST" ls-tree -r --name-only HEAD)
+file_list=$(run_export "$SRC" "$DST" "src/__pycache__/" "src/sub/__pycache__/")
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
     echo "FAIL: readme.txt should be present"
     exit 1
@@ -422,46 +416,20 @@ echo "  PASS: Nested directory exclude"
 passed=$((passed + 1))
 
 # ==========================================================================
-# Gitignore-semantics tests (XFAIL — known gaps in pattern matching)
+# Gitignore-semantics tests (previously XFAIL — now using :(exclude,glob))
 #
-# These tests document differences between our glob matching and gitignore
-# semantics. They are expected to fail until we fix the pattern engine.
-#
-# Reference: gitignore(5) and git's wildmatch implementation
-#   - * matches anything except /
-#   - ** matches anything including /
-#   - ? matches one character except /
-#   - Pattern without / is matched against basename at any depth
-#   - **/ prefix matches zero or more directories
-#   - [abc] character classes work
+# With :(exclude,glob) pathspec + **/ prefix for slash-free patterns,
+# git's wildmatch engine handles all these correctly.
 # ==========================================================================
 
-xfail=0
-xfail_total=0
-
-# Helper: run a filter and capture the file list (reusable for xfail tests)
-run_filter() {
-    local src="$1" dst="$2"
-    shift 2
-    git init --bare "$dst" --quiet
-    git -C "$src" fast-export --all \
-        | filter_fast_export_stream "$@" \
-        | git -C "$dst" fast-import --quiet 2>/dev/null
-    git -C "$dst" ls-tree -r --name-only HEAD 2>/dev/null || true
-}
-
 # --------------------------------------------------------------------------
-# XFAIL 1: **/ prefix should match zero directories (root-level match)
-#
-# In gitignore, **/__pycache__ matches __pycache__ at ANY depth including
-# the repo root. Our regex ^.*/__pycache__(/.*)?$ requires at least one
-# directory prefix, so root-level __pycache__ is missed.
+# Test 11: **/__pycache__ matches at root and nested levels
 # --------------------------------------------------------------------------
-xfail_total=$((xfail_total + 1))
-echo "XFAIL $xfail_total: **/__pycache__ should match at root level"
+total=$((total + 1))
+echo "Test $total: **/__pycache__ matches at root level and nested"
 
-SRC="$TEST_TMP/xfail_1_src"
-DST="$TEST_TMP/xfail_1_dst"
+SRC="$TEST_TMP/test_11_src"
+DST="$TEST_TMP/test_11_dst"
 init_repo "$SRC"
 
 mkdir -p "$SRC/__pycache__" "$SRC/src/__pycache__"
@@ -470,40 +438,27 @@ echo "nested-cache" > "$SRC/src/__pycache__/module.pyc"
 echo "code" > "$SRC/main.py"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-file_list=$(run_filter "$SRC" "$DST" "**/__pycache__")
-_xfail_ok=true
-if echo "$file_list" | grep -q "^__pycache__/"; then
-    echo "  BUG: root-level __pycache__/ not excluded by **/__pycache__"
-    _xfail_ok=false
-fi
-if echo "$file_list" | grep -q "^src/__pycache__/"; then
-    echo "  BUG: src/__pycache__/ not excluded by **/__pycache__"
-    _xfail_ok=false
+file_list=$(run_export "$SRC" "$DST" "**/__pycache__")
+if echo "$file_list" | grep -q "__pycache__"; then
+    echo "FAIL: __pycache__ should be excluded at all depths"
+    echo "Found: $(echo "$file_list" | grep '__pycache__')"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^main\.py$"; then
-    echo "  BUG: main.py should be present"
-    _xfail_ok=false
+    echo "FAIL: main.py should be present"
+    exit 1
 fi
-if $_xfail_ok; then
-    echo "  SURPRISE PASS (fixed?)"
-    passed=$((passed + 1))
-else
-    echo "  XFAIL (expected)"
-    xfail=$((xfail + 1))
-fi
+echo "  PASS: **/__pycache__ excludes at all depths"
+passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# XFAIL 2: Plain name without / should match at any depth (basename match)
-#
-# In gitignore, a pattern without / is matched against the file's basename,
-# so ".env" matches both root .env and config/.env. Our regex ^\.env(/.*)?$
-# only matches at root.
+# Test 12: Plain name .env matches at any depth (basename matching via **/)
 # --------------------------------------------------------------------------
-xfail_total=$((xfail_total + 1))
-echo "XFAIL $xfail_total: Plain name .env should match at any depth"
+total=$((total + 1))
+echo "Test $total: Plain name .env matches at any depth"
 
-SRC="$TEST_TMP/xfail_2_src"
-DST="$TEST_TMP/xfail_2_dst"
+SRC="$TEST_TMP/test_12_src"
+DST="$TEST_TMP/test_12_dst"
 init_repo "$SRC"
 
 echo "root-secret" > "$SRC/.env"
@@ -513,44 +468,27 @@ echo "staging-secret" > "$SRC/deploy/staging/.env"
 echo "public" > "$SRC/readme.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-file_list=$(run_filter "$SRC" "$DST" ".env")
-_xfail_ok=true
-if echo "$file_list" | grep -q "^\.env$"; then
-    echo "  BUG: root .env not excluded"
-    _xfail_ok=false
-fi
-if echo "$file_list" | grep -q "^config/\.env$"; then
-    echo "  BUG: config/.env not excluded by plain .env pattern"
-    _xfail_ok=false
-fi
-if echo "$file_list" | grep -q "^deploy/staging/\.env$"; then
-    echo "  BUG: deploy/staging/.env not excluded by plain .env pattern"
-    _xfail_ok=false
+file_list=$(run_export "$SRC" "$DST" ".env")
+if echo "$file_list" | grep -q "\.env$"; then
+    echo "FAIL: .env files should be excluded at all depths"
+    echo "Found: $(echo "$file_list" | grep '\.env$')"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
-    echo "  BUG: readme.txt should be present"
-    _xfail_ok=false
+    echo "FAIL: readme.txt should be present"
+    exit 1
 fi
-if $_xfail_ok; then
-    echo "  SURPRISE PASS (fixed?)"
-    passed=$((passed + 1))
-else
-    echo "  XFAIL (expected)"
-    xfail=$((xfail + 1))
-fi
+echo "  PASS: Plain name .env matches at any depth"
+passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# XFAIL 3: * should not cross / when pattern contains /
-#
-# In gitignore, dir/*.log matches dir/app.log but NOT dir/sub/app.log
-# because * does not cross directory separators. Our regex dir/.*\.log
-# matches both because .* crosses /.
+# Test 13: dir/*.log should not match dir/sub/app.log (* stops at /)
 # --------------------------------------------------------------------------
-xfail_total=$((xfail_total + 1))
-echo "XFAIL $xfail_total: dir/*.log should not match dir/sub/app.log"
+total=$((total + 1))
+echo "Test $total: dir/*.log should not match dir/sub/app.log"
 
-SRC="$TEST_TMP/xfail_3_src"
-DST="$TEST_TMP/xfail_3_dst"
+SRC="$TEST_TMP/test_13_src"
+DST="$TEST_TMP/test_13_dst"
 init_repo "$SRC"
 
 mkdir -p "$SRC/dir/sub"
@@ -559,40 +497,30 @@ echo "nested" > "$SRC/dir/sub/app.log"
 echo "public" > "$SRC/readme.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-file_list=$(run_filter "$SRC" "$DST" "dir/*.log")
-_xfail_ok=true
+file_list=$(run_export "$SRC" "$DST" "dir/*.log")
 if echo "$file_list" | grep -q "^dir/app\.log$"; then
-    echo "  BUG: dir/app.log should be excluded by dir/*.log"
-    _xfail_ok=false
+    echo "FAIL: dir/app.log should be excluded by dir/*.log"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^dir/sub/app\.log$"; then
-    echo "  BUG: dir/sub/app.log should NOT be excluded by dir/*.log (* doesn't cross /)"
-    _xfail_ok=false
+    echo "FAIL: dir/sub/app.log should NOT be excluded by dir/*.log (* doesn't cross /)"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
-    echo "  BUG: readme.txt should be present"
-    _xfail_ok=false
+    echo "FAIL: readme.txt should be present"
+    exit 1
 fi
-if $_xfail_ok; then
-    echo "  SURPRISE PASS (fixed?)"
-    passed=$((passed + 1))
-else
-    echo "  XFAIL (expected)"
-    xfail=$((xfail + 1))
-fi
+echo "  PASS: dir/*.log correctly stops at directory boundary"
+passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# XFAIL 4: **/ should match zero or more directories
-#
-# **/foo.txt should match foo.txt at root (zero directories) AND
-# dir/foo.txt, a/b/foo.txt, etc. Our regex ^.*/foo\.txt(/.*)?$ requires
-# at least one directory level, missing root.
+# Test 14: **/foo.txt matches root-level foo.txt (zero directories)
 # --------------------------------------------------------------------------
-xfail_total=$((xfail_total + 1))
-echo "XFAIL $xfail_total: **/foo.txt should match root-level foo.txt"
+total=$((total + 1))
+echo "Test $total: **/foo.txt matches root-level foo.txt"
 
-SRC="$TEST_TMP/xfail_4_src"
-DST="$TEST_TMP/xfail_4_dst"
+SRC="$TEST_TMP/test_14_src"
+DST="$TEST_TMP/test_14_dst"
 init_repo "$SRC"
 
 echo "root-secret" > "$SRC/foo.txt"
@@ -602,43 +530,27 @@ echo "deep-secret" > "$SRC/a/b/foo.txt"
 echo "public" > "$SRC/readme.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-file_list=$(run_filter "$SRC" "$DST" "**/foo.txt")
-_xfail_ok=true
-if echo "$file_list" | grep -q "^foo\.txt$"; then
-    echo "  BUG: root foo.txt not excluded by **/foo.txt"
-    _xfail_ok=false
-fi
-if echo "$file_list" | grep -q "^dir/foo\.txt$"; then
-    echo "  BUG: dir/foo.txt not excluded by **/foo.txt"
-    _xfail_ok=false
-fi
-if echo "$file_list" | grep -q "^a/b/foo\.txt$"; then
-    echo "  BUG: a/b/foo.txt not excluded by **/foo.txt"
-    _xfail_ok=false
+file_list=$(run_export "$SRC" "$DST" "**/foo.txt")
+if echo "$file_list" | grep -q "foo\.txt$"; then
+    echo "FAIL: foo.txt should be excluded at all depths"
+    echo "Found: $(echo "$file_list" | grep 'foo\.txt$')"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
-    echo "  BUG: readme.txt should be present"
-    _xfail_ok=false
+    echo "FAIL: readme.txt should be present"
+    exit 1
 fi
-if $_xfail_ok; then
-    echo "  SURPRISE PASS (fixed?)"
-    passed=$((passed + 1))
-else
-    echo "  XFAIL (expected)"
-    xfail=$((xfail + 1))
-fi
+echo "  PASS: **/foo.txt excludes at all depths"
+passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# XFAIL 5: Plain directory name should match at any depth
-#
-# __pycache__ (no / in pattern) should match __pycache__ at any depth,
-# like gitignore basename matching. Currently only matches root.
+# Test 15: Plain __pycache__ matches at any depth (no-slash basename match)
 # --------------------------------------------------------------------------
-xfail_total=$((xfail_total + 1))
-echo "XFAIL $xfail_total: Plain __pycache__ should match at any depth"
+total=$((total + 1))
+echo "Test $total: Plain __pycache__ matches at any depth"
 
-SRC="$TEST_TMP/xfail_5_src"
-DST="$TEST_TMP/xfail_5_dst"
+SRC="$TEST_TMP/test_15_src"
+DST="$TEST_TMP/test_15_dst"
 init_repo "$SRC"
 
 mkdir -p "$SRC/__pycache__" "$SRC/src/__pycache__" "$SRC/src/deep/__pycache__"
@@ -648,39 +560,26 @@ echo "deep" > "$SRC/src/deep/__pycache__/deep.pyc"
 echo "code" > "$SRC/main.py"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-file_list=$(run_filter "$SRC" "$DST" "__pycache__")
-_xfail_ok=true
+file_list=$(run_export "$SRC" "$DST" "__pycache__")
 if echo "$file_list" | grep -q "__pycache__"; then
-    echo "  BUG: __pycache__ found in output: $(echo "$file_list" | grep '__pycache__' | head -3)"
-    _xfail_ok=false
+    echo "FAIL: __pycache__ found in output: $(echo "$file_list" | grep '__pycache__' | head -3)"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^main\.py$"; then
-    echo "  BUG: main.py should be present"
-    _xfail_ok=false
+    echo "FAIL: main.py should be present"
+    exit 1
 fi
-if $_xfail_ok; then
-    echo "  SURPRISE PASS (fixed?)"
-    passed=$((passed + 1))
-else
-    echo "  XFAIL (expected)"
-    xfail=$((xfail + 1))
-fi
+echo "  PASS: Plain __pycache__ matches at any depth"
+passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# XFAIL 6: *.ext without / should match at any depth (basename semantics)
-#
-# In gitignore, *.log (no /) matches the basename, so it excludes
-# app.log AND dir/debug.log AND deep/nested/trace.log. Our current
-# implementation happens to get this right (*.log → ^.*\.log(/.*)?$),
-# but for the WRONG reason (* crosses / in our regex). This test
-# verifies the behavior works, but also tests that a similar pattern
-# WITH a / component (logs/*.log) correctly restricts depth.
+# Test 16: logs/*.log should not match logs/sub/deep.log
 # --------------------------------------------------------------------------
-xfail_total=$((xfail_total + 1))
-echo "XFAIL $xfail_total: logs/*.log should not match logs/sub/deep.log"
+total=$((total + 1))
+echo "Test $total: logs/*.log should not match logs/sub/deep.log"
 
-SRC="$TEST_TMP/xfail_6_src"
-DST="$TEST_TMP/xfail_6_dst"
+SRC="$TEST_TMP/test_16_src"
+DST="$TEST_TMP/test_16_dst"
 init_repo "$SRC"
 
 mkdir -p "$SRC/logs/sub"
@@ -690,39 +589,30 @@ echo "root" > "$SRC/app.log"
 echo "public" > "$SRC/readme.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-file_list=$(run_filter "$SRC" "$DST" "logs/*.log")
-_xfail_ok=true
+file_list=$(run_export "$SRC" "$DST" "logs/*.log")
 if echo "$file_list" | grep -q "^logs/app\.log$"; then
-    echo "  BUG: logs/app.log should be excluded by logs/*.log"
-    _xfail_ok=false
+    echo "FAIL: logs/app.log should be excluded by logs/*.log"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^logs/sub/deep\.log$"; then
-    echo "  BUG: logs/sub/deep.log should NOT be excluded by logs/*.log (* doesn't cross /)"
-    _xfail_ok=false
+    echo "FAIL: logs/sub/deep.log should NOT be excluded by logs/*.log (* doesn't cross /)"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^app\.log$"; then
-    echo "  BUG: root app.log should NOT be excluded by logs/*.log (has / so full-path match)"
-    _xfail_ok=false
+    echo "FAIL: root app.log should NOT be excluded by logs/*.log (has / so full-path match)"
+    exit 1
 fi
-if $_xfail_ok; then
-    echo "  SURPRISE PASS (fixed?)"
-    passed=$((passed + 1))
-else
-    echo "  XFAIL (expected)"
-    xfail=$((xfail + 1))
-fi
+echo "  PASS: logs/*.log correctly stops at directory boundary"
+passed=$((passed + 1))
 
 # --------------------------------------------------------------------------
-# XFAIL 7: dir/**/file should match dir/file (zero intermediate dirs)
-#
-# In gitignore, dir/**/file.txt matches dir/file.txt (zero intermediate
-# directories), dir/a/file.txt, dir/a/b/file.txt, etc.
+# Test 17: dir/**/file.txt matches dir/file.txt (zero intermediate dirs)
 # --------------------------------------------------------------------------
-xfail_total=$((xfail_total + 1))
-echo "XFAIL $xfail_total: dir/**/file.txt should match dir/file.txt (zero intermediate)"
+total=$((total + 1))
+echo "Test $total: dir/**/file.txt matches dir/file.txt (zero intermediate)"
 
-SRC="$TEST_TMP/xfail_7_src"
-DST="$TEST_TMP/xfail_7_dst"
+SRC="$TEST_TMP/test_17_src"
+DST="$TEST_TMP/test_17_dst"
 init_repo "$SRC"
 
 mkdir -p "$SRC/dir/a/b"
@@ -732,32 +622,63 @@ echo "two-deep" > "$SRC/dir/a/b/file.txt"
 echo "public" > "$SRC/readme.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
 
-file_list=$(run_filter "$SRC" "$DST" "dir/**/file.txt")
-_xfail_ok=true
-if echo "$file_list" | grep -q "^dir/file\.txt$"; then
-    echo "  BUG: dir/file.txt not excluded by dir/**/file.txt (zero intermediate)"
-    _xfail_ok=false
-fi
-if echo "$file_list" | grep -q "^dir/a/file\.txt$"; then
-    echo "  BUG: dir/a/file.txt not excluded by dir/**/file.txt"
-    _xfail_ok=false
-fi
-if echo "$file_list" | grep -q "^dir/a/b/file\.txt$"; then
-    echo "  BUG: dir/a/b/file.txt not excluded by dir/**/file.txt"
-    _xfail_ok=false
+file_list=$(run_export "$SRC" "$DST" "dir/**/file.txt")
+if echo "$file_list" | grep -q "^dir/.*file\.txt$"; then
+    echo "FAIL: dir/**/file.txt should exclude all file.txt under dir/"
+    echo "Found: $(echo "$file_list" | grep 'file\.txt$')"
+    exit 1
 fi
 if ! echo "$file_list" | grep -q "^readme\.txt$"; then
-    echo "  BUG: readme.txt should be present"
-    _xfail_ok=false
+    echo "FAIL: readme.txt should be present"
+    exit 1
 fi
-if $_xfail_ok; then
-    echo "  SURPRISE PASS (fixed?)"
-    passed=$((passed + 1))
-else
-    echo "  XFAIL (expected)"
-    xfail=$((xfail + 1))
+echo "  PASS: dir/**/file.txt matches at all depths under dir/"
+passed=$((passed + 1))
+
+# --------------------------------------------------------------------------
+# Test 18: build_exclude_pathspecs() helper produces correct output
+# --------------------------------------------------------------------------
+total=$((total + 1))
+echo "Test $total: build_exclude_pathspecs() helper produces correct pathspecs"
+
+output=$(build_exclude_pathspecs ".env|*.log|__pycache__|secrets/|config/prod.yml")
+expected=":(exclude,glob)**/.env
+:(exclude,glob)**/.env/**
+:(exclude,glob)**/*.log
+:(exclude,glob)**/*.log/**
+:(exclude,glob)**/__pycache__
+:(exclude,glob)**/__pycache__/**
+:(exclude,glob)secrets/
+:(exclude,glob)secrets/**
+:(exclude,glob)config/prod.yml
+:(exclude,glob)config/prod.yml/**"
+
+if [ "$output" != "$expected" ]; then
+    echo "FAIL: build_exclude_pathspecs output mismatch"
+    echo "Expected:"
+    echo "$expected"
+    echo "Got:"
+    echo "$output"
+    exit 1
 fi
+echo "  PASS: build_exclude_pathspecs() produces correct output"
+passed=$((passed + 1))
+
+# --------------------------------------------------------------------------
+# Test 19: build_exclude_pathspecs() with empty input
+# --------------------------------------------------------------------------
+total=$((total + 1))
+echo "Test $total: build_exclude_pathspecs() with empty input"
+
+output=$(build_exclude_pathspecs "")
+if [ -n "$output" ]; then
+    echo "FAIL: build_exclude_pathspecs should produce no output for empty input"
+    echo "Got: '$output'"
+    exit 1
+fi
+echo "  PASS: build_exclude_pathspecs() empty input"
+passed=$((passed + 1))
 
 echo ""
-echo "Results: $passed/$total passed, $xfail/$xfail_total xfail (expected failures)"
+echo "Results: $passed/$total passed"
 [ $passed -eq $total ] || exit 1

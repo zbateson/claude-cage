@@ -9,7 +9,7 @@ Documentation for `claude-cage` - a lightweight sandboxed git workflow for Claud
 **Key features:**
 - No sudo required - runs as current user
 - Git-based sync with real commit history (fast-export/fast-import)
-- File exclusion via stream filter (no excluded file content in intermediary)
+- File exclusion via `:(exclude,glob)` pathspec (no excluded file content in intermediary)
 - Configurable history depth (default: 50 commits)
 - Network filtering via iptables (optional)
 
@@ -42,7 +42,7 @@ sudo apt install bubblewrap slirp4netns
 Source Project                    ~/.cache/.../intermediary        ~/.cache/.../work
 (your actual repo)                (bare repo, shared)              (Claude's workspace)
        │                                   │                              │
-       │  fast-export + stream filter       │     git clone                │
+       │  fast-export + pathspec excludes   │     git clone                │
        │  (excludes stripped, N commits)   │                              │
        └──────────────────────────────────>│──────────────────────────────>
                                            │                              │
@@ -56,7 +56,7 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 ### Three-Repository Model
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`~/.cache/claude-cage/intermediary/<project-path>/`) - Persistent bare repo shared across branches, with real commit history (configurable depth). Excluded file content is stripped by the stream filter during export — no excluded data ever enters the intermediary object store.
+2. **Intermediary** (`~/.cache/claude-cage/intermediary/<project-path>/`) - Persistent bare repo shared across branches, with real commit history (configurable depth). Excluded file content is filtered via `:(exclude,glob)` pathspec during fast-export — no excluded data ever enters the intermediary object store.
 3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary where Claude works
 
 The intermediary is shared across all branches for a given project. Work directories are per-branch, allowing concurrent sessions on different branches. Inside the sandbox, each project's work directory is mounted at its original path, and intermediaries are mounted at `/run<intermediary-path>`, so git origins are accessible there.
@@ -76,24 +76,24 @@ The intermediary repo serves as a buffer:
 
 ### How the Intermediary Is Created
 
-`create_intermediary_clone()` uses `git fast-export` piped through a stream filter into `git fast-import` to create a bare repo with real history but no excluded content.
+`create_intermediary_clone()` uses `git fast-export` with `:(exclude,glob)` pathspec piped into `git fast-import` to create a bare repo with real history but no excluded content.
 
 1. `git init --bare` the intermediary directory
 2. Calculate export range: `default_branch~historyDepth..HEAD` (widened to include merge-base if on a feature branch)
 3. Discover in-scope branches (any branch whose merge-base falls within the range)
-4. `git fast-export` with `:(exclude)` pathspec hints, piped through `filter_fast_export_stream` to strip excluded file content, piped into `git fast-import` on the bare intermediary
+4. `git fast-export` with `:(exclude,glob)` pathspec args (built by `build_exclude_pathspecs()`) piped into `git fast-import` on the bare intermediary
 5. Build commit hash mapping from fast-export/fast-import marks files
 6. Install pre-receive (branch name guard) and post-receive (pipe notification) hooks
 7. `git clone` the intermediary to create the work directory
 8. Set work origin URL to `/run<intermediary-path>` (sandbox mount point)
 
 **Key properties:**
-- **Two-layer exclude filtering**: `:(exclude)` pathspec as first pass (performance), `filter_fast_export_stream` as safety net (correctness for all glob patterns)
+- **`:(exclude,glob)` pathspec filtering**: Patterns without `/` get `**/` prepended for basename matching at any depth. Each pattern also gets a `/**`-suffixed variant to match directory contents. Git's wildmatch engine handles all gitignore semantics correctly.
 - **1:1 commit mapping**: Every source commit maps to exactly one intermediary commit (or `0` for excluded-only commits). This enables bidirectional sync without loops.
 - **Incremental updates**: When the intermediary already exists, new commits are added via `--import-marks`/`--export-marks` without rebuilding from scratch.
 - **Exclude hash tracking**: If exclude patterns change, the intermediary is rebuilt automatically.
 
-The stream filter approach was chosen after iterating through alternatives that each had fatal flaws:
+The `:(exclude,glob)` pathspec approach was chosen after iterating through alternatives that each had fatal flaws:
 
 | Approach | Problem |
 |----------|---------|
@@ -101,14 +101,16 @@ The stream filter approach was chosen after iterating through alternatives that 
 | **Sparse checkout alone** (no reinit) | Excluded files still in git object store, visible via `git log -- .env` |
 | **`--filter=blob:none`** partial clones | Can't serve as a git remote for the work directory |
 | **`git archive`** + fresh init | Respects `.gitattributes` `export-ignore`, silently drops wanted files |
-| **`:(exclude)` pathspec alone** | `**/__pycache__` doesn't work without `(glob)` magic; unreliable for all patterns |
+| **`:(exclude)` without `(glob)`** | `**/__pycache__` doesn't work; `*` treated as prefix, not wildcard |
+| **Custom stream filter** (previous approach) | Complex awk-based filter with binary-safety issues; duplicated pattern matching logic |
 
-The fast-export + stream filter approach avoids all of these:
+The fast-export + `:(exclude,glob)` pathspec approach avoids all of these:
 - **Real history** with configurable depth — `git log` shows meaningful commit messages
-- **Stream filter** handles all glob patterns reliably (bash `[[ ]]` matching)
-- **No excluded content** ever enters the intermediary — blobs are stripped before `fast-import`
+- **Git's wildmatch engine** handles all glob patterns correctly (`*` stops at `/`, `**` crosses directories)
+- **No excluded content** ever enters the intermediary — pathspec prevents export
 - **Operates on committed state** — uncommitted changes don't leak
 - **Bare repo** serves as a proper git remote for the work directory
+- **Zero custom pattern engines** — uses git's built-in matching, same as gitignore
 
 ## Source Files
 
@@ -119,8 +121,7 @@ The fast-export + stream filter approach avoids all of these:
 | `src/banner.sh` | ASCII art banner (print_banner) |
 | `src/config-builder.sh` | Interactive config generator when no config exists |
 | `src/config.sh` | Lua-based config parsing (system, user, includeIf, local) |
-| `src/git-clone.sh` | `create_intermediary_clone()` - bare repo via fast-export/fast-import with excludes |
-| `src/git-filter-stream.sh` | `filter_fast_export_stream()` - strips excluded paths from fast-export streams |
+| `src/git-clone.sh` | `create_intermediary_clone()`, `build_exclude_pathspecs()` - bare repo via fast-export/fast-import with pathspec excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
 | `src/git-sync.sh` | `sync_to_source()`, pipe listener, manual merge |
@@ -139,16 +140,15 @@ The fast-export + stream filter approach avoids all of these:
 3. `banner.sh` - ASCII art
 4. `config-builder.sh` - Interactive config
 5. `config.sh` - Lua parsing
-6. `git-clone.sh` - Intermediary creation
-7. `git-filter-stream.sh` - Fast-export stream filter
-8. `git-hooks.sh` - Hook setup
-9. `git-patches.sh` - Patch recovery
-10. `git-sync.sh` - Sync and state management
-11. `network.sh` - Network isolation
-12. `mounts.sh` - Shared mount logic
-13. `bwrap.sh` - Bwrap sandbox
-14. `docker.sh` - Docker sandbox
-15. `main.sh` - Orchestration
+6. `git-clone.sh` - Intermediary creation + pathspec exclude helpers
+7. `git-hooks.sh` - Hook setup
+8. `git-patches.sh` - Patch recovery
+9. `git-sync.sh` - Sync and state management
+10. `network.sh` - Network isolation
+11. `mounts.sh` - Shared mount logic
+12. `bwrap.sh` - Bwrap sandbox
+13. `docker.sh` - Docker sandbox
+14. `main.sh` - Orchestration
 
 ```bash
 make        # Build dist/claude-cage
@@ -180,16 +180,15 @@ When you commit to source:
 
 1. `post-commit` hook on source fires
 2. Checks commit mapping — skips if source HEAD is already mapped (loop prevention)
-3. Runs `git fast-export -1 HEAD` piped through `filter_fast_export_stream` to strip excluded content
-4. Pipes filtered stream into `git fast-import` on the bare intermediary
+3. Runs `git fast-export -1 HEAD` with `:(exclude,glob)` pathspec args to exclude filtered content
+4. Pipes stream into `git fast-import` on the bare intermediary
 5. Updates marks files and commit mapping
-6. Claude runs `git pull` when ready to get changes
-
-If commit only contains excluded files, the stream filter produces an empty commit. The commit mapping records `0 <source-hash>` for these (no intermediary commit created).
+6. If commit wasn't mapped (excluded-only commit, dropped by fast-export), records `0 <source-hash>` in mapping
+7. Claude runs `git pull` when ready to get changes
 
 ### Mixed Commits
 
-The stream filter handles commits that touch both excluded and non-excluded files. It strips the excluded file operations from the fast-export stream while preserving the commit itself. This means users don't need to worry about separating excluded and non-excluded files into different commits — the filter handles it transparently in both directions.
+The `:(exclude,glob)` pathspec handles commits that touch both excluded and non-excluded files. Git's fast-export excludes the filtered file operations while preserving the commit itself. Commits that only touch excluded files are dropped entirely by fast-export, and the commit mapping records `0 <source-hash>` for these. Users don't need to worry about separating excluded and non-excluded files into different commits — the pathspec handles it transparently in both directions.
 
 ### Multiple Sessions
 
@@ -517,11 +516,11 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 ### Implemented
 
 - [x] Config parsing (Lua-based, system/user/includeIf/local merge)
-- [x] `create_intermediary_clone()` - bare repo via fast-export/fast-import with stream filter
+- [x] `create_intermediary_clone()` - bare repo via fast-export/fast-import with `:(exclude,glob)` pathspec
 - [x] Persistent intermediary shared across branches (only rebuilt on exclude change)
 - [x] Configurable history depth (`git.historyDepth`, default 50 commits)
 - [x] Commit hash mapping for bidirectional sync and loop prevention
-- [x] Stream filter (`filter_fast_export_stream`) for reliable exclude pattern handling
+- [x] `build_exclude_pathspecs()` for converting exclude patterns to `:(exclude,glob)` pathspec args
 - [x] Work directory clone with per-branch isolation
 - [x] `run_in_bwrap()` - full bwrap sandbox
 - [x] `run_in_docker()` - Docker container sandbox
@@ -529,7 +528,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] `post-receive` hook on bare intermediary (pipe notification)
 - [x] `pre-receive` hook on bare intermediary (branch name collision guard)
 - [x] `sync_to_source()` using commit-mapping-based format-patch/git-am
-- [x] `apply_source_to_intermediary()` using fast-export + stream filter
+- [x] `apply_source_to_intermediary()` using fast-export + pathspec excludes
 - [x] Pipe listener background process
 - [x] `post-commit` hook on source (syncs source -> intermediary via fast-export)
 - [x] `manual_git_merge()` for manual sync
@@ -752,7 +751,7 @@ bash tests/run-all.sh
 | test-config.sh | config.sh | 16 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
-| test-git-filter-stream.sh | git-filter-stream.sh | 10 |
+| test-git-filter-stream.sh | pathspec exclude filtering | 19 |
 | test-git-hooks.sh | git-hooks.sh | 12 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 19 |
@@ -762,7 +761,7 @@ bash tests/run-all.sh
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 178 tests across 13 files**
+**Total: 187 tests across 13 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 
@@ -781,17 +780,15 @@ Note: bwrap execution tests are skipped if user namespaces are unavailable.
 
 ### Git Pathspec Excludes
 
-`:(exclude)` pathspec is used as a first pass in fast-export, but it has limitations:
+`:(exclude,glob)` pathspec is used on all fast-export calls. `build_exclude_pathspecs()` converts config patterns:
 
-- **`:(exclude)**/__pycache__`** does NOT work — `**` needs `(glob)` magic: `:(exclude,glob)**/__pycache__/**`
-- The stream filter (`filter_fast_export_stream`) catches anything pathspec misses, so pathspec is a performance optimization, not a correctness requirement
-
-### Stream Filter Glob Matching
-
-In bash `[[ "$path" == $pat ]]`, `*` crosses directory separators. But:
-
-- **`**/__pycache__`** does NOT match `src/__pycache__/module.pyc` — it only matches the directory name itself
-- The stream filter also checks `[[ "$path" == $pat/* ]]` to match files inside matching directories
+- **Patterns without `/`** get `**/` prepended for basename matching at any depth (like gitignore)
+- **Patterns with `/`** are used as-is for full path matching
+- **Every pattern** also gets a `/**`-suffixed variant to match files inside matching directories
+  - `:(exclude,glob)**/__pycache__` matches the name `__pycache__` but NOT `__pycache__/module.pyc`
+  - `:(exclude,glob)**/__pycache__/**` matches files inside `__pycache__/` at any depth
+- With `:(glob)`, `*` stops at `/` and `**` gets wildmatch semantics — same as gitignore
+- Exclude-only commits (all files filtered) are dropped by fast-export and recorded as `0 <source-hash>` in the commit mapping
 
 ### Branch-Switching Sync
 

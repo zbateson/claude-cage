@@ -321,7 +321,7 @@ cleanup_source_hooks() {
 }
 
 # Set up post-commit hook on source repo to sync commits to intermediary
-# Uses fast-export + stream filter for robust handling of mixed commits
+# Uses fast-export with :(exclude,glob) pathspec for robust handling of mixed commits
 # Arguments:
 #   $1 - source_dir: The source project directory
 #   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
@@ -344,17 +344,22 @@ setup_source_post_commit() {
         ensure_hook_dispatcher "$git_root" "post-commit"
     fi
 
-    # Build filter patterns for the hook
-    local filter_patterns_str=""
+    # Build :(exclude,glob) pathspec args for the hook
+    local exclude_pathspecs_str=""
     if [ -n "$exclude_patterns" ]; then
-        # Convert pipe-delimited to space-delimited quoted args
+        local -a patterns
         IFS='|' read -ra patterns <<< "$exclude_patterns"
-        for pattern in "${patterns[@]}"; do
-            if [ -n "$filter_patterns_str" ]; then
-                filter_patterns_str="$filter_patterns_str \"$pattern\""
+        local pat pathspec base
+        for pat in "${patterns[@]}"; do
+            if [[ "$pat" == */* ]]; then
+                pathspec="$pat"
             else
-                filter_patterns_str="\"$pattern\""
+                pathspec="**/$pat"
             fi
+            exclude_pathspecs_str="$exclude_pathspecs_str \":(exclude,glob)$pathspec\""
+            base="${pathspec%/}"
+            base="${base%/\*}"
+            exclude_pathspecs_str="$exclude_pathspecs_str \":(exclude,glob)${base}/**\""
         done
     fi
 
@@ -372,7 +377,7 @@ setup_source_post_commit() {
     else
         cat > "$hook_path" << EOF
 #!/bin/bash
-# claude-cage: sync commits to intermediary using fast-export + stream filter
+# claude-cage: sync commits to intermediary using fast-export + pathspec excludes
 INTERMEDIARY="$intermediary_dir"
 TARGET_BRANCH="$target_branch"
 SOURCE_DIR="$source_dir"
@@ -380,6 +385,7 @@ SOURCE_MARKS="$source_marks_path"
 IMPORT_MARKS="$import_marks_path"
 COMMIT_MAP="$commit_map_path"
 SYNC_LOG="\$INTERMEDIARY/sync.log"
+EXCLUDE_PATHSPECS=($exclude_pathspecs_str)
 
 _sync_log() {
     printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\$1" "\$2" "\$3" >> "\$SYNC_LOG"
@@ -410,107 +416,32 @@ _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
 
 echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
 
-# Use fast-export with stream filter for individual commit sync
-# The stream filter handles mixed commits (excluded + non-excluded files)
 EXPORT_RC=0
-EOF
+git fast-export --import-marks="\$SOURCE_MARKS" --export-marks="\$SOURCE_MARKS" -1 HEAD \\
+    \${EXCLUDE_PATHSPECS:+-- "\${EXCLUDE_PATHSPECS[@]}"} \\
+    2>/dev/null \\
+    | git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet 2>/dev/null \\
+    && EXPORT_RC=0 || EXPORT_RC=\$?
 
-        # Add the fast-export pipeline based on whether we have excludes
-        if [ -n "$filter_patterns_str" ]; then
-            cat >> "$hook_path" << 'HOOKBODY'
-# Source the cage script for filter_fast_export_stream function
-# We need the function available in this hook
-_fes_should_exclude() {
-    local path="$1"
-    if [[ "$path" =~ ^\"(.*)\"$ ]]; then
-        path="${BASH_REMATCH[1]}"
-    fi
-    local pat
-HOOKBODY
-            # Inject pattern matching for each exclude
-            echo "    for pat in $filter_patterns_str; do" >> "$hook_path"
-            cat >> "$hook_path" << 'HOOKBODY2'
-        if [[ "$pat" == */ ]]; then
-            [[ "$path" == "${pat}"* || "$path" == "${pat%/}" ]] && return 0
-        else
-            # shellcheck disable=SC2254
-            [[ "$path" == $pat ]] && return 0
-        fi
-    done
-    return 1
-}
-
-# Inline stream filter (simplified for single-commit use)
-_filter_stream() {
-    local TMPSTREAM
-    TMPSTREAM=$(mktemp)
-    trap "rm -f '$TMPSTREAM'" RETURN
-    cat > "$TMPSTREAM"
-
-    local -A MARK_EXCLUDED MARK_KEPT
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^M\ [0-9]+\ (:[0-9]+)\ (.+)$ ]]; then
-            local mark="${BASH_REMATCH[1]}" path="${BASH_REMATCH[2]}"
-            if _fes_should_exclude "$path"; then MARK_EXCLUDED["$mark"]=1; else MARK_KEPT["$mark"]=1; fi
-        fi
-    done < "$TMPSTREAM"
-
-    local -A STRIP_MARKS
-    for mark in "${!MARK_EXCLUDED[@]}"; do
-        [[ -z "${MARK_KEPT[$mark]+_}" ]] && STRIP_MARKS["$mark"]=1
-    done
-
-    local -A EXCLUDED_PATHS
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^M\ [0-9]+\ :[0-9]+\ (.+)$ ]]; then
-            _fes_should_exclude "${BASH_REMATCH[1]}" && EXCLUDED_PATHS["${BASH_REMATCH[1]}"]=1
-        elif [[ "$line" =~ ^D\ (.+)$ ]]; then
-            _fes_should_exclude "${BASH_REMATCH[1]}" && EXCLUDED_PATHS["${BASH_REMATCH[1]}"]=1
-        fi
-    done < "$TMPSTREAM"
-
-    local strip_marks_str="" excluded_paths_str=""
-    for mark in "${!STRIP_MARKS[@]}"; do strip_marks_str="${strip_marks_str}${mark} "; done
-    for p in "${!EXCLUDED_PATHS[@]}"; do excluded_paths_str="${excluded_paths_str}${p}"$'\n'; done
-
-    awk -v strip_marks="$strip_marks_str" -v excluded_paths="$excluded_paths_str" '
-    BEGIN { n=split(strip_marks,a," "); for(i=1;i<=n;i++) if(a[i]!="") strip[a[i]]=1; n=split(excluded_paths,a,"\n"); for(i=1;i<=n;i++) if(a[i]!="") excluded[a[i]]=1; state="normal"; remaining=0; prev_blank=0; pending_blob="" }
-    state=="skip_data" { remaining-=(length($0)+1); if(remaining<=0) state="normal"; next }
-    state=="skip_blob" { if($0~/^data [0-9]+$/) { remaining=$2+0; state=(remaining>0)?"skip_data":"normal" } else { print; state="normal" }; next }
-    state=="normal" { if($0=="blob") { pending_blob=$0; state="pending_mark"; next }; if($0~/^M [0-9]+ :[0-9]+ /) { path=$0; sub(/^M [0-9]+ :[0-9]+ /,"",path); if(path in excluded) next }; if($0~/^D /) { path=$0; sub(/^D /,"",path); if(path in excluded) next }; if($0=="") { if(prev_blank) next; prev_blank=1 } else prev_blank=0; print; next }
-    state=="pending_mark" { if($0~/^mark :[0-9]+$/) { mark=$2; if(mark in strip) { state="skip_blob"; pending_blob=""; next } }; print pending_blob; print; pending_blob=""; state="normal"; prev_blank=0; next }
-    ' "$TMPSTREAM" | { IFS= read -r first_line || exit 0; [ -n "$first_line" ] && printf '%s\n' "$first_line"; cat; }
-}
-
-git fast-export --import-marks="$SOURCE_MARKS" --export-marks="$SOURCE_MARKS" -1 HEAD 2>/dev/null \
-    | _filter_stream \
-    | git -C "$INTERMEDIARY" fast-import --import-marks="$IMPORT_MARKS" --export-marks="$IMPORT_MARKS" --quiet 2>/dev/null \
-    && EXPORT_RC=0 || EXPORT_RC=$?
-HOOKBODY2
-        else
-            cat >> "$hook_path" << 'HOOKBODY_NOFILTER'
-git fast-export --import-marks="$SOURCE_MARKS" --export-marks="$SOURCE_MARKS" -1 HEAD 2>/dev/null \
-    | git -C "$INTERMEDIARY" fast-import --import-marks="$IMPORT_MARKS" --export-marks="$IMPORT_MARKS" --quiet 2>/dev/null \
-    && EXPORT_RC=0 || EXPORT_RC=$?
-HOOKBODY_NOFILTER
-        fi
-
-        # Add the tail of the hook (common to both paths)
-        cat >> "$hook_path" << 'HOOKTAIL'
-
-if [ "$EXPORT_RC" -eq 0 ]; then
-    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import ok"
-
+if [ "\$EXPORT_RC" -eq 0 ]; then
     # Update commit mapping from marks
-    if [ -f "$SOURCE_MARKS" ] && [ -f "$IMPORT_MARKS" ]; then
-        awk 'NR==FNR { source[$1]=$2; next } { if ($1 in source) print $2, source[$1] }' \
-            "$SOURCE_MARKS" "$IMPORT_MARKS" >> "$COMMIT_MAP"
+    if [ -f "\$SOURCE_MARKS" ] && [ -f "\$IMPORT_MARKS" ]; then
+        awk 'NR==FNR { source[\$1]=\$2; next } { if (\$1 in source) print \$2, source[\$1] }' \\
+            "\$SOURCE_MARKS" "\$IMPORT_MARKS" >> "\$COMMIT_MAP"
+    fi
+
+    # If commit still not in mapping, it was excluded-only (fast-export dropped it)
+    if ! grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP" 2>/dev/null; then
+        echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+    else
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import ok"
     fi
 else
-    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=$EXPORT_RC"
-    echo -e "\033[1;31mclaude-cage:\033[0m Fast-import failed for commit $COMMIT_SHORT"
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=\$EXPORT_RC"
+    echo -e "\033[1;31mclaude-cage:\033[0m Fast-import failed for commit \$COMMIT_SHORT"
 fi
-HOOKTAIL
+EOF
         chmod +x "$hook_path"
     fi
 

@@ -81,7 +81,7 @@ show_cage_diff() {
     echo ""
 }
 
-# Apply source commits to intermediary using fast-export stream filter
+# Apply source commits to intermediary using fast-export with pathspec excludes
 # Used for catching up the intermediary to source state
 # Arguments:
 #   $1 - source_dir: The source project directory
@@ -111,42 +111,42 @@ apply_source_to_intermediary() {
         return 0
     fi
 
-    # Build exclude pattern args for filter
-    local -a filter_patterns=()
+    # Build :(exclude,glob) pathspec args
+    local -a exclude_args=()
     if [ -n "$exclude_patterns" ]; then
-        IFS='|' read -ra filter_patterns <<< "$exclude_patterns"
+        while IFS= read -r _ea; do
+            exclude_args+=("$_ea")
+        done < <(build_exclude_pathspecs "$exclude_patterns")
     fi
 
     local subject
     subject=$(git -C "$source_dir" log -1 --format=%s HEAD 2>/dev/null | head -c 50)
     sync_log "$log_file" "$source_short" ">>intermediary" "applying: $subject"
 
-    # Use fast-export with stream filter for single commit
-    if [ ${#filter_patterns[@]} -gt 0 ]; then
-        git -C "$source_dir" fast-export \
-            --import-marks="$source_marks_path" \
-            --export-marks="$source_marks_path" \
-            -1 HEAD 2>/dev/null \
-            | filter_fast_export_stream "${filter_patterns[@]}" \
-            | git -C "$intermediary_dir" fast-import \
-                --import-marks="$import_marks_path" \
-                --export-marks="$import_marks_path" \
-                --quiet 2>/dev/null
-    else
-        git -C "$source_dir" fast-export \
-            --import-marks="$source_marks_path" \
-            --export-marks="$source_marks_path" \
-            -1 HEAD 2>/dev/null \
-            | git -C "$intermediary_dir" fast-import \
-                --import-marks="$import_marks_path" \
-                --export-marks="$import_marks_path" \
-                --quiet 2>/dev/null
-    fi
+    # Use fast-export with :(exclude,glob) pathspec for single commit
+    git -C "$source_dir" fast-export \
+        --import-marks="$source_marks_path" \
+        --export-marks="$source_marks_path" \
+        -1 HEAD \
+        ${exclude_args:+-- "${exclude_args[@]}"} \
+        2>/dev/null \
+        | git -C "$intermediary_dir" fast-import \
+            --import-marks="$import_marks_path" \
+            --export-marks="$import_marks_path" \
+            --quiet 2>/dev/null
 
     # Update commit mapping
     build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "" ""
 
-    sync_log "$log_file" "$source_short" ">>intermediary" "fast-import ok"
+    # If source HEAD still not in mapping, it was an excluded-only commit
+    # (fast-export dropped it entirely). Record as 0 <source-hash>.
+    if ! grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
+        echo "0 $source_head" >> "$commit_map_path"
+        sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"
+    else
+        sync_log "$log_file" "$source_short" ">>intermediary" "fast-import ok"
+    fi
+
     return 0
 }
 

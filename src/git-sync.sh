@@ -404,9 +404,10 @@ stop_pipe_listener() {
 #   $1 - source_dir: The original source directory
 manual_git_merge() {
     local source_dir="$1"
+    local scope_path="${2:-}"
 
     local intermediary_dir
-    intermediary_dir=$(get_intermediary_path "$source_dir")
+    intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$scope_path")
 
     if [ ! -d "$intermediary_dir" ]; then
         echo "Nothin' to merge. No intermediary found."

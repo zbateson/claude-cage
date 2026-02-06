@@ -42,6 +42,7 @@ clean_mode=false
 clean_all_mode=false
 clean_session=""
 cli_direct_mount=false
+cli_scoped=false
 cli_attach_session=""
 cli_attach_session_mode=false
 passthrough_args=()
@@ -54,6 +55,7 @@ for i in "$@"; do
     case "$i" in
         --test) test_mode=true ;;
         --direct-mount) cli_direct_mount=true ;;
+        --scoped) cli_scoped=true ;;
         --dry-run) ;; # handled by helpers.sh
         --verbose|-v) ;; # handled by helpers.sh
         --debug) ;; # handled by helpers.sh
@@ -139,13 +141,19 @@ elif ! is_git_repo "$cfg_source"; then
     esac
 fi
 
+# Compute scope_path early for commands that need it before main orchestration
+scope_path=""
+if [ "$cli_scoped" = true ] || [ "$cfg_git_scoped" = "true" ]; then
+    scope_path=$(get_scope_path "$cfg_source")
+fi
+
 # Handle --git-merge early (doesn't need sandbox)
 if [ "$git_merge_mode" = true ]; then
     if [ "$direct_mount_mode" = true ]; then
         echo "Can't do git-merge in direct mount mode. Nothin' to merge."
         exit 1
     fi
-    manual_git_merge "$cfg_source"
+    manual_git_merge "$cfg_source" "$scope_path"
     exit 0
 fi
 
@@ -277,6 +285,7 @@ fi
 # Clean up any orphaned hooks from crashed sessions (git mode only)
 if [ "$direct_mount_mode" = false ] && is_git_repo "$cfg_source"; then
     cleanup_orphaned_hooks "$cfg_source"
+    repos_list_clean_orphans "$cfg_source" 2>/dev/null || true
 fi
 
 # Show banner if enabled
@@ -313,6 +322,9 @@ fi
 if [ "$direct_mount_mode" = false ]; then
     echo "  Auto-merge:    $cfg_autoMerge"
     echo "  Isolated:      $cfg_isolated"
+    if [ -n "$scope_path" ]; then
+        echo "  Scoped to:     $scope_path"
+    fi
 fi
 echo "  Network mode:  $cfg_networkMode"
 
@@ -383,7 +395,7 @@ else
         fi
     fi
 
-    intermediary_dir=$(get_intermediary_path "$cfg_source")
+    intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
     intermediary_root=$(get_intermediary_root)
 
     # Session selection flow: find reusable sessions, handle --attach-session
@@ -574,7 +586,7 @@ else
                 echo "Attachin' to active session's workspace."
             else
                 echo "Intermediary exists but work dir is gone. Rebuildin' workspace..."
-                create_intermediary_clone "$cfg_source"
+                create_intermediary_clone "$cfg_source" "$scope_path"
             fi
             ;;
         "needs_update")
@@ -582,18 +594,18 @@ else
                 echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
             else
                 echo "Source moved ahead. Catchin' up..."
-                create_intermediary_clone "$cfg_source"
+                create_intermediary_clone "$cfg_source" "$scope_path"
             fi
             ;;
         "no_cage"|*)
             # No existing cage, create fresh
-            create_intermediary_clone "$cfg_source"
+            create_intermediary_clone "$cfg_source" "$scope_path"
             ;;
     esac
 
     # Set up .caged/ symlinks if enabled
     if [ "$cfg_createCagedDir" = "true" ]; then
-        setup_caged_symlinks "$cfg_source"
+        setup_caged_symlinks "$cfg_source" "$scope_path"
     fi
 
     # Set up git hooks and communication pipe (if autoMerge enabled)

@@ -28,23 +28,83 @@ enumerate_projects() {
         return
     fi
 
+    # Determine mount destination for current project
+    # When scoped, mount at git root so fast-export's full paths resolve correctly
+    local mount_dest="$project_path"
+    local scope_path_file
+    scope_path_file=$(get_scope_path_file "$intermediary_dir")
+    if [ -f "$scope_path_file" ]; then
+        local sp
+        sp=$(cat "$scope_path_file")
+        if [ -n "$sp" ]; then
+            local git_root_file
+            git_root_file=$(get_git_root_file "$intermediary_dir")
+            if [ -f "$git_root_file" ]; then
+                mount_dest=$(cat "$git_root_file")
+            fi
+        fi
+    fi
+
     # Always include the current project (needed for dry-run when dirs don't exist yet)
-    CAGE_WORK_PROJECTS+=("$work_dir|$project_path")
-    CAGE_INTERMEDIARY_PROJECTS+=("$intermediary_dir|$project_path")
+    CAGE_WORK_PROJECTS+=("$work_dir|$mount_dest")
+    CAGE_INTERMEDIARY_PROJECTS+=("$intermediary_dir|$mount_dest")
+
+    # Track seen mount destinations to avoid duplicates (two scopes for same git root)
+    local -A seen_mount_dests=()
+    seen_mount_dests["$mount_dest"]=1
 
     # Find other projects by scanning intermediaries and looking up their latest session work dir
     while IFS= read -r head_file; do
         local bare_dir="${head_file%/HEAD}"
-        local orig_path="${bare_dir#"$intermediary_root"}"
+
+        # Derive source path from metadata (handles scoped intermediaries with @scoped/ dirs)
+        local other_sp=""
+        local other_gr=""
+        local other_scope_file="$bare_dir/claude-cage-scope-path"
+        local other_gr_file="$bare_dir/claude-cage-git-root"
+        if [ -f "$other_scope_file" ]; then
+            other_sp=$(cat "$other_scope_file")
+        fi
+        if [ -f "$other_gr_file" ]; then
+            other_gr=$(cat "$other_gr_file")
+        fi
+
+        # Compute source dir from metadata (or fall back to path stripping)
+        local orig_path
+        if [ -n "$other_gr" ]; then
+            if [ -n "$other_sp" ]; then
+                orig_path="$other_gr/$other_sp"
+            else
+                orig_path="$other_gr"
+            fi
+        else
+            orig_path="${bare_dir#"$intermediary_root"}"
+        fi
         [ "$orig_path" = "$project_path" ] && continue
+
+        # Determine mount destination (scope-aware: mount at git root when scoped)
+        local other_mount_dest="$orig_path"
+        if [ -n "$other_sp" ] && [ -n "$other_gr" ]; then
+            other_mount_dest="$other_gr"
+        fi
+
+        # Skip if we'd duplicate a mount destination
+        if [ -n "${seen_mount_dests[$other_mount_dest]+_}" ]; then
+            continue
+        fi
+        seen_mount_dests["$other_mount_dest"]=1
 
         # Look for this project's work dir in our session
         local other_work="$session_work_root$orig_path"
         if [ -d "$other_work/.git" ]; then
-            CAGE_WORK_PROJECTS+=("$other_work|$orig_path")
+            CAGE_WORK_PROJECTS+=("$other_work|$other_mount_dest")
         fi
-        CAGE_INTERMEDIARY_PROJECTS+=("$bare_dir|$orig_path")
-    done < <(find "$intermediary_root" -name "HEAD" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
+        CAGE_INTERMEDIARY_PROJECTS+=("$bare_dir|$other_mount_dest")
+    done < <({
+        find "$intermediary_root" -name "HEAD" -type f -print0 2>/dev/null
+        local scoped_root="$CLAUDE_CAGE_CACHE/scoped"
+        [ -d "$scoped_root" ] && find "$scoped_root" -name "HEAD" -type f -print0 2>/dev/null
+    } | while IFS= read -r -d '' f; do
         # Only include if it looks like a bare repo (has objects/ dir)
         local d="${f%/HEAD}"
         [ -d "$d/objects" ] && printf '%s\n' "$f"

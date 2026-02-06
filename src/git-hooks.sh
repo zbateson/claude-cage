@@ -328,32 +328,23 @@ setup_source_post_commit() {
         ensure_hook_dispatcher "$git_root" "post-commit"
     fi
 
-    # Build :(exclude,glob) pathspec args for the hook
-    local exclude_pathspecs_str=""
-    if [ -n "$exclude_patterns" ]; then
-        local -a patterns
-        IFS='|' read -ra patterns <<< "$exclude_patterns"
-        local pat pathspec base
-        for pat in "${patterns[@]}"; do
-            if [[ "$pat" == */* ]]; then
-                pathspec="$pat"
-            else
-                pathspec="**/$pat"
-            fi
-            exclude_pathspecs_str="$exclude_pathspecs_str \":(exclude,glob)$pathspec\""
-            base="${pathspec%/}"
-            base="${base%/\*}"
-            exclude_pathspecs_str="$exclude_pathspecs_str \":(exclude,glob)${base}/**\""
-        done
+    # Read scope_path from intermediary metadata (empty for unscoped)
+    local scope_path=""
+    local scope_path_file
+    scope_path_file=$(get_scope_path_file "$intermediary_dir")
+    if [ -f "$scope_path_file" ]; then
+        scope_path=$(cat "$scope_path_file")
     fi
 
-    # Get paths for marks and commit map inside intermediary
+    # Get paths for marks, commit map, and exclude pathspecs metadata inside intermediary
     local source_marks_path
     source_marks_path=$(get_source_marks_path "$intermediary_dir")
     local import_marks_path
     import_marks_path=$(get_import_marks_path "$intermediary_dir")
     local commit_map_path
     commit_map_path=$(get_commit_map_path "$intermediary_dir")
+    local exclude_pathspecs_file
+    exclude_pathspecs_file=$(get_exclude_pathspecs_file "$intermediary_dir")
 
     # Create post-commit hook
     if [ "$dry_run" = true ]; then
@@ -368,7 +359,8 @@ SOURCE_MARKS="$source_marks_path"
 IMPORT_MARKS="$import_marks_path"
 COMMIT_MAP="$commit_map_path"
 SYNC_LOG="\$INTERMEDIARY/sync.log"
-EXCLUDE_PATHSPECS=($exclude_pathspecs_str)
+SCOPE_PATH="$scope_path"
+EXCLUDE_PATHSPECS_FILE="$exclude_pathspecs_file"
 
 _sync_log() {
     printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\$1" "\$2" "\$3" >> "\$SYNC_LOG"
@@ -397,6 +389,15 @@ fi
 SUBJECT=\$(git log -1 --format=%s | head -c 50)
 _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
 
+# Build combined pathspec: scope include + exclude (read from metadata file at runtime)
+PATHSPEC_ARGS=()
+[ -n "\$SCOPE_PATH" ] && PATHSPEC_ARGS+=("\$SCOPE_PATH/")
+if [ -f "\$EXCLUDE_PATHSPECS_FILE" ]; then
+    while IFS= read -r _ps; do
+        [ -n "\$_ps" ] && PATHSPEC_ARGS+=("\$_ps")
+    done < "\$EXCLUDE_PATHSPECS_FILE"
+fi
+
 EXPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.\$\$")
 EXPORT_OUT=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.\$\$")
 
@@ -407,7 +408,7 @@ EXPORT_OUT=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.\$\$")
 # instead of a proper child. Piping that to fast-import would fail with
 # "new tip does not contain old tip". Detecting and skipping avoids this.
 git fast-export --import-marks="\$SOURCE_MARKS" --export-marks="\$SOURCE_MARKS" -1 HEAD \\
-    \${EXCLUDE_PATHSPECS:+-- "\${EXCLUDE_PATHSPECS[@]}"} \\
+    \${PATHSPEC_ARGS:+-- "\${PATHSPEC_ARGS[@]}"} \\
     >"\$EXPORT_OUT" 2>"\$EXPORT_ERR"
 EXPORT_RC=\$?
 

@@ -77,6 +77,7 @@ Subcommands:
 Options:
   --test                  Drop into a shell for testing instead of launching
   --direct-mount          Mount source directly without git sync
+  --scoped                Scope intermediary to CWD subdirectory only
   --attach-session [TS]   Attach to an active session (optionally by timestamp)
   --session ID            Specify session for clean command
   --dry-run               Show commands without executing
@@ -115,7 +116,7 @@ _claude_cage() {
     _init_completion 2>/dev/null || return
 
     local subcommands="git-merge clean clean-all completion install-completions"
-    local flags="--test --direct-mount --attach-session --session --dry-run --verbose -v --debug --help -h --version"
+    local flags="--test --direct-mount --scoped --attach-session --session --dry-run --verbose -v --debug --help -h --version"
 
     case "$prev" in
         --session|--attach-session)
@@ -159,6 +160,7 @@ _claude_cage() {
     flags=(
         '--test[Drop into a shell for testing]'
         '--direct-mount[Mount source directly without git sync]'
+        '--scoped[Scope intermediary to CWD subdirectory only]'
         '--attach-session[Attach to an active session]:session:_claude_cage_sessions'
         '--session[Specify session for clean command]:session:_claude_cage_sessions'
         '--dry-run[Show commands without executing]'

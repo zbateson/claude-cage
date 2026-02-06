@@ -414,8 +414,6 @@ fi
 SUBJECT=\$(git log -1 --format=%s | head -c 50)
 _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
 
-echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
-
 EXPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.\$\$")
 EXPORT_OUT=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.\$\$")
 
@@ -444,9 +442,12 @@ fi
 if ! grep -q '^commit ' "\$EXPORT_OUT" || ! grep -q '^from ' "\$EXPORT_OUT"; then
     echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+    echo -e "\033[1;31mclaude-cage:\033[0m Nothin' changed in intermediary — commit only has excluded files"
     rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
     exit 0
 fi
+
+echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
 
 IMPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.\$\$")
 git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet \\

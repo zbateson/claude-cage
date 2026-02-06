@@ -1,5 +1,5 @@
 # ============================================================================
-# Git archive + fresh init (no history of excluded files)
+# Bare intermediary with history (fast-export/fast-import)
 # ============================================================================
 
 # Base directories for cage data
@@ -15,18 +15,70 @@ sanitize_branch_name() {
     echo "$branch" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g'
 }
 
-# Current branch for path construction (set by main.sh before calling get_cage_path)
+# Current branch for path construction (set by main.sh before calling get_work_path)
 CLAUDE_CAGE_BRANCH=""
 
-# Get the cache path for a source directory
-# Arguments: $1 = source directory, $2 = type (work|intermediary)
-# Uses CLAUDE_CAGE_BRANCH if set, otherwise defaults to "default"
+# Get the work directory path for a source directory
+# Work dirs are per-branch: branches/<branch>/work$source_dir
+# Arguments: $1 = source directory
+get_work_path() {
+    local source_dir="$1"
+    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
+    branch_dir=$(sanitize_branch_name "$branch_dir")
+    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work$source_dir"
+}
+
+# Get the intermediary path for a source directory
+# Intermediary is a bare repo shared across branches: intermediary$source_dir
+# Arguments: $1 = source directory
+get_intermediary_path() {
+    local source_dir="$1"
+    echo "$CLAUDE_CAGE_CACHE/intermediary$source_dir"
+}
+
+# Get the commit map file path (inside bare intermediary)
+# Maps intermediary hashes to source hashes
+get_commit_map_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-commit-map"
+}
+
+# Get the source branches file path (inside bare intermediary)
+# Lists all source branch names (for pre-receive guard)
+get_source_branches_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-source-branches"
+}
+
+# Get the source marks file path (inside bare intermediary)
+get_source_marks_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-source-marks"
+}
+
+# Get the import marks file path (inside bare intermediary)
+get_import_marks_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-import-marks"
+}
+
+# Get the exclude hash file path (inside bare intermediary)
+# Stores hash of exclude patterns to detect config changes
+get_exclude_hash_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-exclude-hash"
+}
+
+# Backward compat: get_cage_path for work type
+# Arguments: $1 = source directory, $2 = type (work only, intermediary uses get_intermediary_path)
 get_cage_path() {
     local source_dir="$1"
     local type="$2"
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/$type$source_dir"
+    if [ "$type" = "intermediary" ]; then
+        get_intermediary_path "$source_dir"
+    else
+        get_work_path "$source_dir"
+    fi
 }
 
 # Get the pipe path for a source directory
@@ -38,18 +90,6 @@ get_pipe_path() {
     echo "$CLAUDE_CAGE_RUNTIME/pipes/$branch_dir$source_dir"
 }
 
-# Get the state file path for a source directory
-# State file tracks the last processed commit from source
-# Uses CLAUDE_CAGE_BRANCH if set, hashes the path for a flat file structure
-get_state_path() {
-    local source_dir="$1"
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/state-$path_hash"
-}
-
 # Get the branch work root directory (contains all projects for a branch)
 # This is mounted at / so all same-branch projects are visible at original paths
 get_branch_work_root() {
@@ -58,12 +98,10 @@ get_branch_work_root() {
     echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work"
 }
 
-# Get the branch intermediary root directory (contains all intermediaries for a branch)
-# This is mounted at /run so all same-branch intermediaries are accessible
-get_branch_intermediary_root() {
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/intermediary"
+# Get the intermediary root directory (contains all intermediaries across all branches)
+# This is mounted at /run so all intermediaries are accessible
+get_intermediary_root() {
+    echo "$CLAUDE_CAGE_CACHE/intermediary"
 }
 
 # Get the git root directory for a path
@@ -84,16 +122,15 @@ is_git_repo() {
 # Returns sanitized branch names (one per line)
 list_cached_branches() {
     local source_dir="$1"
-    local branches=()
 
-    # Check each branch directory in cache
+    # Check each branch directory in cache (work dirs are per-branch)
     if [ -d "$CLAUDE_CAGE_CACHE/branches" ]; then
         for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
             [ -d "$branch_dir" ] || continue
             local branch_name
             branch_name=$(basename "$branch_dir")
-            # Check if this branch has data for our source directory
-            if [ -d "$branch_dir/work$source_dir" ] || [ -d "$branch_dir/intermediary$source_dir" ]; then
+            # Check if this branch has a work directory for our source
+            if [ -d "$branch_dir/work$source_dir" ]; then
                 echo "$branch_name"
             fi
         done
@@ -112,88 +149,6 @@ is_work_dirty() {
     return 1
 }
 
-# Clean up stale state files (state files with no corresponding work/intermediary dirs)
-# Arguments: $1 = source directory (optional, if not provided cleans all)
-clean_stale_state_files() {
-    local source_dir="$1"
-    local cleaned=0
-
-    if [ ! -d "$CLAUDE_CAGE_CACHE/branches" ]; then
-        return 0
-    fi
-
-    for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
-        [ -d "$branch_dir" ] || continue
-
-        for state_file in "$branch_dir"/state-*; do
-            [ -f "$state_file" ] || continue
-
-            local path_hash
-            path_hash=$(basename "$state_file" | sed 's/^state-//')
-
-            # Check if there's a corresponding work or intermediary dir
-            local has_work=false
-            local has_intermediary=false
-
-            # If source_dir specified, only check that path's hash
-            if [ -n "$source_dir" ]; then
-                local expected_hash
-                expected_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-                if [ "$path_hash" != "$expected_hash" ]; then
-                    continue
-                fi
-            fi
-
-            # Look for any directory that would correspond to this state file
-            # State file hash is based on source path, so check work/* and intermediary/*
-            if [ -d "$branch_dir/work" ]; then
-                for work_path in "$branch_dir/work"/*; do
-                    if [ -d "$work_path" ]; then
-                        local work_hash
-                        # Reconstruct the source path and hash it
-                        # work_path is: branch_dir/work/<source_path>
-                        local reconstructed_source="${work_path#"$branch_dir/work"}"
-                        work_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
-                        if [ "$work_hash" = "$path_hash" ]; then
-                            has_work=true
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            if [ -d "$branch_dir/intermediary" ]; then
-                for inter_path in "$branch_dir/intermediary"/*; do
-                    if [ -d "$inter_path" ]; then
-                        local inter_hash
-                        local reconstructed_source="${inter_path#"$branch_dir/intermediary"}"
-                        inter_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
-                        if [ "$inter_hash" = "$path_hash" ]; then
-                            has_intermediary=true
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            # If no corresponding directories, remove the state file
-            if [ "$has_work" = false ] && [ "$has_intermediary" = false ]; then
-                if [ "$verbose" = true ]; then
-                    echo "Removing stale state file: $state_file"
-                fi
-                run rm -f "$state_file"
-                cleaned=$((cleaned + 1))
-            fi
-        done
-    done
-
-    if [ "$cleaned" -gt 0 ] && [ "$verbose" = true ]; then
-        echo "Cleaned up $cleaned stale state file(s)"
-    fi
-
-    return 0
-}
-
 # Clean up cache for a specific branch
 # Arguments: $1 = source directory, $2 = sanitized branch name
 clean_branch_cache() {
@@ -201,21 +156,15 @@ clean_branch_cache() {
     local branch_name="$2"
     local branch_cache="$CLAUDE_CAGE_CACHE/branches/$branch_name"
     local work_dir="$branch_cache/work$source_dir"
-    local intermediary_dir="$branch_cache/intermediary$source_dir"
+    local intermediary_dir
+    intermediary_dir=$(get_intermediary_path "$source_dir")
     local caged_link="$source_dir/.caged/$branch_name"
 
     # Remove source hooks for this branch
     local git_root
     git_root=$(get_git_root "$source_dir" 2>/dev/null)
     if [ -n "$git_root" ]; then
-        local pre_commit_hook="$git_root/.git/hooks/pre-commit.d/claude-cage-$branch_name"
         local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$branch_name"
-
-        if [ -f "$pre_commit_hook" ]; then
-            run rm -f "$pre_commit_hook"
-            echo "Removed pre-commit hook: $pre_commit_hook"
-            maybe_remove_dispatcher "$git_root" "pre-commit"
-        fi
 
         if [ -f "$post_commit_hook" ]; then
             run rm -f "$post_commit_hook"
@@ -230,21 +179,6 @@ clean_branch_cache() {
         echo "Removed work directory: $work_dir"
     fi
 
-    # Remove intermediary directory
-    if [ -d "$intermediary_dir" ]; then
-        run rm -rf "$intermediary_dir"
-        echo "Removed intermediary directory: $intermediary_dir"
-    fi
-
-    # Remove state file
-    local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-    local state_file="$branch_cache/state-$path_hash"
-    if [ -f "$state_file" ]; then
-        run rm -f "$state_file"
-        echo "Removed state file: $state_file"
-    fi
-
     # Remove .caged symlink for this branch
     if [ -L "$caged_link/work" ] || [ -L "$caged_link/intermediary" ]; then
         run rm -rf "$caged_link"
@@ -255,18 +189,39 @@ clean_branch_cache() {
     if [ -d "$branch_cache/work" ] && [ -z "$(ls -A "$branch_cache/work" 2>/dev/null)" ]; then
         run rm -rf "$branch_cache/work"
     fi
-    if [ -d "$branch_cache/intermediary" ] && [ -z "$(ls -A "$branch_cache/intermediary" 2>/dev/null)" ]; then
-        run rm -rf "$branch_cache/intermediary"
-    fi
     if [ -d "$branch_cache" ] && [ -z "$(ls -A "$branch_cache" 2>/dev/null)" ]; then
         run rm -rf "$branch_cache"
         echo "Removed empty branch cache: $branch_cache"
     fi
 
+    # Check if shared intermediary should be removed
+    # Only remove if no other branches use it (no work dirs reference this source)
+    local other_branches_exist=false
+    if [ -d "$CLAUDE_CAGE_CACHE/branches" ]; then
+        for bd in "$CLAUDE_CAGE_CACHE/branches"/*; do
+            [ -d "$bd" ] || continue
+            if [ -d "$bd/work$source_dir" ]; then
+                other_branches_exist=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$other_branches_exist" = false ] && [ -d "$intermediary_dir" ]; then
+        run rm -rf "$intermediary_dir"
+        echo "Removed shared intermediary: $intermediary_dir"
+        # Clean up empty parent dirs
+        local parent
+        parent=$(dirname "$intermediary_dir")
+        while [ "$parent" != "$CLAUDE_CAGE_CACHE/intermediary" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
+            [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && run rm -rf "$parent" || break
+            parent=$(dirname "$parent")
+        done
+    fi
+
     # Clean up empty .caged directory
     local caged_dir="$source_dir/.caged"
     if [ -d "$caged_dir" ]; then
-        # Only .gitignore left?
         local remaining
         remaining=$(ls -A "$caged_dir" 2>/dev/null | grep -v '^\.gitignore$')
         if [ -z "$remaining" ]; then
@@ -274,6 +229,105 @@ clean_branch_cache() {
             echo "Removed empty .caged directory"
         fi
     fi
+}
+
+# Compute a hash of exclude patterns for change detection
+compute_exclude_hash() {
+    local exclude_patterns="$1"
+    if [ -z "$exclude_patterns" ]; then
+        echo "empty"
+    else
+        echo -n "$exclude_patterns" | md5sum | cut -c1-32
+    fi
+}
+
+# Build commit mapping from fast-export/fast-import marks files
+# Joins source marks and import marks on mark ID to produce
+# <intermediary-hash> <source-hash> lines
+# Also detects dropped commits (in source rev-list but absent from source marks)
+# and maps them to "0 <source-hash>"
+# Arguments:
+#   $1 - source_marks_path
+#   $2 - import_marks_path
+#   $3 - commit_map_path (output, append mode)
+#   $4 - source_dir (for rev-list of dropped commits)
+#   $5 - rev_range (e.g. "main~50..main feature/foo")
+build_commit_map_from_marks() {
+    local source_marks="$1"
+    local import_marks="$2"
+    local commit_map="$3"
+    local source_dir="$4"
+    local rev_range="$5"
+
+    # Join marks on mark ID: source marks have :<id> <source-hash>,
+    # import marks have :<id> <intermediary-hash>
+    # Both files are in format: :<mark-id> <hash>
+    if [ -f "$source_marks" ] && [ -f "$import_marks" ]; then
+        # Use awk to join on mark ID
+        awk '
+        NR==FNR { source[$1] = $2; next }
+        { if ($1 in source) print $2, source[$1] }
+        ' "$source_marks" "$import_marks" >> "$commit_map"
+    fi
+
+    # Detect dropped commits (in source rev-list but not in source marks)
+    if [ -n "$rev_range" ] && [ -n "$source_dir" ] && [ -f "$source_marks" ]; then
+        # Get all commits in rev range
+        local all_commits
+        all_commits=$(git -C "$source_dir" rev-list $rev_range 2>/dev/null) || true
+
+        # Get all source hashes from marks
+        local -A marked_hashes
+        while read -r _mark hash; do
+            marked_hashes["$hash"]=1
+        done < "$source_marks"
+
+        # Commits in rev-list but not in marks were dropped (exclude-only commits)
+        local commit
+        for commit in $all_commits; do
+            if [ -z "${marked_hashes[$commit]+_}" ]; then
+                echo "0 $commit" >> "$commit_map"
+            fi
+        done
+    fi
+}
+
+# Detect the default branch for a source repository
+# Detection order:
+# 1. cfg_git_defaultBranch if not "auto"
+# 2. git symbolic-ref refs/remotes/origin/HEAD
+# 3. Check for main then master branch existence
+# 4. Last resort: current branch
+# Arguments: $1 = source directory
+get_default_branch() {
+    local source_dir="$1"
+
+    # 1. Config override
+    if [ -n "${cfg_git_defaultBranch:-}" ] && [ "$cfg_git_defaultBranch" != "auto" ]; then
+        echo "$cfg_git_defaultBranch"
+        return
+    fi
+
+    # 2. Remote HEAD symref
+    local remote_head
+    remote_head=$(git -C "$source_dir" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+    if [ -n "$remote_head" ]; then
+        echo "$remote_head"
+        return
+    fi
+
+    # 3. Check for main then master
+    if git -C "$source_dir" rev-parse --verify main >/dev/null 2>&1; then
+        echo "main"
+        return
+    fi
+    if git -C "$source_dir" rev-parse --verify master >/dev/null 2>&1; then
+        echo "master"
+        return
+    fi
+
+    # 4. Current branch
+    git -C "$source_dir" branch --show-current
 }
 
 # Get current branch from source project
@@ -299,119 +353,327 @@ get_source_branch() {
     echo "$branch"
 }
 
-# Create the intermediary and work directories
+# Create or update the bare intermediary and work directory
 # Arguments: $1 = source directory (defaults to pwd)
 create_intermediary_clone() {
     local source_dir="${1:-$(pwd)}"
     local intermediary_dir
     local work_dir
-    intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
-    work_dir=$(get_cage_path "$source_dir" "work")
+    intermediary_dir=$(get_intermediary_path "$source_dir")
+    work_dir=$(get_work_path "$source_dir")
 
     # Capture source branch before we start
     local source_branch
     source_branch=$(get_source_branch "$source_dir")
+    local branch_name="${CLAUDE_CAGE_BRANCH:-$source_branch}"
+
+    # Detect default branch for history anchoring
+    local default_branch
+    default_branch=$(get_default_branch "$source_dir")
+    local history_depth="${cfg_git_historyDepth:-50}"
+
     echo "Source branch: $source_branch"
+    echo "Default branch: $default_branch"
 
-    echo ""
-    echo "Buildin' your intermediary now..."
-
-    # Clean up existing directories if they exist
-    if [ -d "$intermediary_dir" ]; then
-        echo "  Cleanin' out the old intermediary..."
-        run rm -rf "$intermediary_dir"
+    # Build pathspec excludes from cfg_exclude
+    local -a exclude_args=()
+    if [ -n "$cfg_exclude" ]; then
+        IFS='|' read -ra excludes <<< "$cfg_exclude"
+        for pattern in "${excludes[@]}"; do
+            exclude_args+=(":(exclude)$pattern")
+        done
     fi
+
+    # Compute exclude hash for change detection
+    local current_exclude_hash
+    current_exclude_hash=$(compute_exclude_hash "$cfg_exclude")
+
+    if [ -d "$intermediary_dir" ]; then
+        # Existing intermediary - check exclude hash
+        local stored_exclude_hash=""
+        local exclude_hash_path
+        exclude_hash_path=$(get_exclude_hash_path "$intermediary_dir")
+        if [ -f "$exclude_hash_path" ]; then
+            stored_exclude_hash=$(cat "$exclude_hash_path")
+        fi
+
+        if [ "$stored_exclude_hash" != "$current_exclude_hash" ]; then
+            echo ""
+            echo "Exclude patterns changed. Need to rebuild the intermediary."
+            echo "  Cleanin' out the old intermediary..."
+            run rm -rf "$intermediary_dir"
+            # Fall through to create new
+        fi
+    fi
+
+    if [ ! -d "$intermediary_dir" ]; then
+        # Create new bare intermediary
+        echo ""
+        echo "Buildin' your intermediary now..."
+
+        run mkdir -p "$(dirname "$intermediary_dir")"
+
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] git init --bare $intermediary_dir"
+            echo "[dry-run] git fast-export ... | git fast-import ..."
+        else
+            git init --bare "$intermediary_dir" --quiet
+
+            # Calculate export range with merge-base widening
+            local range_base
+            range_base=$(git -C "$source_dir" rev-parse "${default_branch}~${history_depth}" 2>/dev/null) || \
+                range_base=$(git -C "$source_dir" rev-list --max-parents=0 HEAD 2>/dev/null | tail -1)
+
+            # Widen to include merge-base of current branch if needed
+            if [ "$source_branch" != "$default_branch" ]; then
+                local merge_base
+                merge_base=$(git -C "$source_dir" merge-base "$default_branch" "$source_branch" 2>/dev/null) || true
+                if [ -n "$merge_base" ]; then
+                    if ! git -C "$source_dir" merge-base --is-ancestor "$range_base" "$merge_base" 2>/dev/null; then
+                        # Merge base is older than our range - widen
+                        range_base="$merge_base"
+                    fi
+                fi
+            fi
+
+            # Discover in-scope branches (merge-base falls within range)
+            local -a export_branches=("$default_branch")
+            if [ "$source_branch" != "$default_branch" ]; then
+                export_branches+=("$source_branch")
+            fi
+
+            local branch
+            while IFS= read -r branch; do
+                [ "$branch" = "$default_branch" ] && continue
+                [ "$branch" = "$source_branch" ] && continue
+                local mb
+                mb=$(git -C "$source_dir" merge-base "$default_branch" "$branch" 2>/dev/null) || continue
+                if git -C "$source_dir" merge-base --is-ancestor "$range_base" "$mb" 2>/dev/null; then
+                    export_branches+=("$branch")
+                fi
+            done < <(git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/)
+
+            # Build rev range args
+            # If range_base is a root commit, export full branches (no range prefix)
+            # because root..HEAD is empty when HEAD == root
+            local is_root_range=false
+            if ! git -C "$source_dir" rev-parse --verify "${range_base}^" >/dev/null 2>&1; then
+                is_root_range=true
+            fi
+
+            local -a range_args=()
+            for b in "${export_branches[@]}"; do
+                range_args+=("$b")
+            done
+
+            local source_marks_path
+            source_marks_path=$(get_source_marks_path "$intermediary_dir")
+            local import_marks_path
+            import_marks_path=$(get_import_marks_path "$intermediary_dir")
+            local commit_map_path
+            commit_map_path=$(get_commit_map_path "$intermediary_dir")
+
+            if [ "$verbose" = true ]; then
+                if [ "$is_root_range" = true ]; then
+                    echo -e "${_yellow}[run] git fast-export {${export_branches[*]}} | git fast-import${_reset}" >&2
+                else
+                    echo -e "${_yellow}[run] git fast-export ${range_base}..{${export_branches[*]}} | git fast-import${_reset}" >&2
+                fi
+            fi
+
+            # Run fast-export -> stream filter -> fast-import
+            # The pathspec excludes handle most patterns, but :(exclude) doesn't
+            # support all glob patterns (e.g. **/__pycache__). The stream filter
+            # catches anything pathspec misses, ensuring no excluded content leaks.
+            local -a filter_patterns=()
+            if [ -n "$cfg_exclude" ]; then
+                IFS='|' read -ra filter_patterns <<< "$cfg_exclude"
+            fi
+
+            # Build fast-export range arguments
+            local -a export_range_args=()
+            if [ "$is_root_range" = true ]; then
+                # Root commit included: export full branches
+                export_range_args=("${range_args[@]}")
+            else
+                # Normal range: range_base..first_branch + other branches
+                export_range_args=("${range_base}..${range_args[0]}" "${range_args[@]:1}")
+            fi
+
+            git -C "$source_dir" fast-export \
+                --export-marks="$source_marks_path" \
+                "${export_range_args[@]}" \
+                -- "${exclude_args[@]}" 2>/dev/null \
+                | filter_fast_export_stream "${filter_patterns[@]}" \
+                | git -C "$intermediary_dir" fast-import \
+                    --export-marks="$import_marks_path" \
+                    --quiet 2>/dev/null
+
+            # Fix bare HEAD to point to default branch
+            git -C "$intermediary_dir" symbolic-ref HEAD "refs/heads/$default_branch"
+
+            # Build commit mapping rev range
+            local rev_range
+            if [ "$is_root_range" = true ]; then
+                rev_range="${range_args[*]}"
+            else
+                rev_range="${range_base}..${range_args[0]}"
+                for b in "${range_args[@]:1}"; do
+                    rev_range="$rev_range $b"
+                done
+            fi
+            : > "$commit_map_path"
+            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "$rev_range"
+
+            # Store source branch names for pre-receive guard
+            local source_branches_path
+            source_branches_path=$(get_source_branches_path "$intermediary_dir")
+            git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/ > "$source_branches_path"
+
+            # Prevent force pushes
+            git -C "$intermediary_dir" config receive.denyNonFastForwards true
+
+            # Store exclude hash
+            local exclude_hash_path
+            exclude_hash_path=$(get_exclude_hash_path "$intermediary_dir")
+            echo "$current_exclude_hash" > "$exclude_hash_path"
+        fi
+
+        echo ""
+        echo "Intermediary's ready at: $intermediary_dir"
+        local commit_count
+        commit_count=$(git -C "$intermediary_dir" rev-list --all --count 2>/dev/null || echo "?")
+        local branch_count
+        branch_count=$(git -C "$intermediary_dir" branch --list 2>/dev/null | wc -l)
+        echo "  $commit_count commits across $branch_count branch(es)"
+    else
+        # Existing intermediary - incremental updates
+        echo ""
+        echo "Intermediary exists, checkin' for updates..."
+
+        local source_marks_path
+        source_marks_path=$(get_source_marks_path "$intermediary_dir")
+        local import_marks_path
+        import_marks_path=$(get_import_marks_path "$intermediary_dir")
+        local commit_map_path
+        commit_map_path=$(get_commit_map_path "$intermediary_dir")
+
+        # Check if current branch exists in intermediary
+        if ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+            echo "  Addin' branch $branch_name to intermediary..."
+
+            # Calculate range base from existing intermediary's oldest commit
+            local existing_range_base
+            existing_range_base=$(git -C "$intermediary_dir" rev-list --all --reverse 2>/dev/null | head -1)
+
+            # Map back to source hash
+            local source_range_base=""
+            if [ -f "$commit_map_path" ]; then
+                source_range_base=$(awk -v ih="$existing_range_base" '$1 == ih { print $2; exit }' "$commit_map_path")
+            fi
+
+            if [ -n "$source_range_base" ] && [ "$dry_run" != true ]; then
+                local -a filter_patterns=()
+                if [ -n "$cfg_exclude" ]; then
+                    IFS='|' read -ra filter_patterns <<< "$cfg_exclude"
+                fi
+                git -C "$source_dir" fast-export \
+                    --import-marks="$source_marks_path" \
+                    --export-marks="$source_marks_path" \
+                    "${source_range_base}..${branch_name}" \
+                    -- "${exclude_args[@]}" 2>/dev/null \
+                    | filter_fast_export_stream "${filter_patterns[@]}" \
+                    | git -C "$intermediary_dir" fast-import \
+                        --import-marks="$import_marks_path" \
+                        --export-marks="$import_marks_path" \
+                        --quiet 2>/dev/null
+
+                # Update commit map
+                build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${source_range_base}..${branch_name}"
+            fi
+        fi
+
+        # Catch up all intermediary branches to source
+        local ib
+        while IFS= read -r ib; do
+            ib="${ib#  }"  # strip leading spaces from git branch output
+            ib="${ib#\* }"  # strip active branch marker
+            [ -z "$ib" ] && continue
+
+            # Check if source has this branch
+            if ! git -C "$source_dir" rev-parse --verify "$ib" >/dev/null 2>&1; then
+                continue
+            fi
+
+            local source_head
+            source_head=$(git -C "$source_dir" rev-parse "$ib" 2>/dev/null)
+            local intermediary_head
+            intermediary_head=$(git -C "$intermediary_dir" rev-parse "$ib" 2>/dev/null)
+
+            # Check if source is ahead (source HEAD not mapped)
+            if [ -f "$commit_map_path" ]; then
+                if grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
+                    continue  # Already in sync
+                fi
+                # Also check if intermediary head maps to source head
+                if grep -q "^${intermediary_head} ${source_head}$" "$commit_map_path" 2>/dev/null; then
+                    continue  # Already in sync
+                fi
+            fi
+
+            echo "  Catching up branch $ib..."
+            if [ "$dry_run" != true ]; then
+                git -C "$source_dir" fast-export \
+                    --import-marks="$source_marks_path" \
+                    --export-marks="$source_marks_path" \
+                    "${intermediary_head}..${ib}" \
+                    -- "${exclude_args[@]}" 2>/dev/null \
+                    | filter_fast_export_stream "${excludes[@]}" \
+                    | git -C "$intermediary_dir" fast-import \
+                        --import-marks="$import_marks_path" \
+                        --export-marks="$import_marks_path" \
+                        --quiet 2>/dev/null || true
+
+                build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${intermediary_head}..${ib}"
+            fi
+        done < <(git -C "$intermediary_dir" branch --list 2>/dev/null)
+
+        # Update source branches file
+        local source_branches_path
+        source_branches_path=$(get_source_branches_path "$intermediary_dir")
+        git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/ > "$source_branches_path"
+    fi
+
+    # Install hooks on bare intermediary
+    if [ "$dry_run" != true ]; then
+        install_intermediary_hooks "$intermediary_dir"
+    fi
+
+    # Create/recreate work directory
     if [ -d "$work_dir" ]; then
         echo "  Cleanin' out the old workspace..."
         run rm -rf "$work_dir"
     fi
 
-    # Ensure parent directory exists
-    run mkdir -p "$(dirname "$intermediary_dir")"
-
-    # Build sparse-checkout patterns: include everything, then exclude configured patterns
-    # Format: /* (include all), then !pattern for each exclude
-    local -a sparse_patterns=("/*")
-    if [ -n "$cfg_exclude" ]; then
-        IFS='|' read -ra excludes <<< "$cfg_exclude"
-        for pattern in "${excludes[@]}"; do
-            sparse_patterns+=("!$pattern")
-        done
-    fi
-
-    # Clone from committed state using sparse checkout
-    # --depth 1: shallow clone (only latest commit)
-    # --sparse: enable sparse checkout
-    # --filter=blob:none: don't fetch blobs until needed (partial clone)
-    # --no-checkout: don't populate working directory yet
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir"
-        echo "[dry-run] git sparse-checkout init --no-cone"
-        echo "[dry-run] git sparse-checkout set ${sparse_patterns[*]}"
-        echo "[dry-run] git checkout"
-    else
-        if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir${_reset}" >&2
-        fi
-        git clone --depth 1 --sparse --filter=blob:none --no-checkout "$source_dir" "$intermediary_dir" 2>/dev/null
-
-        # Set up sparse checkout with gitignore-style patterns (no-cone mode)
-        git -C "$intermediary_dir" sparse-checkout init --no-cone
-        git -C "$intermediary_dir" sparse-checkout set "${sparse_patterns[@]}"
-
-        # Now checkout - only non-excluded files will appear in working directory
-        git -C "$intermediary_dir" checkout 2>/dev/null
-    fi
-
-    # Remove the cloned .git and reinitialize fresh (no history of excluded files)
-    echo "  Startin' fresh, clean slate..."
-
-    # Capture source commit info for the initial commit message
-    local source_short_hash
-    source_short_hash=$(git -C "$source_dir" rev-parse --short=8 HEAD 2>/dev/null)
-    local source_commit_msg
-    source_commit_msg=$(git -C "$source_dir" log -1 --format=%B 2>/dev/null)
-
-    local cage_commit_msg="${source_short_hash}: ${source_commit_msg}"
-
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] rm -rf $intermediary_dir/.git && git init && git add . && git commit"
-    else
-        rm -rf "$intermediary_dir/.git"
-        git -C "$intermediary_dir" init --quiet
-        git -C "$intermediary_dir" add .
-        if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] git -C $intermediary_dir commit -m '${source_short_hash}: ...'${_reset}" >&2
-        fi
-        git -C "$intermediary_dir" commit -m "$cage_commit_msg" >/dev/null
-    fi
-
-    echo ""
-    echo "Intermediary's ready at: $intermediary_dir"
-
-    # Create branch in intermediary matching source (this is where source commits land)
-    local branch_name="${CLAUDE_CAGE_BRANCH:-$source_branch}"
-    echo "  Settin' up the $branch_name branch..."
-    run_quiet git -C "$intermediary_dir" checkout --quiet -b "$branch_name"
-
-    # Allow pushing to checked-out branch (updates working tree automatically)
-    if ! run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead; then
-        echo "Warning: Failed to set receive.denyCurrentBranch config"
-    fi
-
-    # Prevent force pushes (amended commits cause sync issues)
-    if ! run_quiet git -C "$intermediary_dir" config receive.denyNonFastForwards true; then
-        echo "Warning: Failed to set receive.denyNonFastForwards config"
-    fi
-
-    # Create work directory by cloning from intermediary
     echo ""
     echo "Settin' up your workspace..."
-    run_quiet git clone --quiet "$intermediary_dir" "$work_dir"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] git clone $intermediary_dir $work_dir"
+    else
+        run_quiet git clone --quiet "$intermediary_dir" "$work_dir"
+
+        # Checkout current branch if not default
+        if [ "$branch_name" != "$(git -C "$intermediary_dir" symbolic-ref --short HEAD 2>/dev/null)" ]; then
+            if git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+                run_quiet git -C "$work_dir" checkout --quiet "$branch_name" 2>/dev/null
+            fi
+        fi
+    fi
 
     # Update origin to use the path as it appears inside the cage
-    # Intermediary is mounted at /run, so origin is /run<source_dir>
-    run_quiet git -C "$work_dir" remote set-url origin "/run$source_dir"
+    # Bare intermediary is mounted at /run<intermediary_path>
+    local mounted_intermediary="/run$(get_intermediary_path "$source_dir")"
+    run_quiet git -C "$work_dir" remote set-url origin "$mounted_intermediary"
 
     # Configure push to auto-setup upstream tracking
     if ! run_quiet git -C "$work_dir" config push.autoSetupRemote true; then
@@ -433,13 +695,58 @@ create_intermediary_clone() {
             echo "  ... plus $((file_count - 20)) more where that came from"
         fi
     fi
+}
 
-    # Initialize state file with current source HEAD (skip in dry-run)
-    if [ "$dry_run" != true ]; then
-        local state_path
-        state_path=$(get_state_path "$source_dir")
-        git -C "$source_dir" rev-parse HEAD > "$state_path"
+# Install post-receive and pre-receive hooks on bare intermediary
+# Arguments: $1 = intermediary_dir (bare repo path)
+install_intermediary_hooks() {
+    local intermediary_dir="$1"
+    local hooks_dir="$intermediary_dir/hooks"
+
+    # Path to pipe as seen from inside the sandbox
+    local mounted_pipe_path="${CLAUDE_CAGE_MOUNTED_PIPE:-/tmp/claude-cage/pipe}"
+
+    mkdir -p "$hooks_dir"
+
+    # Post-receive hook: notify pipe listener of pushes
+    cat > "$hooks_dir/post-receive" << EOF
+#!/bin/bash
+SYNC_LOG="\$(git rev-parse --git-dir 2>/dev/null)/sync.log"
+while read oldrev newrev refname; do
+    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\${newrev:0:8}" "post-recv" "refname=\$refname oldrev=\${oldrev:0:8} newrev=\${newrev:0:8}" >> "\$SYNC_LOG"
+    if [ "\${CAGE_DEBUG:-}" = "1" ]; then
+        echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
     fi
+    echo "\$refname \$newrev \$oldrev" > "$mounted_pipe_path"
+done
+EOF
+    chmod +x "$hooks_dir/post-receive"
+
+    # Pre-receive hook: guard against out-of-scope branch name collisions
+    local source_branches_path
+    source_branches_path=$(get_source_branches_path "$intermediary_dir")
+    cat > "$hooks_dir/pre-receive" << 'HOOKEOF'
+#!/bin/bash
+# Guard against creating branches that collide with out-of-scope source branches
+SOURCE_BRANCHES_FILE="$(git rev-parse --git-dir 2>/dev/null)/claude-cage-source-branches"
+while read oldrev newrev refname; do
+    # Only check new branch creation (oldrev is all zeros)
+    if [ "$oldrev" = "0000000000000000000000000000000000000000" ]; then
+        branch_name="${refname#refs/heads/}"
+        # Check if this branch already exists in intermediary (allow - normal push)
+        if git rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+            continue
+        fi
+        # Check if branch name exists in source but not in intermediary
+        if [ -f "$SOURCE_BRANCHES_FILE" ] && grep -qx "$branch_name" "$SOURCE_BRANCHES_FILE"; then
+            echo "Hold on. Branch '$branch_name' exists on source but is outside the cage's history scope." >&2
+            echo "Use a different name, or start claude-cage on that branch directly." >&2
+            exit 1
+        fi
+    fi
+done
+HOOKEOF
+    chmod +x "$hooks_dir/pre-receive"
 }
 
 # Set up .caged/ directory with symlinks to cache directories
@@ -459,8 +766,10 @@ setup_caged_symlinks() {
     sanitized_branch=$(sanitize_branch_name "${CLAUDE_CAGE_BRANCH:-default}")
 
     # Target paths in cache
-    local work_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/work$source_dir"
-    local intermediary_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/intermediary$source_dir"
+    local work_target
+    work_target=$(get_work_path "$source_dir")
+    local intermediary_target
+    intermediary_target=$(get_intermediary_path "$source_dir")
 
     # Create .caged and branch directories
     local branch_dir="$caged_dir/$sanitized_branch"
@@ -484,7 +793,7 @@ setup_caged_symlinks() {
         ln -s "$work_target" "$work_symlink"
     fi
 
-    # Create/update intermediary symlink
+    # Create/update intermediary symlink (shared bare repo)
     local intermediary_symlink="$branch_dir/intermediary"
     if [ "$dry_run" = true ]; then
         echo "[dry-run] ln -sf $intermediary_target $intermediary_symlink"
@@ -493,8 +802,8 @@ setup_caged_symlinks() {
         ln -s "$intermediary_target" "$intermediary_symlink"
     fi
 
-    # Create/update sync.log symlink
-    local sync_log_target="$intermediary_target/.git/sync.log"
+    # Create/update sync.log symlink (sync.log is inside bare repo)
+    local sync_log_target="$intermediary_target/sync.log"
     local sync_log_symlink="$branch_dir/sync.log"
     if [ "$dry_run" = true ]; then
         echo "[dry-run] ln -sf $sync_log_target $sync_log_symlink"

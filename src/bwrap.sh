@@ -12,23 +12,23 @@ check_bwrap() {
 }
 
 # Run a command inside a bwrap sandbox
-# Usage: run_in_bwrap <branch_intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
+# Usage: run_in_bwrap <intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
 #
 # Arguments:
-#   branch_intermediary_root - Root of branch intermediary tree (mounted at /run in non-isolated mode)
+#   intermediary_root        - Shared intermediary root directory
 #   branch_work_root         - Root of branch work tree (mounted at / in non-isolated mode)
-#   intermediary_dir         - The specific project's intermediary (for isolated mode)
+#   intermediary_dir         - The specific project's intermediary bare repo
 #   work_dir                 - The specific project's work directory (for isolated mode)
 #   pipe_path                - Path to the communication pipe
 #   project_path             - Original project path (working directory, isolated mount point)
 #   [command...]             - Optional command to run (defaults to interactive shell)
 #
-# In non-isolated mode: branch_work_root is mounted at /, branch_intermediary_root at /run,
-# making all same-branch projects and their intermediaries visible at original paths.
+# In non-isolated mode: branch_work_root is mounted at /, intermediaries are mounted
+# at /run<intermediary_path>, making all same-branch projects visible at original paths.
 #
 # In isolated mode: only work_dir and intermediary_dir are mounted at their paths.
 run_in_bwrap() {
-    local branch_intermediary_root="$1"
+    local intermediary_root="$1"
     local branch_work_root="$2"
     local intermediary_dir="$3"
     local work_dir="$4"
@@ -50,7 +50,7 @@ run_in_bwrap() {
     local -a bwrap_args=()
 
     # Enumerate projects and build mount specs using shared functions
-    enumerate_projects "$branch_work_root" "$branch_intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
+    enumerate_projects "$branch_work_root" "$intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
     build_mount_specs "$intermediary_dir" "$work_dir" "$project_path" "$pipe_path" "$user_home"
 
     # System binaries (read-only) - overlays the / mount
@@ -196,7 +196,7 @@ exec bash --rcfile /tmp/.cage-bashrc')
 # Run bwrap with network isolation via slirp4netns
 # This wraps run_in_bwrap in a network namespace with iptables filtering
 #
-# Usage: run_in_bwrap_with_network <branch_intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
+# Usage: run_in_bwrap_with_network <intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
 #
 # Uses global config variables:
 #   cfg_networkMode      - "disabled", "allowlist", or "blocklist"
@@ -207,7 +207,7 @@ exec bash --rcfile /tmp/.cage-bashrc')
 #   cfg_block_ips        - pipe-separated blocked IPs
 #   cfg_block_networks   - pipe-separated blocked networks
 run_in_bwrap_with_network() {
-    local branch_intermediary_root="$1"
+    local intermediary_root="$1"
     local branch_work_root="$2"
     local intermediary_dir="$3"
     local work_dir="$4"
@@ -217,13 +217,13 @@ run_in_bwrap_with_network() {
 
     # If network mode is disabled, just run bwrap directly
     if [ "$cfg_networkMode" = "disabled" ] || [ -z "$cfg_networkMode" ]; then
-        run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" "$@"
+        run_in_bwrap "$intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" "$@"
         return $?
     fi
 
     # Export bwrap-related variables for the inner call
     # run_with_network_namespace sources the main script, so run_in_bwrap will be available
-    export BWRAP_BRANCH_INTERMEDIARY_ROOT="$branch_intermediary_root"
+    export BWRAP_INTERMEDIARY_ROOT="$intermediary_root"
     export BWRAP_BRANCH_WORK_ROOT="$branch_work_root"
     export BWRAP_INTERMEDIARY_DIR="$intermediary_dir"
     export BWRAP_WORK_DIR="$work_dir"
@@ -260,7 +260,7 @@ run_in_bwrap_with_network() {
             verbose="$BWRAP_VERBOSE"
             # Restore cfg_mounts array
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
-            run_in_bwrap "$BWRAP_BRANCH_INTERMEDIARY_ROOT" "$BWRAP_BRANCH_WORK_ROOT" "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_PROJECT_PATH"
+            run_in_bwrap "$BWRAP_INTERMEDIARY_ROOT" "$BWRAP_BRANCH_WORK_ROOT" "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_PROJECT_PATH"
         '
     else
         # Escape command arguments for passing through
@@ -275,7 +275,7 @@ run_in_bwrap_with_network() {
             verbose="$BWRAP_VERBOSE"
             # Restore cfg_mounts array
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
-            run_in_bwrap "$BWRAP_BRANCH_INTERMEDIARY_ROOT" "$BWRAP_BRANCH_WORK_ROOT" "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_PROJECT_PATH" '"$escaped_args"'
+            run_in_bwrap "$BWRAP_INTERMEDIARY_ROOT" "$BWRAP_BRANCH_WORK_ROOT" "$BWRAP_INTERMEDIARY_DIR" "$BWRAP_WORK_DIR" "$BWRAP_PIPE_PATH" "$BWRAP_PROJECT_PATH" '"$escaped_args"'
         '
     fi
 

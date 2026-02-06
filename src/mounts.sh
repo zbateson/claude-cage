@@ -7,14 +7,14 @@
 # Each entry is "source_path|container_path"
 #
 # Arguments:
-#   $1 - branch_work_root
-#   $2 - branch_intermediary_root
+#   $1 - branch_work_root (per-branch: branches/<branch>/work)
+#   $2 - intermediary_root (shared: intermediary/)
 #   $3 - work_dir (current project)
-#   $4 - intermediary_dir (current project, empty for non-git mode)
+#   $4 - intermediary_dir (current project bare repo, empty for non-git mode)
 #   $5 - project_path (original path)
 enumerate_projects() {
     local branch_work_root="$1"
-    local branch_intermediary_root="$2"
+    local intermediary_root="$2"
     local work_dir="$3"
     local intermediary_dir="$4"
     local project_path="$5"
@@ -41,13 +41,18 @@ enumerate_projects() {
         CAGE_WORK_PROJECTS+=("$proj_dir|$orig_path")
     done < <(find "$branch_work_root" -name ".git" -type d -print0 2>/dev/null)
 
-    # Same for intermediary
-    while IFS= read -r -d '' git_dir; do
-        local proj_dir="${git_dir%/.git}"
-        local orig_path="${proj_dir#"$branch_intermediary_root"}"
+    # Find other bare intermediaries in the shared intermediary root
+    # Bare repos have a HEAD file directly (no .git subdirectory)
+    while IFS= read -r head_file; do
+        local bare_dir="${head_file%/HEAD}"
+        local orig_path="${bare_dir#"$intermediary_root"}"
         [ "$orig_path" = "$project_path" ] && continue
-        CAGE_INTERMEDIARY_PROJECTS+=("$proj_dir|$orig_path")
-    done < <(find "$branch_intermediary_root" -name ".git" -type d -print0 2>/dev/null)
+        CAGE_INTERMEDIARY_PROJECTS+=("$bare_dir|$orig_path")
+    done < <(find "$intermediary_root" -name "HEAD" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
+        # Only include if it looks like a bare repo (has objects/ dir)
+        local d="${f%/HEAD}"
+        [ -d "$d/objects" ] && printf '%s\n' "$f"
+    done)
 }
 
 # Build mount specifications for the sandbox
@@ -95,9 +100,10 @@ build_mount_specs() {
         CAGE_MOUNTS+=("bind|$work_dir|$project_path|rw")
     elif [ "$cfg_isolated" != "true" ]; then
         # Non-isolated git mode: mount each project at its original path
+        # Bare intermediaries mounted at /run<intermediary_dir> (matches work dir's git remote)
         for entry in "${CAGE_INTERMEDIARY_PROJECTS[@]}"; do
             IFS='|' read -r proj_dir orig_path <<< "$entry"
-            CAGE_MOUNTS+=("bind|$proj_dir|/run$orig_path|rw")
+            CAGE_MOUNTS+=("bind|$proj_dir|/run$proj_dir|rw")
         done
         for entry in "${CAGE_WORK_PROJECTS[@]}"; do
             IFS='|' read -r proj_dir orig_path <<< "$entry"
@@ -105,7 +111,7 @@ build_mount_specs() {
         done
     else
         # Isolated git mode: mount only the specific project
-        CAGE_MOUNTS+=("bind|$intermediary_dir|/run$project_path|rw")
+        CAGE_MOUNTS+=("bind|$intermediary_dir|/run$intermediary_dir|rw")
         CAGE_MOUNTS+=("bind|$work_dir|$project_path|rw")
     fi
 

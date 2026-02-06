@@ -82,6 +82,36 @@ has_other_sessions() {
     [ $count -gt 0 ]
 }
 
+# Check if ANY sessions exist for a source directory (across all branches)
+# Returns 0 (true) if any sessions exist, 1 (false) if not
+has_any_sessions() {
+    local source_dir="$1"
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+
+    if [ ! -d "$CLAUDE_CAGE_RUNTIME/sessions" ]; then
+        return 1
+    fi
+
+    for branch_dir in "$CLAUDE_CAGE_RUNTIME/sessions"/*; do
+        [ -d "$branch_dir" ] || continue
+        local session_dir="$branch_dir/$path_hash"
+        [ -d "$session_dir" ] || continue
+        for pidfile in "$session_dir"/*; do
+            [ -f "$pidfile" ] || continue
+            local pid
+            pid=$(basename "$pidfile")
+            if kill -0 "$pid" 2>/dev/null; then
+                return 0
+            else
+                rm -f "$pidfile"
+            fi
+        done
+    done
+
+    return 1
+}
+
 # ============================================================================
 # Orphaned hook cleanup
 # ============================================================================
@@ -99,26 +129,6 @@ cleanup_orphaned_hooks() {
     fi
 
     local cleaned=0
-
-    # Check pre-commit hooks
-    if [ -d "$git_root/.git/hooks/pre-commit.d" ]; then
-        for hook in "$git_root/.git/hooks/pre-commit.d"/claude-cage-*; do
-            [ -f "$hook" ] || continue
-
-            # Extract WORK_DIR from the hook
-            local work_dir
-            work_dir=$(grep '^WORK_DIR=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
-
-            if [ -n "$work_dir" ] && [ ! -d "$work_dir" ]; then
-                if [ "$verbose" = true ]; then
-                    echo "Removing orphaned hook: $hook"
-                fi
-                rm -f "$hook"
-                cleaned=$((cleaned + 1))
-            fi
-        done
-        maybe_remove_dispatcher "$git_root" "pre-commit"
-    fi
 
     # Check post-commit hooks
     if [ -d "$git_root/.git/hooks/post-commit.d" ]; then
@@ -140,6 +150,19 @@ cleanup_orphaned_hooks() {
         maybe_remove_dispatcher "$git_root" "post-commit"
     fi
 
+    # Also clean up any leftover pre-commit hooks from old architecture
+    if [ -d "$git_root/.git/hooks/pre-commit.d" ]; then
+        for hook in "$git_root/.git/hooks/pre-commit.d"/claude-cage-*; do
+            [ -f "$hook" ] || continue
+            if [ "$verbose" = true ]; then
+                echo "Removing legacy pre-commit hook: $hook"
+            fi
+            rm -f "$hook"
+            cleaned=$((cleaned + 1))
+        done
+        maybe_remove_dispatcher "$git_root" "pre-commit"
+    fi
+
     if [ "$cleaned" -gt 0 ]; then
         echo "Cleaned up $cleaned orphaned hook(s) from previous session."
     fi
@@ -153,7 +176,7 @@ cleanup_orphaned_hooks() {
 # The dispatcher runs all scripts in <hook>.d/
 ensure_hook_dispatcher() {
     local source_dir="$1"
-    local hook_type="$2"  # e.g., "post-commit" or "pre-commit"
+    local hook_type="$2"  # e.g., "post-commit"
     local hook_path="$source_dir/.git/hooks/$hook_type"
     local hook_dir="$source_dir/.git/hooks/${hook_type}.d"
 
@@ -211,21 +234,11 @@ maybe_remove_dispatcher() {
 # Named pipe and intermediary hooks
 # ============================================================================
 
-# Set up named pipe and git hooks for cage communication
+# Set up named pipe for cage communication
 # Arguments:
-#   $1 - source_dir: The original source directory
-#   $2 - intermediary_dir: The intermediary directory
-#   $3 - pipe_path: The pipe file path
-setup_git_hooks() {
-    local source_dir="$1"
-    local intermediary_dir="$2"
-    local pipe_path="$3"
-    local hook_path="$intermediary_dir/.git/hooks/post-receive"
-
-    # Path to pipe as seen from inside the sandbox
-    # Override with CLAUDE_CAGE_MOUNTED_PIPE for test isolation (tests run outside
-    # a real sandbox and need their own pipe path to avoid leaking into a live session)
-    local mounted_pipe_path="${CLAUDE_CAGE_MOUNTED_PIPE:-/tmp/claude-cage/pipe}"
+#   $1 - pipe_path: The pipe file path
+setup_pipe() {
+    local pipe_path="$1"
 
     # Create parent directory for pipe if needed
     local pipe_dir
@@ -236,28 +249,28 @@ setup_git_hooks() {
     run rm -f "$pipe_path"
     run mkfifo -m 0600 "$pipe_path"
 
-    # Create post-receive hook on intermediary
-    # This runs inside the sandbox when work/ pushes to intermediary/
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] create $hook_path"
-    else
-        cat > "$hook_path" << EOF
-#!/bin/bash
-SYNC_LOG="\$(git rev-parse --git-dir 2>/dev/null)/sync.log"
-while read oldrev newrev refname; do
-    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\${newrev:0:8}" "post-recv" "refname=\$refname oldrev=\${oldrev:0:8} newrev=\${newrev:0:8}" >> "\$SYNC_LOG"
-    if [ "\${CAGE_DEBUG:-}" = "1" ]; then
-        echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
+    if [ "$verbose" = true ]; then
+        echo "  Created pipe: $pipe_path"
     fi
-    echo "\$refname \$newrev" > "$mounted_pipe_path"
-done
-EOF
-        chmod +x "$hook_path"
+}
+
+# Set up git hooks on intermediary (called by create_intermediary_clone)
+# The intermediary hooks are installed by install_intermediary_hooks in git-clone.sh
+# This function sets up the named pipe only
+setup_git_hooks() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local pipe_path="$3"
+
+    setup_pipe "$pipe_path"
+
+    # Re-install intermediary hooks (in case pipe path changed)
+    if [ "$dry_run" != true ]; then
+        install_intermediary_hooks "$intermediary_dir"
     fi
 
     if [ "$verbose" = true ]; then
-        echo "  Created pipe: $pipe_path"
-        echo "  Created hook: $hook_path"
+        echo "  Set up hooks on intermediary"
     fi
 }
 
@@ -296,16 +309,7 @@ cleanup_source_hooks() {
     git_root=$(get_git_root "$source_dir")
 
     # No other sessions, safe to remove our branch-specific hooks
-    local pre_commit_hook="$git_root/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
     local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$sanitized_branch"
-
-    if [ -f "$pre_commit_hook" ]; then
-        run rm -f "$pre_commit_hook"
-        if [ "$verbose" = true ]; then
-            echo "  Removed hook: $pre_commit_hook"
-        fi
-        maybe_remove_dispatcher "$git_root" "pre-commit"
-    fi
 
     if [ -f "$post_commit_hook" ]; then
         run rm -f "$post_commit_hook"
@@ -316,120 +320,18 @@ cleanup_source_hooks() {
     fi
 }
 
-# Set up pre-commit hook on source repo to prevent mixed commits
-# Arguments:
-#   $1 - source_dir: The source project directory
-#   $2 - exclude_patterns: Pipe-delimited exclude patterns
-#   $3 - target_branch: The branch that was active when cage started
-setup_source_pre_commit() {
-    local source_dir="$1"
-    local exclude_patterns="$2"
-    local target_branch="$3"
-    local sanitized_branch
-    sanitized_branch=$(sanitize_branch_name "$target_branch")
-    # Use git root for hook installation (supports running from subdirectories)
-    local git_root
-    git_root=$(get_git_root "$source_dir")
-    local hook_path="$git_root/.git/hooks/pre-commit.d/claude-cage-$sanitized_branch"
-    local work_dir
-    work_dir=$(get_cage_path "$source_dir" "work")
-
-    # Ensure dispatcher exists (at git root, not source_dir)
-    if [ "$dry_run" != true ]; then
-        ensure_hook_dispatcher "$git_root" "pre-commit"
-    fi
-
-    # Create pre-commit hook
-    # We need to pass exclude patterns into the hook
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] create $hook_path"
-    else
-        cat > "$hook_path" << EOF
-#!/bin/bash
-# claude-cage: prevent mixing excluded and included files in same commit
-WORK_DIR="$work_dir"
-TARGET_BRANCH="$target_branch"
-
-if [ ! -d "\$WORK_DIR" ]; then
-    exit 0  # cage not set up yet
-fi
-
-# Only enforce on the branch that was active when cage started
-current_branch=\$(git branch --show-current)
-if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
-    exit 0  # different branch, no restrictions
-fi
-
-# Exclude patterns (set at hook creation time)
-EXCLUDE_PATTERNS="$exclude_patterns"
-
-# Get staged files
-STAGED=\$(git diff --cached --name-only)
-if [ -z "\$STAGED" ]; then
-    exit 0  # no staged files
-fi
-
-# Check each staged file against exclude patterns
-EXCLUDED=""
-INCLUDED=""
-
-while IFS= read -r file; do
-    is_excluded=false
-    IFS='|' read -ra patterns <<< "\$EXCLUDE_PATTERNS"
-    for pattern in "\${patterns[@]}"; do
-        # Convert gitignore pattern to bash glob matching
-        # Remove leading **/ for matching
-        match_pattern="\${pattern#\*\*/}"
-        if [[ "\$file" == \$match_pattern ]] || [[ "\$file" == */\$match_pattern ]] || [[ "\$file" == \$pattern ]]; then
-            is_excluded=true
-            break
-        fi
-    done
-    if [ "\$is_excluded" = true ]; then
-        EXCLUDED="\$EXCLUDED\$file\n"
-    else
-        INCLUDED="\$INCLUDED\$file\n"
-    fi
-done <<< "\$STAGED"
-
-if [ -n "\$EXCLUDED" ] && [ -n "\$INCLUDED" ]; then
-    echo "Whoa there. You're mixin' secret files with regular ones."
-    echo ""
-    echo "Excluded files:"
-    echo -e "\$EXCLUDED" | sed '/^\$/d' | sed 's/^/  /'
-    echo ""
-    echo "Included files:"
-    echo -e "\$INCLUDED" | sed '/^\$/d' | sed 's/^/  /'
-    echo ""
-    echo "Gotta keep 'em separate, friend."
-    exit 1
-fi
-
-exit 0
-EOF
-        chmod +x "$hook_path"
-    fi
-
-    if [ "$verbose" = true ]; then
-        echo "  Created source hook: $hook_path"
-    fi
-}
-
 # Set up post-commit hook on source repo to sync commits to intermediary
+# Uses fast-export + stream filter for robust handling of mixed commits
 # Arguments:
 #   $1 - source_dir: The source project directory
 #   $2 - exclude_patterns: Pipe-delimited exclude patterns (e.g., ".env|secrets/**")
-#   $3 - intermediary_dir: The intermediary directory
+#   $3 - intermediary_dir: The bare intermediary directory
 #   $4 - target_branch: The branch that was active when cage started
-#   $5 - state_path: Path to the state file for tracking last processed commit
-#   $6 - work_dir: The work directory (for saving failed patches)
 setup_source_post_commit() {
     local source_dir="$1"
     local exclude_patterns="$2"
     local intermediary_dir="$3"
     local target_branch="$4"
-    local state_path="$5"
-    local work_dir="$6"
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$target_branch")
     # Use git root for hook installation (supports running from subdirectories)
@@ -442,15 +344,27 @@ setup_source_post_commit() {
         ensure_hook_dispatcher "$git_root" "post-commit"
     fi
 
-    # Convert exclude patterns to pathspec format
-    # Use :(exclude,glob) for proper ** matching (** means zero or more dirs with glob)
-    local pathspec_excludes=""
+    # Build filter patterns for the hook
+    local filter_patterns_str=""
     if [ -n "$exclude_patterns" ]; then
+        # Convert pipe-delimited to space-delimited quoted args
         IFS='|' read -ra patterns <<< "$exclude_patterns"
         for pattern in "${patterns[@]}"; do
-            pathspec_excludes="$pathspec_excludes ':(exclude,glob)$pattern'"
+            if [ -n "$filter_patterns_str" ]; then
+                filter_patterns_str="$filter_patterns_str \"$pattern\""
+            else
+                filter_patterns_str="\"$pattern\""
+            fi
         done
     fi
+
+    # Get paths for marks and commit map inside intermediary
+    local source_marks_path
+    source_marks_path=$(get_source_marks_path "$intermediary_dir")
+    local import_marks_path
+    import_marks_path=$(get_import_marks_path "$intermediary_dir")
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
 
     # Create post-commit hook
     if [ "$dry_run" = true ]; then
@@ -458,13 +372,14 @@ setup_source_post_commit() {
     else
         cat > "$hook_path" << EOF
 #!/bin/bash
-# claude-cage: sync commits to intermediary (excluding sensitive files)
+# claude-cage: sync commits to intermediary using fast-export + stream filter
 INTERMEDIARY="$intermediary_dir"
 TARGET_BRANCH="$target_branch"
-STATE_FILE="$state_path"
 SOURCE_DIR="$source_dir"
-WORK_DIR="$work_dir"
-SYNC_LOG="\$INTERMEDIARY/.git/sync.log"
+SOURCE_MARKS="$source_marks_path"
+IMPORT_MARKS="$import_marks_path"
+COMMIT_MAP="$commit_map_path"
+SYNC_LOG="\$INTERMEDIARY/sync.log"
 
 _sync_log() {
     printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\$1" "\$2" "\$3" >> "\$SYNC_LOG"
@@ -475,64 +390,127 @@ if [ ! -d "\$INTERMEDIARY" ]; then
 fi
 
 COMMIT_SHORT=\$(git rev-parse --short=8 HEAD)
+COMMIT_HASH=\$(git rev-parse HEAD)
 
 # Only sync commits from the branch that was active when cage started
 current_branch=\$(git branch --show-current)
 if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: on branch \$current_branch, target is \$TARGET_BRANCH"
-    exit 0  # different branch, no sync needed
+    exit 0
 fi
 
-# Apply commit to intermediary's claude branch, excluding sensitive files
-# format-patch with pathspec excludes ensures sensitive files aren't included
-# Note: Using HEAD~1..HEAD instead of -1 HEAD because the latter has weird behavior
-# when pathspec excludes all files (it outputs the parent commit instead of empty)
-# Note: Don't use "-- ." before excludes - it breaks pathspec exclude matching
-PATCH=\$(git format-patch HEAD~1..HEAD --stdout --$pathspec_excludes)
+# Check commit mapping: already mapped -> skip (loop prevention)
+if [ -f "\$COMMIT_MAP" ] && grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP"; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "already mapped, skipping (loop prevention)"
+    exit 0
+fi
+
 SUBJECT=\$(git log -1 --format=%s | head -c 50)
+_sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
 
-# Check if patch has any actual changes (not just empty)
-if echo "\$PATCH" | grep -q "^diff --git"; then
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
-    # Ensure we're on target branch and apply
-    echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
-    AM_OUTPUT=\$(cd "\$INTERMEDIARY" && git checkout "\$TARGET_BRANCH" 2>/dev/null && echo "\$PATCH" | git am --3way 2>&1) && AM_RC=0 || AM_RC=\$?
-    if [ "\$AM_RC" -eq 0 ]; then
-        _sync_log "\$COMMIT_SHORT" ">>intermediary" "git-am ok"
-    else
-        git -C "\$INTERMEDIARY" am --abort 2>/dev/null || true
-        echo -e "\033[1;31mclaude-cage:\033[0m Patch didn't apply cleanly."
-        _sync_log "\$COMMIT_SHORT" ">>intermediary" "git-am FAILED rc=\$AM_RC: \$(echo "\$AM_OUTPUT" | tail -1)"
+echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
 
-        # Save patch for manual recovery
-        SANITIZED_BRANCH=\$(echo "\$TARGET_BRANCH" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g')
-        TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
-        SAFE_SUBJECT=\$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c1-50)
-        REL_PATH="claude-cage-failed-patches/to-intermediary/\$SANITIZED_BRANCH"
-        PATCH_FILE="\${TIMESTAMP}_\${SAFE_SUBJECT}.patch"
+# Use fast-export with stream filter for individual commit sync
+# The stream filter handles mixed commits (excluded + non-excluded files)
+EXPORT_RC=0
+EOF
 
-        # Save to source directory
-        mkdir -p "\$SOURCE_DIR/\$REL_PATH"
-        echo "\$PATCH" > "\$SOURCE_DIR/\$REL_PATH/\$PATCH_FILE"
-        echo -e "\033[1;31mclaude-cage:\033[0m Saved patch to: \$REL_PATH/\$PATCH_FILE"
-
-        # Also save to work directory if it exists (so Claude can see it inside cage)
-        if [ -d "\$WORK_DIR" ]; then
-            mkdir -p "\$WORK_DIR/\$REL_PATH"
-            echo "\$PATCH" > "\$WORK_DIR/\$REL_PATH/\$PATCH_FILE"
-            echo -e "\033[1;31mclaude-cage:\033[0m Also available inside cage at same path"
+        # Add the fast-export pipeline based on whether we have excludes
+        if [ -n "$filter_patterns_str" ]; then
+            cat >> "$hook_path" << 'HOOKBODY'
+# Source the cage script for filter_fast_export_stream function
+# We need the function available in this hook
+_fes_should_exclude() {
+    local path="$1"
+    if [[ "$path" =~ ^\"(.*)\"$ ]]; then
+        path="${BASH_REMATCH[1]}"
+    fi
+    local pat
+HOOKBODY
+            # Inject pattern matching for each exclude
+            echo "    for pat in $filter_patterns_str; do" >> "$hook_path"
+            cat >> "$hook_path" << 'HOOKBODY2'
+        if [[ "$pat" == */ ]]; then
+            [[ "$path" == "${pat}"* || "$path" == "${pat%/}" ]] && return 0
+        else
+            # shellcheck disable=SC2254
+            [[ "$path" == $pat ]] && return 0
         fi
+    done
+    return 1
+}
+
+# Inline stream filter (simplified for single-commit use)
+_filter_stream() {
+    local TMPSTREAM
+    TMPSTREAM=$(mktemp)
+    trap "rm -f '$TMPSTREAM'" RETURN
+    cat > "$TMPSTREAM"
+
+    local -A MARK_EXCLUDED MARK_KEPT
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^M\ [0-9]+\ (:[0-9]+)\ (.+)$ ]]; then
+            local mark="${BASH_REMATCH[1]}" path="${BASH_REMATCH[2]}"
+            if _fes_should_exclude "$path"; then MARK_EXCLUDED["$mark"]=1; else MARK_KEPT["$mark"]=1; fi
+        fi
+    done < "$TMPSTREAM"
+
+    local -A STRIP_MARKS
+    for mark in "${!MARK_EXCLUDED[@]}"; do
+        [[ -z "${MARK_KEPT[$mark]+_}" ]] && STRIP_MARKS["$mark"]=1
+    done
+
+    local -A EXCLUDED_PATHS
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^M\ [0-9]+\ :[0-9]+\ (.+)$ ]]; then
+            _fes_should_exclude "${BASH_REMATCH[1]}" && EXCLUDED_PATHS["${BASH_REMATCH[1]}"]=1
+        elif [[ "$line" =~ ^D\ (.+)$ ]]; then
+            _fes_should_exclude "${BASH_REMATCH[1]}" && EXCLUDED_PATHS["${BASH_REMATCH[1]}"]=1
+        fi
+    done < "$TMPSTREAM"
+
+    local strip_marks_str="" excluded_paths_str=""
+    for mark in "${!STRIP_MARKS[@]}"; do strip_marks_str="${strip_marks_str}${mark} "; done
+    for p in "${!EXCLUDED_PATHS[@]}"; do excluded_paths_str="${excluded_paths_str}${p}"$'\n'; done
+
+    awk -v strip_marks="$strip_marks_str" -v excluded_paths="$excluded_paths_str" '
+    BEGIN { n=split(strip_marks,a," "); for(i=1;i<=n;i++) if(a[i]!="") strip[a[i]]=1; n=split(excluded_paths,a,"\n"); for(i=1;i<=n;i++) if(a[i]!="") excluded[a[i]]=1; state="normal"; remaining=0; prev_blank=0; pending_blob="" }
+    state=="skip_data" { remaining-=(length($0)+1); if(remaining<=0) state="normal"; next }
+    state=="skip_blob" { if($0~/^data [0-9]+$/) { remaining=$2+0; state=(remaining>0)?"skip_data":"normal" } else { print; state="normal" }; next }
+    state=="normal" { if($0=="blob") { pending_blob=$0; state="pending_mark"; next }; if($0~/^M [0-9]+ :[0-9]+ /) { path=$0; sub(/^M [0-9]+ :[0-9]+ /,"",path); if(path in excluded) next }; if($0~/^D /) { path=$0; sub(/^D /,"",path); if(path in excluded) next }; if($0=="") { if(prev_blank) next; prev_blank=1 } else prev_blank=0; print; next }
+    state=="pending_mark" { if($0~/^mark :[0-9]+$/) { mark=$2; if(mark in strip) { state="skip_blob"; pending_blob=""; next } }; print pending_blob; print; pending_blob=""; state="normal"; prev_blank=0; next }
+    ' "$TMPSTREAM" | { IFS= read -r first_line || exit 0; [ -n "$first_line" ] && printf '%s\n' "$first_line"; cat; }
+}
+
+git fast-export --import-marks="$SOURCE_MARKS" --export-marks="$SOURCE_MARKS" -1 HEAD 2>/dev/null \
+    | _filter_stream \
+    | git -C "$INTERMEDIARY" fast-import --import-marks="$IMPORT_MARKS" --export-marks="$IMPORT_MARKS" --quiet 2>/dev/null \
+    && EXPORT_RC=0 || EXPORT_RC=$?
+HOOKBODY2
+        else
+            cat >> "$hook_path" << 'HOOKBODY_NOFILTER'
+git fast-export --import-marks="$SOURCE_MARKS" --export-marks="$SOURCE_MARKS" -1 HEAD 2>/dev/null \
+    | git -C "$INTERMEDIARY" fast-import --import-marks="$IMPORT_MARKS" --export-marks="$IMPORT_MARKS" --quiet 2>/dev/null \
+    && EXPORT_RC=0 || EXPORT_RC=$?
+HOOKBODY_NOFILTER
+        fi
+
+        # Add the tail of the hook (common to both paths)
+        cat >> "$hook_path" << 'HOOKTAIL'
+
+if [ "$EXPORT_RC" -eq 0 ]; then
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import ok"
+
+    # Update commit mapping from marks
+    if [ -f "$SOURCE_MARKS" ] && [ -f "$IMPORT_MARKS" ]; then
+        awk 'NR==FNR { source[$1]=$2; next } { if ($1 in source) print $2, source[$1] }' \
+            "$SOURCE_MARKS" "$IMPORT_MARKS" >> "$COMMIT_MAP"
     fi
 else
-    echo -e "\033[1;31mclaude-cage:\033[0m Only excluded files in this commit, nothin' to sync."
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "empty patch (excluded-only), skipped"
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=$EXPORT_RC"
+    echo -e "\033[1;31mclaude-cage:\033[0m Fast-import failed for commit $COMMIT_SHORT"
 fi
-
-# Update state file with current commit (even if only excluded files)
-# This tracks that we've processed this commit
-git rev-parse HEAD > "\$STATE_FILE"
-_sync_log "\$COMMIT_SHORT" ">>intermediary" "state updated to \$COMMIT_SHORT"
-EOF
+HOOKTAIL
         chmod +x "$hook_path"
     fi
 

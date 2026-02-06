@@ -386,10 +386,10 @@ INFO_EOF
 }
 
 # Run a command inside a Docker container
-# Usage: run_in_docker <branch_intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
+# Usage: run_in_docker <intermediary_root> <branch_work_root> <intermediary_dir> <work_dir> <pipe_path> <project_path> [command...]
 #
 # Arguments:
-#   branch_intermediary_root - Root of branch intermediary tree (for mounting at /run)
+#   intermediary_root - Root of branch intermediary tree (for mounting at /run)
 #   branch_work_root         - Root of branch work tree (for mounting all same-branch projects)
 #   intermediary_dir         - The specific project's intermediary (for isolated mode)
 #   work_dir                 - The specific project's work directory (for isolated mode)
@@ -397,7 +397,7 @@ INFO_EOF
 #   project_path             - Original project path (working directory, isolated mount point)
 #   [command...]             - Optional command to run (defaults to interactive shell)
 #
-# In non-isolated mode: mounts branch_work_root dirs at /, branch_intermediary_root at /run,
+# In non-isolated mode: mounts branch_work_root dirs at /, intermediary_root at /run,
 # making all same-branch projects and intermediaries visible at original paths.
 #
 # In isolated mode: only work_dir and intermediary_dir are mounted.
@@ -407,7 +407,7 @@ INFO_EOF
 #   - iptables rules are configured
 #   - Drops to unprivileged user before running shell
 run_in_docker() {
-    local branch_intermediary_root="$1"
+    local intermediary_root="$1"
     local branch_work_root="$2"
     local intermediary_dir="$3"
     local work_dir="$4"
@@ -476,7 +476,7 @@ run_in_docker() {
     # Always start as root to install packages, then drop privileges
 
     # Enumerate projects and build mount specs using shared functions
-    enumerate_projects "$branch_work_root" "$branch_intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
+    enumerate_projects "$branch_work_root" "$intermediary_root" "$work_dir" "$intermediary_dir" "$project_path"
     build_mount_specs "$intermediary_dir" "$work_dir" "$project_path" "$pipe_path" "$user_home"
 
     # Apply mounts from shared CAGE_MOUNTS array

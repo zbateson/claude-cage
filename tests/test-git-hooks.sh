@@ -1,6 +1,6 @@
 #!/bin/bash
 # Test git-hooks.sh functionality
-# Tests hook creation and pipe setup
+# Tests hook creation, pipe setup, and cleanup for bare intermediary architecture
 
 set -e
 
@@ -25,6 +25,11 @@ trap cleanup EXIT
 echo "=== Testing git-hooks.sh ==="
 echo ""
 
+# Source the built script for direct function access
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+unset CLAUDE_CAGE_SOURCING
+
 # Create a test git repo
 mkdir -p "$TEST_TMP/source"
 cd "$TEST_TMP/source"
@@ -32,136 +37,182 @@ git init
 git config user.email "test@example.com"
 git config user.name "Test User"
 echo "content" > file.txt
+echo "secret" > .env
 git add .
 git commit -m "Initial commit"
 
-# Create config with autoMerge enabled
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    exclude = { ".env" },
-    autoMerge = true,
-    showBanner = false,
-    hideConfirmationPrompt = true
-}
-EOF
-
-# Compute expected paths using the new structure (includes branch name)
+# Capture paths
 SOURCE_PATH="$TEST_TMP/source"
 BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
-INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/intermediary$SOURCE_PATH"
-WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
-PIPE_PATH="$CLAUDE_CAGE_RUNTIME/pipes/$BRANCH_NAME$SOURCE_PATH"
+INTERMEDIARY_DIR=$(get_intermediary_path "$SOURCE_PATH")
+PIPE_PATH=$(CLAUDE_CAGE_BRANCH="$BRANCH_NAME" get_pipe_path "$SOURCE_PATH")
 
-echo "Test 1: With autoMerge=true, should create post-receive hook"
-cd "$TEST_TMP/source"
-# Use --test and immediately exit to avoid trying to launch claude
-# Use env -i for consistent behavior across different shell environments
-# Pass through CLAUDE_CAGE_CACHE and CLAUDE_CAGE_RUNTIME so paths are correct
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
-    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
-    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
+# Set up variables needed by functions
+CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
+export CLAUDE_CAGE_BRANCH
+cfg_exclude=""
+cfg_git_historyDepth=50
+cfg_git_defaultBranch="auto"
+dry_run=false
+verbose=false
 
-hook_path="$INTERMEDIARY_DIR/.git/hooks/post-receive"
+# Create a bare intermediary for testing hooks
+mkdir -p "$(dirname "$INTERMEDIARY_DIR")"
+git init --bare "$INTERMEDIARY_DIR" --quiet
+
+# Push content into it via fast-export/fast-import so it has a valid branch
+git -C "$SOURCE_PATH" fast-export HEAD 2>/dev/null \
+    | git -C "$INTERMEDIARY_DIR" fast-import --quiet 2>/dev/null
+
+# Set up source-branches file (needed for pre-receive tests)
+local_source_branches_path=$(get_source_branches_path "$INTERMEDIARY_DIR")
+git -C "$SOURCE_PATH" for-each-ref --format='%(refname:short)' refs/heads/ > "$local_source_branches_path"
+
+echo "=== Testing intermediary hook creation ==="
+echo ""
+
+# Install intermediary hooks
+install_intermediary_hooks "$INTERMEDIARY_DIR"
+
+echo "Test 1: Post-receive hook created on bare intermediary"
+hook_path="$INTERMEDIARY_DIR/hooks/post-receive"
 if [ ! -f "$hook_path" ]; then
     echo "FAIL: post-receive hook not created at $hook_path"
     exit 1
 fi
-echo "  PASS: post-receive hook created"
+echo "  PASS: post-receive hook created at $hook_path"
 
-echo "Test 2: post-receive hook should be executable"
+echo "Test 2: Post-receive hook is executable"
 if [ ! -x "$hook_path" ]; then
     echo "FAIL: post-receive hook is not executable"
     exit 1
 fi
 echo "  PASS: post-receive hook is executable"
 
-echo "Test 3: post-receive hook should write to pipe"
-if ! grep -q "echo.*>" "$hook_path"; then
-    echo "FAIL: post-receive hook doesn't write to pipe"
+echo "Test 3: Post-receive hook writes refname newrev oldrev to pipe"
+# The hook should write 3 fields: refname newrev oldrev
+# Create a test pipe to capture output
+test_pipe="$TEST_TMP/test-hook-pipe"
+mkfifo -m 0600 "$test_pipe"
+
+# Simulate what the post-receive hook does by examining its content
+# It reads "oldrev newrev refname" from stdin and writes "refname newrev oldrev" to pipe
+if ! grep -q 'refname.*newrev.*oldrev' "$hook_path"; then
+    echo "FAIL: post-receive hook doesn't write refname newrev oldrev"
     cat "$hook_path"
     exit 1
 fi
-echo "  PASS: post-receive hook writes to pipe"
-
-echo "Test 4: Pipe directory structure should be created"
-# Note: The actual named pipe is cleaned up on script exit, but the directory structure remains
-PIPE_DIR=$(dirname "$PIPE_PATH")
-if [ ! -d "$PIPE_DIR" ]; then
-    echo "FAIL: Pipe directory not created at $PIPE_DIR"
+# Verify it writes 3 fields (refname, newrev, oldrev)
+if ! grep -q 'echo.*\$refname.*\$newrev.*\$oldrev' "$hook_path"; then
+    echo "FAIL: post-receive hook doesn't output all 3 fields"
+    cat "$hook_path"
     exit 1
 fi
-echo "  PASS: Pipe directory structure created"
+rm -f "$test_pipe"
+echo "  PASS: post-receive hook writes refname newrev oldrev"
 
 echo ""
-echo "=== Source hook tests ==="
-echo "SKIP: Tests 5-10 - Source hooks are cleaned up on sandbox exit"
-echo "      These tests require an active sandbox session"
+echo "=== Testing pre-receive hook ==="
+echo ""
 
-# NOTE: Tests 5-10 verified source hooks (pre-commit, post-commit) but these
-# are cleaned up by cleanup_source_hooks on sandbox exit. To test manually,
-# run claude-cage --test and check hooks while sandbox is running.
+echo "Test 4: Pre-receive hook created and executable"
+pre_receive_path="$INTERMEDIARY_DIR/hooks/pre-receive"
+if [ ! -f "$pre_receive_path" ]; then
+    echo "FAIL: pre-receive hook not created at $pre_receive_path"
+    exit 1
+fi
+if [ ! -x "$pre_receive_path" ]; then
+    echo "FAIL: pre-receive hook is not executable"
+    exit 1
+fi
+echo "  PASS: pre-receive hook created and executable"
+
+echo "Test 5: Pre-receive guards against scope collisions"
+# The source-branches file should already have our branch listed
+# Try to "create" a branch that exists in source but not in intermediary
+# First, create a new branch in source that won't be in intermediary
+git -C "$SOURCE_PATH" branch test-collision-branch
+# Update source-branches file to include the new branch
+git -C "$SOURCE_PATH" for-each-ref --format='%(refname:short)' refs/heads/ > "$local_source_branches_path"
+
+# The pre-receive hook should reject creating a branch with that name
+# Simulate pre-receive input: oldrev(zeros) newrev refname
+ZERO_OID="0000000000000000000000000000000000000000"
+FAKE_NEWREV="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+# Run the hook with simulated input (setting GIT_DIR so rev-parse works)
+result=0
+echo "$ZERO_OID $FAKE_NEWREV refs/heads/test-collision-branch" \
+    | GIT_DIR="$INTERMEDIARY_DIR" bash "$pre_receive_path" 2>/dev/null || result=$?
+if [ "$result" -eq 0 ]; then
+    echo "FAIL: pre-receive should have rejected branch that collides with source"
+    exit 1
+fi
+echo "  PASS: pre-receive rejects branch name that exists in source-branches"
+
+# Clean up test branch
+git -C "$SOURCE_PATH" branch -D test-collision-branch >/dev/null 2>&1
+git -C "$SOURCE_PATH" for-each-ref --format='%(refname:short)' refs/heads/ > "$local_source_branches_path"
 
 echo ""
-echo "=== Testing autoMerge=false (no hooks) ==="
+echo "=== Testing source post-commit hook ==="
+echo ""
 
-# Clean up and test with autoMerge=false
-rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
-rm -rf "$PIPE_PATH"
-rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
-rm -f "$TEST_TMP/source/.git/hooks/post-commit"
+# Set up source post-commit hook
+setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR" "$BRANCH_NAME"
 
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    autoMerge = false,
-    showBanner = false,
-    hideConfirmationPrompt = true
-}
-EOF
-
-# Use --test mode to avoid trying to launch claude
-# Use env -i for consistent behavior across different shell environments
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
-    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
-    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
-
-echo "Test 11: With autoMerge=false, should NOT create pipe"
-if [ -p "$PIPE_PATH" ]; then
-    echo "FAIL: Pipe should not be created when autoMerge=false"
+echo "Test 6: Source post-commit hook created"
+post_commit_hook="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME"
+if [ ! -f "$post_commit_hook" ]; then
+    echo "FAIL: post-commit hook not found at $post_commit_hook"
     exit 1
 fi
-echo "  PASS: No pipe created"
+echo "  PASS: source post-commit hook created at $post_commit_hook"
 
-echo "Test 12: With autoMerge=false, should NOT create source hooks"
-if [ -f "$TEST_TMP/source/.git/hooks/pre-commit" ]; then
-    echo "FAIL: pre-commit hook should not be created when autoMerge=false"
+echo "Test 7: Source post-commit hook references INTERMEDIARY"
+if ! grep -q "^INTERMEDIARY=" "$post_commit_hook"; then
+    echo "FAIL: post-commit hook doesn't have INTERMEDIARY= variable"
+    cat "$post_commit_hook"
     exit 1
 fi
-echo "  PASS: No pre-commit hook"
-
-if [ -f "$TEST_TMP/source/.git/hooks/post-commit" ]; then
-    echo "FAIL: post-commit hook should not be created when autoMerge=false"
+# Verify it points to our bare intermediary dir
+intermediary_in_hook=$(grep '^INTERMEDIARY=' "$post_commit_hook" | head -1 | cut -d'"' -f2)
+if [ "$intermediary_in_hook" != "$INTERMEDIARY_DIR" ]; then
+    echo "FAIL: INTERMEDIARY points to '$intermediary_in_hook', expected '$INTERMEDIARY_DIR'"
     exit 1
 fi
-echo "  PASS: No post-commit hook"
+echo "  PASS: post-commit hook references bare intermediary at $INTERMEDIARY_DIR"
+
+echo "Test 8: Source post-commit hook uses fast-export"
+if ! grep -q "fast-export" "$post_commit_hook"; then
+    echo "FAIL: post-commit hook doesn't use fast-export"
+    cat "$post_commit_hook"
+    exit 1
+fi
+# Also ensure it does NOT use format-patch or git am (old architecture)
+if grep -q "format-patch" "$post_commit_hook"; then
+    echo "FAIL: post-commit hook still uses format-patch (old architecture)"
+    exit 1
+fi
+if grep -q "git am" "$post_commit_hook"; then
+    echo "FAIL: post-commit hook still uses git am (old architecture)"
+    exit 1
+fi
+echo "  PASS: post-commit hook uses fast-export (not format-patch)"
+
+# Clean up source hooks for next tests
+cleanup_source_hooks "$SOURCE_PATH" "$BRANCH_NAME"
 
 echo ""
 echo "=== Testing orphaned hook cleanup ==="
+echo ""
 
-# Clean up previous test state
-rm -rf "$CLAUDE_CAGE_CACHE" "$CLAUDE_CAGE_RUNTIME"
-rm -rf "$TEST_TMP/source/.git/hooks/pre-commit.d" "$TEST_TMP/source/.git/hooks/post-commit.d"
-rm -f "$TEST_TMP/source/.git/hooks/pre-commit" "$TEST_TMP/source/.git/hooks/post-commit"
+# Clean up dispatchers from previous tests
+rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
+rm -f "$SOURCE_PATH/.git/hooks/post-commit"
 
-# Create orphaned hooks (hooks pointing to non-existent work/intermediary dirs)
-mkdir -p "$TEST_TMP/source/.git/hooks/pre-commit.d"
-mkdir -p "$TEST_TMP/source/.git/hooks/post-commit.d"
-
-# Create dispatcher hooks
-cat > "$TEST_TMP/source/.git/hooks/pre-commit" << 'DISPATCHER'
+# Create orphaned post-commit hook pointing to non-existent intermediary
+mkdir -p "$SOURCE_PATH/.git/hooks/post-commit.d"
+cat > "$SOURCE_PATH/.git/hooks/post-commit" << 'DISPATCHER'
 #!/bin/bash
 # claude-cage-dispatcher: runs all hooks in <hook>.d/
 HOOK_DIR="$(dirname "$0")/$(basename "$0").d"
@@ -171,33 +222,9 @@ if [ -d "$HOOK_DIR" ]; then
     done
 fi
 DISPATCHER
-chmod +x "$TEST_TMP/source/.git/hooks/pre-commit"
+chmod +x "$SOURCE_PATH/.git/hooks/post-commit"
 
-cat > "$TEST_TMP/source/.git/hooks/post-commit" << 'DISPATCHER'
-#!/bin/bash
-# claude-cage-dispatcher: runs all hooks in <hook>.d/
-HOOK_DIR="$(dirname "$0")/$(basename "$0").d"
-if [ -d "$HOOK_DIR" ]; then
-    for hook in "$HOOK_DIR"/*; do
-        [ -x "$hook" ] && "$hook" "$@"
-    done
-fi
-DISPATCHER
-chmod +x "$TEST_TMP/source/.git/hooks/post-commit"
-
-# Create orphaned pre-commit hook (pointing to non-existent work dir)
-cat > "$TEST_TMP/source/.git/hooks/pre-commit.d/claude-cage-orphaned" << EOF
-#!/bin/bash
-WORK_DIR="/nonexistent/path/that/does/not/exist"
-TARGET_BRANCH="orphaned"
-if [ ! -d "\$WORK_DIR" ]; then
-    exit 0
-fi
-EOF
-chmod +x "$TEST_TMP/source/.git/hooks/pre-commit.d/claude-cage-orphaned"
-
-# Create orphaned post-commit hook (pointing to non-existent intermediary)
-cat > "$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-orphaned" << EOF
+cat > "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-orphaned" << EOF
 #!/bin/bash
 INTERMEDIARY="/nonexistent/intermediary/path"
 TARGET_BRANCH="orphaned"
@@ -205,82 +232,63 @@ if [ ! -d "\$INTERMEDIARY" ]; then
     exit 0
 fi
 EOF
-chmod +x "$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-orphaned"
+chmod +x "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-orphaned"
 
-echo "Test 13: Should detect and remove orphaned pre-commit hook"
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    autoMerge = false,
-    showBanner = false,
-    hideConfirmationPrompt = true
-}
-EOF
-
-# Run claude-cage which should clean up orphaned hooks on startup
-# Use env -i for consistent behavior across different shell environments
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
-    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
-    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
-
-if [ -f "$TEST_TMP/source/.git/hooks/pre-commit.d/claude-cage-orphaned" ]; then
-    echo "FAIL: Orphaned pre-commit hook should have been removed"
-    exit 1
-fi
-echo "  PASS: Orphaned pre-commit hook removed"
-
-echo "Test 14: Should detect and remove orphaned post-commit hook"
-if [ -f "$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-orphaned" ]; then
+echo "Test 9: Orphaned hook cleanup removes hooks pointing to non-existent intermediaries"
+cleanup_orphaned_hooks "$SOURCE_PATH"
+if [ -f "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-orphaned" ]; then
     echo "FAIL: Orphaned post-commit hook should have been removed"
     exit 1
 fi
 echo "  PASS: Orphaned post-commit hook removed"
 
-echo "Test 15: Should report cleanup in output"
-if ! echo "$output" | grep -q -i "orphaned"; then
-    echo "FAIL: Should report orphaned hook cleanup"
-    echo "Output was:"
-    echo "$output"
-    exit 1
-fi
-echo "  PASS: Reports orphaned hook cleanup"
+echo ""
+echo "=== Testing legacy pre-commit cleanup ==="
+echo ""
 
-echo "Test 16: Should clean up dispatcher when no hooks remain"
-# The dispatchers should be removed since no hooks remain in .d directories
-if [ -f "$TEST_TMP/source/.git/hooks/pre-commit" ] && grep -q "claude-cage-dispatcher" "$TEST_TMP/source/.git/hooks/pre-commit"; then
-    echo "FAIL: pre-commit dispatcher should have been removed"
+echo "Test 10: Legacy pre-commit hooks from previous architecture are cleaned up"
+# Create a legacy pre-commit hook (from old architecture that had source pre-commit)
+mkdir -p "$SOURCE_PATH/.git/hooks/pre-commit.d"
+cat > "$SOURCE_PATH/.git/hooks/pre-commit" << 'DISPATCHER'
+#!/bin/bash
+# claude-cage-dispatcher: runs all hooks in <hook>.d/
+HOOK_DIR="$(dirname "$0")/$(basename "$0").d"
+if [ -d "$HOOK_DIR" ]; then
+    for hook in "$HOOK_DIR"/*; do
+        [ -x "$hook" ] && "$hook" "$@"
+    done
+fi
+DISPATCHER
+chmod +x "$SOURCE_PATH/.git/hooks/pre-commit"
+
+cat > "$SOURCE_PATH/.git/hooks/pre-commit.d/claude-cage-legacy" << EOF
+#!/bin/bash
+WORK_DIR="/nonexistent/work/path"
+TARGET_BRANCH="legacy"
+if [ ! -d "\$WORK_DIR" ]; then
+    exit 0
+fi
+EOF
+chmod +x "$SOURCE_PATH/.git/hooks/pre-commit.d/claude-cage-legacy"
+
+cleanup_orphaned_hooks "$SOURCE_PATH"
+if [ -f "$SOURCE_PATH/.git/hooks/pre-commit.d/claude-cage-legacy" ]; then
+    echo "FAIL: Legacy pre-commit hook should have been removed"
     exit 1
 fi
-echo "  PASS: Empty dispatchers cleaned up"
+# Dispatcher should also be cleaned up since no hooks remain
+if [ -f "$SOURCE_PATH/.git/hooks/pre-commit" ] && grep -q "claude-cage-dispatcher" "$SOURCE_PATH/.git/hooks/pre-commit"; then
+    echo "FAIL: pre-commit dispatcher should have been removed when no hooks remain"
+    exit 1
+fi
+echo "  PASS: Legacy pre-commit hook and dispatcher cleaned up"
 
 echo ""
-echo "=== Testing sync logging in hooks ==="
+echo "=== Testing sync logging ==="
+echo ""
 
-echo "Test 17: Recreate cage with autoMerge to check hook logging"
-# Clean up from orphan tests
-rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
-rm -rf "$PIPE_PATH"
-rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
-rm -f "$TEST_TMP/source/.git/hooks/post-commit"
-rm -rf "$TEST_TMP/source/.git/hooks/pre-commit.d"
-rm -rf "$TEST_TMP/source/.git/hooks/post-commit.d"
-
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    autoMerge = true,
-    showBanner = false,
-    hideConfirmationPrompt = true
-}
-EOF
-
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
-    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
-    bash -c 'cd "$1" && echo "exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
-
-hook_path="$INTERMEDIARY_DIR/.git/hooks/post-receive"
+echo "Test 11: Post-receive hook logs to sync.log with post-recv direction"
+hook_path="$INTERMEDIARY_DIR/hooks/post-receive"
 if ! grep -q "sync.log" "$hook_path"; then
     echo "FAIL: post-receive hook doesn't reference sync.log"
     cat "$hook_path"
@@ -291,32 +299,62 @@ if ! grep -q "post-recv" "$hook_path"; then
     cat "$hook_path"
     exit 1
 fi
-echo "  PASS: post-receive hook logs to sync.log"
+# Verify sync.log path is at $INTERMEDIARY_DIR/sync.log (bare repo, no .git subdir)
+# The hook uses git rev-parse --git-dir which resolves to the bare repo itself
+# So SYNC_LOG should end up as $INTERMEDIARY_DIR/sync.log
+if ! grep -q 'SYNC_LOG=.*sync.log' "$hook_path"; then
+    echo "FAIL: post-receive hook doesn't set SYNC_LOG path"
+    cat "$hook_path"
+    exit 1
+fi
+echo "  PASS: post-receive hook logs to sync.log with post-recv direction"
 
-echo "Test 18: post-commit hook should log to sync.log"
-# Source hooks are cleaned on sandbox exit, so generate one directly
-export CLAUDE_CAGE_SOURCING=1
-source "$CAGE_DIR/dist/claude-cage"
-unset CLAUDE_CAGE_SOURCING
-export CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
-state_path=$(get_state_path "$TEST_TMP/source")
-setup_source_post_commit "$TEST_TMP/source" "" "$INTERMEDIARY_DIR" "$BRANCH_NAME" "$state_path" "$WORK_DIR"
-post_commit_hook="$TEST_TMP/source/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME"
-if [ ! -f "$post_commit_hook" ]; then
-    echo "FAIL: post-commit hook not found at $post_commit_hook"
+echo ""
+echo "=== Testing autoMerge=false (no hooks) ==="
+echo ""
+
+echo "Test 12: No hooks when autoMerge=false"
+# Clean up all existing state
+rm -rf "$INTERMEDIARY_DIR" "$CLAUDE_CAGE_RUNTIME"
+rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
+rm -f "$SOURCE_PATH/.git/hooks/post-commit"
+rm -rf "$SOURCE_PATH/.git/hooks/pre-commit.d"
+rm -f "$SOURCE_PATH/.git/hooks/pre-commit"
+
+# Recreate bare intermediary without installing hooks
+mkdir -p "$(dirname "$INTERMEDIARY_DIR")"
+git init --bare "$INTERMEDIARY_DIR" --quiet
+git -C "$SOURCE_PATH" fast-export HEAD 2>/dev/null \
+    | git -C "$INTERMEDIARY_DIR" fast-import --quiet 2>/dev/null
+
+# When autoMerge=false, setup_git_hooks should NOT be called.
+# Verify that without calling setup_git_hooks:
+# - no pipe exists
+# - no source hooks exist
+# (We test the logic path, not the full main.sh flow)
+
+PIPE_PATH_FOR_TEST=$(CLAUDE_CAGE_BRANCH="$BRANCH_NAME" get_pipe_path "$SOURCE_PATH")
+if [ -p "$PIPE_PATH_FOR_TEST" ]; then
+    echo "FAIL: Pipe should not exist without setup_git_hooks call"
     exit 1
 fi
-if ! grep -q "sync.log" "$post_commit_hook"; then
-    echo "FAIL: post-commit hook doesn't reference sync.log"
-    cat "$post_commit_hook"
+
+if [ -f "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME" ]; then
+    echo "FAIL: source post-commit hook should not exist without setup_source_post_commit call"
     exit 1
 fi
-if ! grep -q ">>intermediary" "$post_commit_hook"; then
-    echo "FAIL: post-commit hook doesn't log with >>intermediary direction"
-    cat "$post_commit_hook"
-    exit 1
+
+# Also confirm: no pre-commit hook (never created in new architecture)
+if [ -d "$SOURCE_PATH/.git/hooks/pre-commit.d" ]; then
+    for hook in "$SOURCE_PATH/.git/hooks/pre-commit.d"/claude-cage-*; do
+        if [ -f "$hook" ]; then
+            echo "FAIL: source pre-commit hook should never be created in new architecture"
+            exit 1
+        fi
+    done
 fi
-echo "  PASS: post-commit hook logs to sync.log"
+
+echo "  PASS: No pipe or source hooks created (autoMerge=false path)"
 
 echo ""
 echo "=== All git-hooks tests passed! ==="

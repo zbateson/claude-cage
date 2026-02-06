@@ -1,8 +1,8 @@
 # ============================================================================
-# Git sync operations (fetch/merge from intermediary)
+# Git sync operations (commit-mapping based sync)
 # ============================================================================
 
-# Append a line to the sync log file (in intermediary's .git/)
+# Append a line to the sync log file (in intermediary)
 # Arguments: $1=log_file, $2=commit_short, $3=direction, $4=message
 sync_log() {
     local log_file="$1"
@@ -15,42 +15,48 @@ sync_log() {
 }
 
 # Check if existing cage is in sync with source
-# Returns: "no_cage" | "in_sync" | "ahead_clean" | "ahead_dirty"
+# Returns: "no_cage" | "in_sync" | "needs_work_dir" | "needs_update"
 # Arguments:
 #   $1 - source_dir: The source project directory
-#   $2 - work_dir: The cage work directory
-#   $3 - state_path: Path to the state file
+#   $2 - intermediary_dir: The bare intermediary directory
+#   $3 - work_dir: The cage work directory
 check_cage_state() {
     local source_dir="$1"
-    local work_dir="$2"
-    local state_path="$3"
+    local intermediary_dir="$2"
+    local work_dir="$3"
 
-    # No existing cage
-    if [ ! -d "$work_dir" ] || [ ! -f "$state_path" ]; then
+    # No intermediary at all
+    if [ ! -d "$intermediary_dir" ]; then
         echo "no_cage"
         return
     fi
 
-    # Get current source HEAD and last synced state
-    local source_head last_state
-    source_head=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
-    last_state=$(cat "$state_path" 2>/dev/null)
-
-    # In sync - source hasn't moved
-    if [ "$source_head" = "$last_state" ]; then
-        echo "in_sync"
+    # Intermediary exists but no work dir
+    if [ ! -d "$work_dir" ]; then
+        echo "needs_work_dir"
         return
     fi
 
-    # Source is ahead - check if work dir is clean
-    local work_status
-    work_status=$(git -C "$work_dir" status --porcelain 2>/dev/null)
-
-    if [ -z "$work_status" ]; then
-        echo "ahead_clean"
-    else
-        echo "ahead_dirty"
+    # Check if current branch exists in intermediary
+    local branch_name="${CLAUDE_CAGE_BRANCH:-}"
+    if [ -n "$branch_name" ] && ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+        echo "needs_update"
+        return
     fi
+
+    # Check if source HEAD is mapped in commit mapping
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
+    if [ -f "$commit_map_path" ] && [ -n "$branch_name" ]; then
+        local source_head
+        source_head=$(git -C "$source_dir" rev-parse "$branch_name" 2>/dev/null)
+        if [ -n "$source_head" ] && grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
+            echo "in_sync"
+            return
+        fi
+    fi
+
+    echo "needs_update"
 }
 
 # Show diff of uncommitted changes in work directory
@@ -75,326 +81,271 @@ show_cage_diff() {
     echo ""
 }
 
-# Apply source commits on top of current cage state
+# Apply source commits to intermediary using fast-export stream filter
+# Used for catching up the intermediary to source state
 # Arguments:
 #   $1 - source_dir: The source project directory
-#   $2 - intermediary_dir: The intermediary directory
-#   $3 - state_path: Path to the state file
-#   $4 - exclude_patterns: Pipe-delimited exclude patterns
-apply_source_commits_to_cage() {
+#   $2 - intermediary_dir: The bare intermediary directory
+#   $3 - exclude_patterns: Pipe-delimited exclude patterns
+apply_source_to_intermediary() {
     local source_dir="$1"
     local intermediary_dir="$2"
-    local state_path="$3"
-    local exclude_patterns="$4"
+    local exclude_patterns="$3"
 
-    local last_state source_head
-    last_state=$(cat "$state_path" 2>/dev/null)
+    local source_marks_path
+    source_marks_path=$(get_source_marks_path "$intermediary_dir")
+    local import_marks_path
+    import_marks_path=$(get_import_marks_path "$intermediary_dir")
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
+    local log_file="$intermediary_dir/sync.log"
+
+    # Get source HEAD
+    local source_head
     source_head=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
+    local source_short="${source_head:0:8}"
 
-    echo "Bringin' the cage up to speed..."
-    echo "  From: ${last_state:0:8}"
-    echo "  To:   ${source_head:0:8}"
-
-    # Build pathspec excludes
-    local pathspec_excludes=""
-    if [ -n "$exclude_patterns" ]; then
-        IFS='|' read -ra patterns <<< "$exclude_patterns"
-        for pattern in "${patterns[@]}"; do
-            pathspec_excludes="$pathspec_excludes :(exclude,glob)$pattern"
-        done
-    fi
-
-    # Get commits between last state and current HEAD
-    local commits
-    commits=$(git -C "$source_dir" rev-list --reverse "$last_state..$source_head" 2>/dev/null)
-
-    if [ -z "$commits" ]; then
-        echo "  No commits to apply."
+    # Check commit mapping: already mapped -> skip (loop prevention)
+    if [ -f "$commit_map_path" ] && grep -q " ${source_head}$" "$commit_map_path"; then
+        sync_log "$log_file" "$source_short" ">>intermediary" "already mapped, skipping (loop prevention)"
         return 0
     fi
 
-    local commit_count=0
-    local failed=false
-
-    for commit in $commits; do
-        commit_count=$((commit_count + 1))
-        local subject
-        subject=$(git -C "$source_dir" log -1 --format=%s "$commit")
-        echo "  [$commit_count] ${subject:0:50}"
-
-        # Generate patch excluding sensitive files
-        local patch
-        if [ -n "$pathspec_excludes" ]; then
-            patch=$(git -C "$source_dir" format-patch -1 "$commit" --stdout -- $pathspec_excludes 2>/dev/null)
-        else
-            patch=$(git -C "$source_dir" format-patch -1 "$commit" --stdout 2>/dev/null)
-        fi
-
-        # Check if patch has changes
-        if echo "$patch" | grep -q "^diff --git"; then
-            if ! (cd "$intermediary_dir" && echo "$patch" | git am --3way 2>/dev/null); then
-                echo "  Failed to apply. You may need to resolve this manually."
-                git -C "$intermediary_dir" am --abort 2>/dev/null || true
-                failed=true
-                break
-            fi
-        fi
-    done
-
-    if [ "$failed" = false ]; then
-        # Update state file
-        echo "$source_head" > "$state_path"
-        echo "  All caught up."
-    fi
-}
-
-# Handle dirty cage with user prompts
-# Sets global DIRTY_CAGE_RESULT to: "continue" | "recreate" | "exit"
-# Arguments:
-#   $1 - source_dir: The source project directory
-#   $2 - work_dir: The cage work directory
-#   $3 - intermediary_dir: The intermediary directory
-#   $4 - state_path: Path to the state file
-#   $5 - exclude_patterns: Pipe-delimited exclude patterns
-DIRTY_CAGE_RESULT=""
-handle_dirty_cage() {
-    local source_dir="$1"
-    local work_dir="$2"
-    local intermediary_dir="$3"
-    local state_path="$4"
-    local exclude_patterns="$5"
-
-    local last_state source_head
-    last_state=$(cat "$state_path" 2>/dev/null)
-    source_head=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
-
-    echo ""
-    echo "Hold up. Your source repo's moved ahead, but there's uncommitted work in the cage."
-    echo ""
-    echo "  Source HEAD:  ${source_head:0:8}"
-    echo "  Cage synced:  ${last_state:0:8}"
-    echo ""
-    echo "Uncommitted changes in cage:"
-    git -C "$work_dir" status --short 2>/dev/null | head -10 | sed 's/^/  /'
-    local change_count
-    change_count=$(git -C "$work_dir" status --short 2>/dev/null | wc -l)
-    if [ "$change_count" -gt 10 ]; then
-        echo "  ... and $((change_count - 10)) more"
+    # Build exclude pattern args for filter
+    local -a filter_patterns=()
+    if [ -n "$exclude_patterns" ]; then
+        IFS='|' read -ra filter_patterns <<< "$exclude_patterns"
     fi
 
-    local read_failed=0
-    while true; do
-        echo ""
-        echo "What do you wanna do?"
-        echo "  1) Apply source commits on top (keep cage changes)"
-        echo "  2) Go in as-is (ignore the mismatch)"
-        echo "  3) Clear it all and start fresh"
-        echo "  4) Show diff of cage changes"
-        echo "  q) Quit"
-        echo ""
-        printf "Choice [1-4/q]: "
+    local subject
+    subject=$(git -C "$source_dir" log -1 --format=%s HEAD 2>/dev/null | head -c 50)
+    sync_log "$log_file" "$source_short" ">>intermediary" "applying: $subject"
 
-        # Try /dev/tty first, fall back to stdin
-        local choice=""
-        if [ -e /dev/tty ]; then
-            read -r choice </dev/tty || read_failed=1
-        else
-            read -r choice || read_failed=1
-        fi
+    # Use fast-export with stream filter for single commit
+    if [ ${#filter_patterns[@]} -gt 0 ]; then
+        git -C "$source_dir" fast-export \
+            --import-marks="$source_marks_path" \
+            --export-marks="$source_marks_path" \
+            -1 HEAD 2>/dev/null \
+            | filter_fast_export_stream "${filter_patterns[@]}" \
+            | git -C "$intermediary_dir" fast-import \
+                --import-marks="$import_marks_path" \
+                --export-marks="$import_marks_path" \
+                --quiet 2>/dev/null
+    else
+        git -C "$source_dir" fast-export \
+            --import-marks="$source_marks_path" \
+            --export-marks="$source_marks_path" \
+            -1 HEAD 2>/dev/null \
+            | git -C "$intermediary_dir" fast-import \
+                --import-marks="$import_marks_path" \
+                --export-marks="$import_marks_path" \
+                --quiet 2>/dev/null
+    fi
 
-        # If read failed or returned empty twice, we're non-interactive
-        if [ "$read_failed" = 1 ] || [ -z "$choice" ]; then
-            echo ""
-            echo "Can't get input (non-interactive). Goin' in as-is."
-            DIRTY_CAGE_RESULT="continue"
-            return
-        fi
+    # Update commit mapping
+    build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "" ""
 
-        case "$choice" in
-            1)
-                apply_source_commits_to_cage "$source_dir" "$intermediary_dir" "$state_path" "$exclude_patterns"
-                DIRTY_CAGE_RESULT="continue"
-                return
-                ;;
-            2)
-                echo "Alright, goin' in as-is. You're flyin' blind on those new commits."
-                DIRTY_CAGE_RESULT="continue"
-                return
-                ;;
-            3)
-                echo "Wipin' the slate clean..."
-                DIRTY_CAGE_RESULT="recreate"
-                return
-                ;;
-            4)
-                show_cage_diff "$work_dir"
-                ;;
-            q|Q)
-                DIRTY_CAGE_RESULT="exit"
-                return
-                ;;
-            *)
-                echo "Pick a number, friend. 1, 2, 3, 4, or q."
-                ;;
-        esac
-    done
+    sync_log "$log_file" "$source_short" ">>intermediary" "fast-import ok"
+    return 0
 }
 
 # Apply changes from intermediary to source using format-patch/git-am
+# Commit-mapping-based: walks commits, skips already-mapped ones
 # Arguments:
 #   $1 - source_dir: The original source directory
-#   $2 - intermediary_dir: The intermediary directory
-#   $3 - refname: The git ref that was pushed (e.g., refs/heads/claude/main)
-#   $4 - target_branch: The branch to apply commits to (branch when cage started)
-#   $5 - state_path: Path to state file for tracking last processed source commit
+#   $2 - intermediary_dir: The bare intermediary directory
+#   $3 - refname: The git ref that was pushed (e.g., refs/heads/main)
+#   $4 - oldrev: The previous rev before the push
 sync_to_source() {
     local source_dir="$1"
     local intermediary_dir="$2"
     local refname="$3"
-    local target_branch="$4"
-    local state_path="$5"
-    local log_file="$intermediary_dir/.git/sync.log"
+    local oldrev="$4"
+    local log_file="$intermediary_dir/sync.log"
 
-    local newrev_short
-    newrev_short=$(git -C "$intermediary_dir" rev-parse --short=8 "$refname" 2>/dev/null)
+    local branch_name="${refname#refs/heads/}"
+    local newrev
+    newrev=$(git -C "$intermediary_dir" rev-parse "$refname" 2>/dev/null)
+    local newrev_short="${newrev:0:8}"
 
-    # Skip the initial commit (it's just a copy of source files)
-    # Detect by checking if the commit has no parent (root commit)
-    local commit_msg
-    commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$refname")
-    if ! git -C "$intermediary_dir" rev-parse "$refname^" >/dev/null 2>&1; then
-        echo "First commit, nothin' to sync yet"
-        sync_log "$log_file" "$newrev_short" ">>source" "skipped initial commit"
-        return 0
-    fi
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
 
-    echo "Bringin' changes home: $refname -> $target_branch"
-
-    # Get the patch
-    local patch
-    patch=$(git -C "$intermediary_dir" format-patch -1 "$refname" --stdout)
-
-    # Skip empty patches (e.g. empty commits, or commits with only non-tracked files)
-    if ! echo "$patch" | grep -q "^diff --git"; then
-        echo "  Empty patch, nothin' to apply."
-        sync_log "$log_file" "$newrev_short" ">>source" "empty patch, skipped (target=$target_branch msg=$(echo "$commit_msg" | head -c 50))"
-        return 0
-    fi
-
-    # Check if user is still on the target branch
-    local current_branch
-    current_branch=$(git -C "$source_dir" branch --show-current)
-
-    sync_log "$log_file" "$newrev_short" ">>source" "target=$target_branch current=$current_branch same_branch=$([ "$current_branch" = "$target_branch" ] && echo yes || echo no) msg=$(echo "$commit_msg" | head -c 50)"
-
-    if [ "$current_branch" = "$target_branch" ]; then
-        # Simple case - user still on same branch, use git am
-        local am_output am_rc
-        am_output=$(echo "$patch" | git -C "$source_dir" am --3way 2>&1) && am_rc=0 || am_rc=$?
-        if [ "$am_rc" -eq 0 ]; then
-            echo "  Got it. Changes are in."
-            sync_log "$log_file" "$newrev_short" ">>source" "git-am ok (same branch)"
-        else
-            echo "  Well now, that didn't go smooth. Might need to merge this one yourself."
-            git -C "$source_dir" am --abort 2>/dev/null || true
-            save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
-            sync_log "$log_file" "$newrev_short" ">>source" "git-am FAILED rc=$am_rc: $(echo "$am_output" | tail -1)"
+    # Determine which commits to process
+    local commits
+    if [ "$oldrev" = "0000000000000000000000000000000000000000" ] || [ -z "$oldrev" ]; then
+        # New branch - find first parent in mapping to determine base
+        local first_parent
+        first_parent=$(git -C "$intermediary_dir" rev-parse "${newrev}^" 2>/dev/null) || true
+        if [ -z "$first_parent" ]; then
+            # Root commit
+            echo "First commit on new branch, nothin' to sync yet"
+            sync_log "$log_file" "$newrev_short" ">>source" "skipped root commit on $branch_name"
+            return 0
         fi
+        commits=$(git -C "$intermediary_dir" rev-list --topo-order --reverse "${first_parent}..${newrev}" 2>/dev/null)
     else
-        # User switched branches - apply to target branch via temp index
-        echo "  You switched branches, applyin' to $target_branch without disturbin' your work..."
-
-        local tmp_index="$source_dir/.git/claude-cage-tmp-index"
-
-        # Get commit metadata from the patch
-        local author_name author_email author_date
-        author_name=$(echo "$patch" | grep "^From:" | head -1 | sed 's/^From: //' | sed 's/ <.*//')
-        author_email=$(echo "$patch" | grep "^From:" | head -1 | sed 's/.*<\(.*\)>/\1/')
-        author_date=$(echo "$patch" | grep "^Date:" | head -1 | sed 's/^Date: //')
-
-        (
-            export GIT_INDEX_FILE="$tmp_index"
-            cd "$source_dir"
-
-            # Load target branch tree into temp index
-            git read-tree "$target_branch"
-
-            # Apply patch to temp index
-            local apply_output apply_rc
-            apply_output=$(echo "$patch" | git apply --cached 2>&1) && apply_rc=0 || apply_rc=$?
-            if [ "$apply_rc" -eq 0 ]; then
-                # Write new tree
-                local tree
-                tree=$(git write-tree)
-
-                # Create commit with preserved metadata via environment variables
-                local parent
-                parent=$(git rev-parse "$target_branch")
-
-                # Set author info from patch
-                export GIT_AUTHOR_NAME="$author_name"
-                export GIT_AUTHOR_EMAIL="$author_email"
-                [ -n "$author_date" ] && export GIT_AUTHOR_DATE="$author_date"
-
-                local new_commit
-                new_commit=$(git commit-tree "$tree" -p "$parent" -m "$commit_msg")
-
-                # Update the branch ref
-                git update-ref "refs/heads/$target_branch" "$new_commit"
-
-                # Update state file (hooks don't fire for update-ref)
-                if [ -n "$state_path" ]; then
-                    echo "$new_commit" > "$state_path"
-                fi
-
-                echo "  Got it. Changes are on $target_branch."
-                sync_log "$log_file" "$newrev_short" ">>source" "applied via temp-index to $target_branch new_commit=${new_commit:0:8}"
-            else
-                echo "  Patch didn't apply clean to $target_branch."
-                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$target_branch" "$commit_msg"
-                sync_log "$log_file" "$newrev_short" ">>source" "git-apply FAILED rc=$apply_rc on $target_branch: $(echo "$apply_output" | tail -1)"
-            fi
-        )
-
-        # Clean up temp index
-        rm -f "$tmp_index"
+        commits=$(git -C "$intermediary_dir" rev-list --topo-order --reverse "${oldrev}..${newrev}" 2>/dev/null)
     fi
+
+    if [ -z "$commits" ]; then
+        echo "No new commits to sync"
+        sync_log "$log_file" "$newrev_short" ">>source" "no commits in range"
+        return 0
+    fi
+
+    echo "Bringin' changes home: $branch_name"
+
+    local commit
+    for commit in $commits; do
+        local commit_short="${commit:0:8}"
+        local commit_msg
+        commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$commit" 2>/dev/null)
+
+        # Check if already mapped (skip)
+        if [ -f "$commit_map_path" ] && grep -q "^${commit} " "$commit_map_path" 2>/dev/null; then
+            sync_log "$log_file" "$commit_short" ">>source" "already mapped, skip"
+            continue
+        fi
+
+        # Check if this is the initial import commit (has no meaningful source equivalent)
+        if ! git -C "$intermediary_dir" rev-parse "${commit}^" >/dev/null 2>&1; then
+            sync_log "$log_file" "$commit_short" ">>source" "skipped initial commit"
+            continue
+        fi
+
+        echo "  ${commit_short}: ${commit_msg:0:50}"
+
+        # Generate patch
+        local patch
+        patch=$(git -C "$intermediary_dir" format-patch -1 "$commit" --stdout 2>/dev/null)
+
+        # Skip empty patches
+        if ! echo "$patch" | grep -q "^diff --git"; then
+            echo "  Empty patch, skipped."
+            sync_log "$log_file" "$commit_short" ">>source" "empty patch, skipped"
+            # Map to 0 (no source equivalent)
+            echo "$commit 0" >> "$commit_map_path"
+            continue
+        fi
+
+        # Check if source has this branch
+        local source_has_branch=true
+        if ! git -C "$source_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+            source_has_branch=false
+            # New branch - find parent in mapping
+            local parent_hash
+            parent_hash=$(git -C "$intermediary_dir" rev-parse "${commit}^" 2>/dev/null)
+            local source_parent=""
+            if [ -f "$commit_map_path" ]; then
+                source_parent=$(awk -v ih="$parent_hash" '$1 == ih { print $2; exit }' "$commit_map_path")
+            fi
+            if [ -n "$source_parent" ] && [ "$source_parent" != "0" ]; then
+                git -C "$source_dir" checkout -b "$branch_name" "$source_parent" 2>/dev/null
+                source_has_branch=true
+                sync_log "$log_file" "$commit_short" ">>source" "created branch $branch_name from $source_parent"
+            fi
+        fi
+
+        # Apply patch to source
+        local current_branch
+        current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)
+
+        sync_log "$log_file" "$commit_short" ">>source" "target=$branch_name current=$current_branch msg=$(echo "$commit_msg" | head -c 50)"
+
+        if [ "$current_branch" = "$branch_name" ]; then
+            # Simple case: user on same branch
+            local am_output am_rc
+            am_output=$(echo "$patch" | git -C "$source_dir" am --3way 2>&1) && am_rc=0 || am_rc=$?
+            if [ "$am_rc" -eq 0 ]; then
+                local new_source_hash
+                new_source_hash=$(git -C "$source_dir" rev-parse HEAD)
+                echo "$commit $new_source_hash" >> "$commit_map_path"
+                echo "  Got it. Changes are in."
+                sync_log "$log_file" "$commit_short" ">>source" "git-am ok (same branch) new=${new_source_hash:0:8}"
+            else
+                echo "  Well now, that didn't go smooth."
+                git -C "$source_dir" am --abort 2>/dev/null || true
+                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg"
+                sync_log "$log_file" "$commit_short" ">>source" "git-am FAILED rc=$am_rc: $(echo "$am_output" | tail -1)"
+            fi
+        else
+            # User switched branches - apply via temp index
+            echo "  You switched branches, applyin' to $branch_name without disturbin' your work..."
+
+            local tmp_index="$source_dir/.git/claude-cage-tmp-index"
+
+            local author_name author_email author_date
+            author_name=$(echo "$patch" | grep "^From:" | head -1 | sed 's/^From: //' | sed 's/ <.*//')
+            author_email=$(echo "$patch" | grep "^From:" | head -1 | sed 's/.*<\(.*\)>/\1/')
+            author_date=$(echo "$patch" | grep "^Date:" | head -1 | sed 's/^Date: //')
+
+            (
+                export GIT_INDEX_FILE="$tmp_index"
+                cd "$source_dir"
+
+                git read-tree "$branch_name"
+
+                local apply_output apply_rc
+                apply_output=$(echo "$patch" | git apply --cached 2>&1) && apply_rc=0 || apply_rc=$?
+                if [ "$apply_rc" -eq 0 ]; then
+                    local tree
+                    tree=$(git write-tree)
+
+                    local parent
+                    parent=$(git rev-parse "$branch_name")
+
+                    export GIT_AUTHOR_NAME="$author_name"
+                    export GIT_AUTHOR_EMAIL="$author_email"
+                    [ -n "$author_date" ] && export GIT_AUTHOR_DATE="$author_date"
+
+                    local new_commit
+                    new_commit=$(git commit-tree "$tree" -p "$parent" -m "$commit_msg")
+
+                    git update-ref "refs/heads/$branch_name" "$new_commit"
+
+                    echo "$commit $new_commit" >> "$commit_map_path"
+                    echo "  Got it. Changes are on $branch_name."
+                    sync_log "$log_file" "$commit_short" ">>source" "applied via temp-index to $branch_name new_commit=${new_commit:0:8}"
+                else
+                    echo "  Patch didn't apply clean to $branch_name."
+                    save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg"
+                    sync_log "$log_file" "$commit_short" ">>source" "git-apply FAILED rc=$apply_rc on $branch_name: $(echo "$apply_output" | tail -1)"
+                fi
+            )
+
+            rm -f "$tmp_index"
+        fi
+    done
 }
 
 # Start the pipe listener in background
 # Arguments:
 #   $1 - source_dir: The original source directory
-#   $2 - intermediary_dir: The intermediary directory
+#   $2 - intermediary_dir: The bare intermediary directory
 #   $3 - pipe_path: The pipe file path
-#   $4 - target_branch: The branch to apply commits to
-#   $5 - state_path: Path to state file for tracking last processed source commit
-#   $6 - verbose: "true" to show sync output, anything else to suppress
+#   $4 - verbose: "true" to show sync output, anything else to suppress
 # Sets: PIPE_LISTENER_PID
 start_pipe_listener() {
     local source_dir="$1"
     local intermediary_dir="$2"
     local pipe_path="$3"
-    local target_branch="$4"
-    local state_path="$5"
-    local listener_verbose="${6:-false}"
+    local listener_verbose="${4:-false}"
 
     # Run listener in background
-    # Open pipe read-write to avoid blocking (there may be no writer yet)
-    # Note: Variables are captured at fork time, including target_branch
     (
         exec 3<>"$pipe_path"
-        while read -r refname newrev <&3; do
+        while read -r refname newrev oldrev <&3; do
             if [ -n "$refname" ]; then
-                sync_log "$intermediary_dir/.git/sync.log" "${newrev:0:8}" "pipe-recv" "refname=$refname newrev=${newrev:0:8} target=$target_branch"
+                sync_log "$intermediary_dir/sync.log" "${newrev:0:8}" "pipe-recv" "refname=$refname newrev=${newrev:0:8} oldrev=${oldrev:0:8}"
                 if [ "$debug" = true ]; then
-                    echo -e "${_yellow}[pipe-listener] received: refname=$refname newrev=$newrev target=$target_branch$(date +" at %H:%M:%S")${_reset}" >&2
+                    echo -e "${_yellow}[pipe-listener] received: refname=$refname newrev=$newrev oldrev=$oldrev$(date +" at %H:%M:%S")${_reset}" >&2
                 fi
-                if [ -z "$target_branch" ]; then
-                    echo "claude-cage: No target branch - can't sync. Was source repo on a branch when cage started?" >&2
-                elif [ "$listener_verbose" = true ]; then
-                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch" "$state_path"
+                if [ "$listener_verbose" = true ]; then
+                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$oldrev"
                 else
-                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$target_branch" "$state_path" >/dev/null 2>&1
+                    sync_to_source "$source_dir" "$intermediary_dir" "$refname" "$oldrev" >/dev/null 2>&1
                 fi
             fi
         done
@@ -419,15 +370,15 @@ stop_pipe_listener() {
 manual_git_merge() {
     local source_dir="$1"
 
-    # Need to set branch for get_cage_path
+    # Need to set branch for path helpers
     CLAUDE_CAGE_BRANCH=$(get_source_branch "$source_dir")
     export CLAUDE_CAGE_BRANCH
 
     local intermediary_dir
-    intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
+    intermediary_dir=$(get_intermediary_path "$source_dir")
 
     if [ ! -d "$intermediary_dir" ]; then
-        echo "Nothin' to merge on branch '$CLAUDE_CAGE_BRANCH'."
+        echo "Nothin' to merge. No intermediary found."
         echo "Were you on a different branch when you started the cage?"
         exit 1
     fi

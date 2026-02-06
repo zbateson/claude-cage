@@ -164,9 +164,6 @@ if [ "$clean_all_mode" = true ]; then
         clean_branch_cache "$cfg_source" "$branch"
     done <<< "$cached_branches"
 
-    # Clean up any stale state files
-    clean_stale_state_files "$cfg_source"
-
     echo ""
     echo "All clean."
     exit 0
@@ -331,9 +328,8 @@ PIPE_LISTENER_PID=""
 intermediary_dir=""
 work_dir=""
 branch_work_root=""
-branch_intermediary_root=""
+intermediary_root=""
 pipe_path=""
-state_path=""
 project_path="$cfg_source"
 
 if [ "$direct_mount_mode" = true ]; then
@@ -374,12 +370,11 @@ else
     fi
 
     # Paths for bwrap/docker
-    intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
-    work_dir=$(get_cage_path "$cfg_source" "work")
+    intermediary_dir=$(get_intermediary_path "$cfg_source")
+    work_dir=$(get_work_path "$cfg_source")
     branch_work_root=$(get_branch_work_root)
-    branch_intermediary_root=$(get_branch_intermediary_root)
+    intermediary_root=$(get_intermediary_root)
     pipe_path=$(get_pipe_path "$cfg_source")
-    state_path=$(get_state_path "$cfg_source")
 
     # Check for other active sessions before doing anything destructive
     other_session_active=false
@@ -391,35 +386,26 @@ else
     register_session "$cfg_source" "$source_branch"
 
     # Check if existing cage is in sync with source
-    cage_state=$(check_cage_state "$cfg_source" "$work_dir" "$state_path")
+    cage_state=$(check_cage_state "$cfg_source" "$intermediary_dir" "$work_dir")
 
     case "$cage_state" in
         "in_sync")
             echo "Cage is in sync with source. Pickin' up where we left off."
             ;;
-        "ahead_clean")
+        "needs_work_dir")
             if [ "$other_session_active" = true ]; then
-                echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
+                echo "Another session's runnin'. Joinin' the existing cage."
             else
-                echo "Source moved ahead but cage is clean. Startin' fresh."
+                echo "Intermediary exists but work dir is gone. Rebuildin' workspace..."
                 create_intermediary_clone "$cfg_source"
             fi
             ;;
-        "ahead_dirty")
+        "needs_update")
             if [ "$other_session_active" = true ]; then
                 echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
             else
-                handle_dirty_cage "$cfg_source" "$work_dir" "$intermediary_dir" "$state_path" "$cfg_exclude"
-                case "$DIRTY_CAGE_RESULT" in
-                    "recreate")
-                        create_intermediary_clone "$cfg_source"
-                        ;;
-                    "exit")
-                        echo "Alright, we'll sort this out later."
-                        exit 0
-                        ;;
-                    # "continue" - just proceed with existing cage
-                esac
+                echo "Source moved ahead. Catchin' up..."
+                create_intermediary_clone "$cfg_source"
             fi
             ;;
         "no_cage"|*)
@@ -436,8 +422,7 @@ else
     # Set up git hooks and communication pipe (if autoMerge enabled)
     if [ "$cfg_autoMerge" = "true" ]; then
         setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
-        setup_source_pre_commit "$cfg_source" "$cfg_exclude" "$source_branch"
-        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch" "$state_path" "$work_dir"
+        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch"
     fi
 
     # Set up work repo pre-commit hook to block force-added ignored files
@@ -463,13 +448,13 @@ echo ""
 echo "Inside sandbox:"
 echo "  $project_path              (working dir)"
 if [ "$direct_mount_mode" = false ]; then
-    echo "  /run$project_path          (git origin)"
+    echo "  /run$intermediary_dir      (git origin)"
 fi
 echo ""
 
 # Start pipe listener if autoMerge enabled (git mode only)
 if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
-    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch" "$state_path" "$verbose"
+    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$verbose"
 fi
 
 # Set up cleanup handler for signals
@@ -541,13 +526,13 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
 fi
 
 if [ "$cfg_mode" = "docker" ]; then
-    run_in_docker "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    run_in_docker "$intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
 else
     # Use network-isolated bwrap if network filtering is enabled
     if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
-        run_in_bwrap_with_network "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap_with_network "$intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
     else
-        run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap "$intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
     fi
 fi
 

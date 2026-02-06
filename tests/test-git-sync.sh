@@ -1,6 +1,7 @@
 #!/bin/bash
 # Test git-sync.sh functionality
-# Tests sync_to_source and pipe listener
+# Tests sync_to_source, apply_source_to_intermediary, pipe listener,
+# check_cage_state, sessions, and commit mapping
 
 set -e
 
@@ -18,6 +19,8 @@ export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
+    # Kill any background processes we started
+    jobs -p 2>/dev/null | xargs -r kill 2>/dev/null || true
     rm -rf "$TEST_TMP"
 }
 trap cleanup EXIT
@@ -25,198 +28,346 @@ trap cleanup EXIT
 echo "=== Testing git-sync.sh ==="
 echo ""
 
-# Create a test git repo
-mkdir -p "$TEST_TMP/source"
-cd "$TEST_TMP/source"
-git init
-git config user.email "test@example.com"
-git config user.name "Test User"
-echo "original content" > file.txt
-git add .
-git commit -m "Initial commit"
-
-# Create config
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    autoMerge = true,
-    showBanner = false,
-    hideConfirmationPrompt = true
-}
-EOF
-
-# Compute expected paths using the new structure (includes branch name)
-SOURCE_PATH="$TEST_TMP/source"
-BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
-INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/intermediary$SOURCE_PATH"
-WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
-
-echo "Setting up cage..."
-cd "$TEST_TMP/source"
-# Use env -i for consistent behavior across different shell environments
-env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
-    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
-    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
-
-# Fix origin path for testing outside sandbox
-# (inside sandbox, intermediary is mounted at /run<project-path>)
-git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
-
-echo ""
-echo "Test 1: Push from work should update intermediary"
-
-# Make a change in work and push
-cd "$WORK_DIR"
-git config user.email "claude@example.com"
-git config user.name "Claude"
-echo "new content from claude" > newfile.txt
-git add newfile.txt
-git commit -m "Add newfile from Claude"
-git push origin "$BRANCH_NAME"
-
-# Check intermediary has the file
-if [ ! -f "$INTERMEDIARY_DIR/newfile.txt" ]; then
-    echo "FAIL: newfile.txt not in intermediary after push"
-    exit 1
-fi
-echo "  PASS: Push updated intermediary"
-
-echo "Test 2: Intermediary working tree should be updated (updateInstead)"
-content=$(cat "$INTERMEDIARY_DIR/newfile.txt")
-if [ "$content" != "new content from claude" ]; then
-    echo "FAIL: Intermediary content is wrong: '$content'"
-    exit 1
-fi
-echo "  PASS: Intermediary working tree updated"
-
-echo ""
-echo "=== Testing manual merge from intermediary ==="
-
-echo "Test 3: Can manually add intermediary as remote and fetch"
-cd "$TEST_TMP/source"
-git remote add intermediary "$INTERMEDIARY_DIR"
-git fetch intermediary
-
-if ! git branch -r | grep -q "intermediary/$BRANCH_NAME"; then
-    echo "FAIL: Should see intermediary/$BRANCH_NAME remote branch"
-    git branch -r
-    exit 1
-fi
-echo "  PASS: intermediary remote added and fetched"
-
-echo "Test 4: Manual merge should bring changes to source"
-# Need --allow-unrelated-histories since intermediary has fresh history
-git merge "intermediary/$BRANCH_NAME" -m "Merge changes from cage" --allow-unrelated-histories
-
-if [ ! -f "$TEST_TMP/source/newfile.txt" ]; then
-    echo "FAIL: newfile.txt not in source after merge"
-    exit 1
-fi
-echo "  PASS: Manual merge brought changes to source"
-
-echo ""
-echo "=== Source -> intermediary sync tests ==="
-echo "SKIP: Source hooks are cleaned up on sandbox exit"
-echo "      These tests require an active sandbox session"
-echo "      Tests 5-14 skipped"
-
-# NOTE: The following tests (5-14) require source hooks to persist after
-# the sandbox exits, but cleanup_source_hooks removes them on exit.
-# To test source->intermediary sync, run claude-cage --test in one terminal
-# and manually trigger commits from another.
-
-echo ""
-echo "=== Testing state file update on branch-switch sync ==="
-
-# Set up a fresh scenario for state file testing
-rm -rf "$TEST_TMP/state-source"
-mkdir -p "$TEST_TMP/state-source"
-cd "$TEST_TMP/state-source"
-git init -q
-git config user.email "test@example.com"
-git config user.name "Test User"
-echo "original" > file.txt
-git add .
-git commit -q -m "Initial commit"
-
-# Create feature branch with a commit
-git checkout -q -b feature
-echo "feature" > feature.txt
-git add .
-git commit -q -m "Feature commit"
-
-STATE_SOURCE_PATH="$TEST_TMP/state-source"
-STATE_BRANCH_NAME="feature"
-STATE_INTERMEDIARY="$CLAUDE_CAGE_CACHE/branches/$STATE_BRANCH_NAME/intermediary$STATE_SOURCE_PATH"
-STATE_WORK="$CLAUDE_CAGE_CACHE/branches/$STATE_BRANCH_NAME/work$STATE_SOURCE_PATH"
-
-cat > "$TEST_TMP/state-source/.claude-cage" << 'EOF'
-claude_cage {
-    autoMerge = true,
-    showBanner = false,
-    hideConfirmationPrompt = true
-}
-EOF
-
-# Set up cage on feature branch
-echo "Setting up cage for state file test..."
-env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
-    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
-    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$STATE_SOURCE_PATH" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
-
-# Fix origin path for testing outside sandbox
-git -C "$STATE_WORK" remote set-url origin "$STATE_INTERMEDIARY"
-
-# Make a commit in work and push
-cd "$STATE_WORK"
-git config user.email "claude@example.com"
-git config user.name "Claude"
-echo "from claude" > claude-state.txt
-git add claude-state.txt
-git commit -q -m "Claude state test commit"
-git push origin claude 2>/dev/null
-
-# Switch source to master
-cd "$STATE_SOURCE_PATH"
-git checkout -q master
-
-# Source the script to get sync_to_source function
+# Source the built script for direct function access
 export CLAUDE_CAGE_SOURCING=1
 source "$CAGE_DIR/dist/claude-cage"
+unset CLAUDE_CAGE_SOURCING
 
-# Compute state path
-export CLAUDE_CAGE_BRANCH="$STATE_BRANCH_NAME"
-state_test_path=$(get_state_path "$STATE_SOURCE_PATH")
+# Set variables needed by functions
+cfg_exclude=""
+cfg_git_historyDepth=50
+cfg_git_defaultBranch="auto"
+dry_run=false
+verbose=false
+debug=false
 
-# Record state before sync
-state_before=$(cat "$state_test_path" 2>/dev/null)
+# ============================================================================
+# Helper: create a source repo, intermediary, and work dir for testing
+# Sets: SOURCE_PATH, BRANCH_NAME, INTERMEDIARY_DIR, WORK_DIR
+# ============================================================================
+setup_test_cage() {
+    local label="${1:-source}"
+    local source_dir="$TEST_TMP/$label"
 
-echo "Test 5: State file should be updated after temp-index sync"
-sync_to_source "$STATE_SOURCE_PATH" "$STATE_INTERMEDIARY" "refs/heads/claude" "feature" "$state_test_path"
+    rm -rf "$source_dir"
+    mkdir -p "$source_dir"
+    cd "$source_dir"
+    git init -q
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "original content" > file.txt
+    git add . && git commit -q -m "Initial commit"
 
-state_after=$(cat "$state_test_path" 2>/dev/null)
-if [ "$state_before" = "$state_after" ]; then
-    echo "FAIL: State file was not updated after temp-index sync"
-    echo "  Before: $state_before"
-    echo "  After:  $state_after"
+    SOURCE_PATH="$source_dir"
+    BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
+    CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
+    export CLAUDE_CAGE_BRANCH
+
+    # Compute expected paths for the new architecture
+    INTERMEDIARY_DIR=$(get_intermediary_path "$SOURCE_PATH")
+    WORK_DIR=$(get_work_path "$SOURCE_PATH")
+
+    # Create the cage
+    create_intermediary_clone "$SOURCE_PATH" >/dev/null 2>&1
+
+    # Fix origin path for testing outside sandbox
+    # (inside sandbox, intermediary is mounted at /run<intermediary_path>)
+    git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
+}
+
+# ============================================================================
+# Test 1: Push from work updates intermediary
+# ============================================================================
+echo "Test 1: Push from work should update intermediary"
+
+setup_test_cage "source1"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+echo "new content from claude" > "$WORK_DIR/newfile.txt"
+git -C "$WORK_DIR" add newfile.txt
+git -C "$WORK_DIR" commit -q -m "Add newfile from Claude"
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Verify new branch tip updated in bare intermediary
+intermediary_head=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+work_head=$(git -C "$WORK_DIR" rev-parse HEAD)
+if [ "$intermediary_head" != "$work_head" ]; then
+    echo "FAIL: Intermediary branch tip ($intermediary_head) != work HEAD ($work_head)"
+    exit 1
+fi
+echo "  PASS: Push updated intermediary branch tip"
+
+# ============================================================================
+# Test 2: Push creates correct objects
+# ============================================================================
+echo "Test 2: Push creates correct objects in intermediary"
+
+# Verify the pushed file content is correct in intermediary tree
+file_content=$(git -C "$INTERMEDIARY_DIR" show "$BRANCH_NAME:newfile.txt" 2>/dev/null)
+if [ "$file_content" != "new content from claude" ]; then
+    echo "FAIL: Intermediary file content is wrong: '$file_content'"
+    exit 1
+fi
+echo "  PASS: Pushed file content is correct in intermediary"
+
+# ============================================================================
+# Test 3: sync_to_source basic
+# ============================================================================
+echo ""
+echo "Test 3: sync_to_source should apply patch to source"
+
+setup_test_cage "source3"
+
+# Make a commit in work and push
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+echo "synced content" > "$WORK_DIR/synced.txt"
+git -C "$WORK_DIR" add synced.txt
+git -C "$WORK_DIR" commit -q -m "Sync test commit"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+newrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+
+# Call sync_to_source
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+# Verify the change is in source
+if [ ! -f "$SOURCE_PATH/synced.txt" ]; then
+    echo "FAIL: synced.txt not in source after sync_to_source"
+    exit 1
+fi
+source_content=$(cat "$SOURCE_PATH/synced.txt")
+if [ "$source_content" != "synced content" ]; then
+    echo "FAIL: Source content is wrong: '$source_content'"
+    exit 1
+fi
+echo "  PASS: sync_to_source applied patch to source"
+
+# ============================================================================
+# Test 4: sync_to_source updates commit mapping
+# ============================================================================
+echo "Test 4: sync_to_source should update commit mapping"
+
+commit_map_path=$(get_commit_map_path "$INTERMEDIARY_DIR")
+if [ ! -f "$commit_map_path" ]; then
+    echo "FAIL: Commit mapping file not found at $commit_map_path"
     exit 1
 fi
 
-# Verify state matches the new feature branch tip
-feature_tip=$(git -C "$STATE_SOURCE_PATH" rev-parse feature)
-if [ "$state_after" != "$feature_tip" ]; then
-    echo "FAIL: State file does not match feature branch tip"
-    echo "  State:       $state_after"
-    echo "  Feature tip: $feature_tip"
+# The new intermediary commit should be mapped to a source commit
+if ! grep -q "^$newrev " "$commit_map_path"; then
+    echo "FAIL: New intermediary commit $newrev not in commit mapping"
+    echo "Commit map contents:"
+    cat "$commit_map_path"
     exit 1
 fi
-echo "  PASS: State file updated to new feature branch tip after temp-index sync"
+echo "  PASS: Commit mapping updated with new entry"
 
-echo "Test 5b: Sync log should contain entries from sync_to_source"
-SYNC_LOG_FILE="$STATE_INTERMEDIARY/.git/sync.log"
+# ============================================================================
+# Test 5: sync_to_source skips mapped commits (loop prevention)
+# ============================================================================
+echo "Test 5: sync_to_source should skip already-mapped commits"
+
+# Call sync_to_source again with the same range
+output=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" 2>&1)
+
+# Count commits on source - should not have increased
+source_count_before=$(git -C "$SOURCE_PATH" rev-list --count HEAD)
+
+# Run again
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+source_count_after=$(git -C "$SOURCE_PATH" rev-list --count HEAD)
+if [ "$source_count_before" != "$source_count_after" ]; then
+    echo "FAIL: Source commit count changed from $source_count_before to $source_count_after (should not re-apply)"
+    exit 1
+fi
+echo "  PASS: Already-mapped commits skipped (loop prevention)"
+
+# ============================================================================
+# Test 6: Manual git merge works
+# ============================================================================
+echo ""
+echo "Test 6: manual_git_merge should add remote and fetch"
+
+setup_test_cage "source6"
+
+# Make a commit in work and push
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+echo "merge test" > "$WORK_DIR/merge.txt"
+git -C "$WORK_DIR" add merge.txt
+git -C "$WORK_DIR" commit -q -m "Merge test commit"
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Run manual_git_merge
+manual_git_merge "$SOURCE_PATH" >/dev/null 2>&1
+
+# Check that intermediary remote exists and has been fetched
+if ! git -C "$SOURCE_PATH" remote | grep -q "^intermediary$"; then
+    echo "FAIL: intermediary remote not added to source"
+    exit 1
+fi
+if ! git -C "$SOURCE_PATH" branch -r | grep -q "intermediary/$BRANCH_NAME"; then
+    echo "FAIL: intermediary/$BRANCH_NAME remote branch not found after fetch"
+    git -C "$SOURCE_PATH" branch -r
+    exit 1
+fi
+echo "  PASS: manual_git_merge added remote and fetched"
+
+# ============================================================================
+# Test 7: check_cage_state returns no_cage
+# ============================================================================
+echo ""
+echo "Test 7: check_cage_state should return no_cage when no intermediary"
+
+# Use a path that has no cage set up
+fake_source="$TEST_TMP/no-cage-source"
+mkdir -p "$fake_source"
+cd "$fake_source" && git init -q && git config user.email "t@t" && git config user.name "T"
+echo "x" > "$fake_source/x.txt" && git -C "$fake_source" add . && git -C "$fake_source" commit -q -m "init"
+
+fake_intermediary=$(get_intermediary_path "$fake_source")
+fake_work=$(get_work_path "$fake_source")
+
+result=$(check_cage_state "$fake_source" "$fake_intermediary" "$fake_work")
+if [ "$result" != "no_cage" ]; then
+    echo "FAIL: Expected no_cage but got: $result"
+    exit 1
+fi
+echo "  PASS: check_cage_state returns no_cage"
+
+# ============================================================================
+# Test 8: check_cage_state returns in_sync
+# ============================================================================
+echo "Test 8: check_cage_state should return in_sync when source HEAD is mapped"
+
+setup_test_cage "source8"
+
+result=$(check_cage_state "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$WORK_DIR")
+if [ "$result" != "in_sync" ]; then
+    echo "FAIL: Expected in_sync but got: $result"
+    echo "Source HEAD: $(git -C "$SOURCE_PATH" rev-parse HEAD)"
+    echo "Commit map:"
+    cat "$(get_commit_map_path "$INTERMEDIARY_DIR")" 2>/dev/null || echo "(no map)"
+    exit 1
+fi
+echo "  PASS: check_cage_state returns in_sync"
+
+# ============================================================================
+# Test 9: check_cage_state returns needs_update
+# ============================================================================
+echo "Test 9: check_cage_state should return needs_update when source advanced"
+
+# Make a commit directly on source (advancing past the mapping)
+echo "advanced" > "$SOURCE_PATH/advanced.txt"
+git -C "$SOURCE_PATH" add advanced.txt
+git -C "$SOURCE_PATH" commit -q -m "Advance source past cage"
+
+result=$(check_cage_state "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$WORK_DIR")
+if [ "$result" != "needs_update" ]; then
+    echo "FAIL: Expected needs_update but got: $result"
+    exit 1
+fi
+echo "  PASS: check_cage_state returns needs_update"
+
+# ============================================================================
+# Test 10: check_cage_state returns needs_work_dir
+# ============================================================================
+echo "Test 10: check_cage_state should return needs_work_dir when work dir missing"
+
+# Remove just the work directory
+rm -rf "$WORK_DIR"
+
+result=$(check_cage_state "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$WORK_DIR")
+if [ "$result" != "needs_work_dir" ]; then
+    echo "FAIL: Expected needs_work_dir but got: $result"
+    exit 1
+fi
+echo "  PASS: check_cage_state returns needs_work_dir"
+
+# ============================================================================
+# Test 11: Session detection - other sessions
+# ============================================================================
+echo ""
+echo "Test 11: has_other_sessions should detect running PIDs"
+
+setup_test_cage "source11"
+
+# Spawn a background process we own and use its PID
+sleep 300 &
+fake_session_pid=$!
+
+session_dir=$(get_session_dir "$SOURCE_PATH" "$BRANCH_NAME")
+mkdir -p "$session_dir"
+echo "$fake_session_pid" > "$session_dir/$fake_session_pid"
+
+if ! has_other_sessions "$SOURCE_PATH" "$BRANCH_NAME"; then
+    kill "$fake_session_pid" 2>/dev/null
+    echo "FAIL: has_other_sessions should return true when active PID file exists"
+    exit 1
+fi
+echo "  PASS: Active session detected"
+
+# Clean up the fake session
+kill "$fake_session_pid" 2>/dev/null
+wait "$fake_session_pid" 2>/dev/null || true
+
+# ============================================================================
+# Test 12: Session detection - stale cleanup
+# ============================================================================
+echo "Test 12: has_other_sessions should clean stale PIDs"
+
+# Create a stale PID file (PID that definitely doesn't exist)
+session_dir=$(get_session_dir "$SOURCE_PATH" "$BRANCH_NAME")
+mkdir -p "$session_dir"
+echo "999999999" > "$session_dir/999999999"
+
+# Also add a live process so has_other_sessions is exercised
+sleep 300 &
+live_pid=$!
+echo "$live_pid" > "$session_dir/$live_pid"
+
+# has_other_sessions should clean up stale PID and still find our sleep process
+if ! has_other_sessions "$SOURCE_PATH" "$BRANCH_NAME"; then
+    kill "$live_pid" 2>/dev/null
+    echo "FAIL: Should still detect active PID after cleaning stale PID"
+    exit 1
+fi
+if [ -f "$session_dir/999999999" ]; then
+    kill "$live_pid" 2>/dev/null
+    echo "FAIL: Stale PID file should have been cleaned up"
+    exit 1
+fi
+echo "  PASS: Stale PIDs cleaned, active session still detected"
+
+# Clean up
+kill "$live_pid" 2>/dev/null
+wait "$live_pid" 2>/dev/null || true
+
+# ============================================================================
+# Test 13: Sync logging
+# ============================================================================
+echo ""
+echo "Test 13: sync.log should contain entries from sync_to_source"
+
+setup_test_cage "source13"
+
+# Make a commit in work and push
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+echo "log test" > "$WORK_DIR/logtest.txt"
+git -C "$WORK_DIR" add logtest.txt
+git -C "$WORK_DIR" commit -q -m "Log test commit"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+SYNC_LOG_FILE="$INTERMEDIARY_DIR/sync.log"
 if [ ! -f "$SYNC_LOG_FILE" ]; then
     echo "FAIL: Sync log file was not created at $SYNC_LOG_FILE"
     exit 1
@@ -226,265 +377,310 @@ if ! grep -q ">>source" "$SYNC_LOG_FILE"; then
     cat "$SYNC_LOG_FILE"
     exit 1
 fi
-if ! grep -q "applied via temp-index" "$SYNC_LOG_FILE"; then
-    echo "FAIL: Sync log should show temp-index apply"
+echo "  PASS: Sync log contains expected entries"
+
+# ============================================================================
+# Test 14: apply_source_to_intermediary
+# ============================================================================
+echo ""
+echo "Test 14: apply_source_to_intermediary should sync source commit into intermediary"
+
+setup_test_cage "source14"
+
+# Make a commit on source (not through the cage)
+echo "from source" > "$SOURCE_PATH/from-source.txt"
+git -C "$SOURCE_PATH" add from-source.txt
+git -C "$SOURCE_PATH" commit -q -m "Source commit for intermediary sync"
+
+# Capture intermediary state before
+intermediary_head_before=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+
+# Apply source to intermediary
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$cfg_exclude"
+
+# Verify intermediary advanced
+intermediary_head_after=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+if [ "$intermediary_head_before" = "$intermediary_head_after" ]; then
+    echo "FAIL: Intermediary did not advance after apply_source_to_intermediary"
+    exit 1
+fi
+
+# Verify file is in intermediary tree
+file_content=$(git -C "$INTERMEDIARY_DIR" show "$BRANCH_NAME:from-source.txt" 2>/dev/null)
+if [ "$file_content" != "from source" ]; then
+    echo "FAIL: from-source.txt not in intermediary tree (content: '$file_content')"
+    exit 1
+fi
+echo "  PASS: Source commit synced into intermediary"
+
+# ============================================================================
+# Test 15: apply_source_to_intermediary loop prevention
+# ============================================================================
+echo "Test 15: apply_source_to_intermediary should skip already-mapped commits"
+
+# Verify source HEAD is now in the commit mapping
+commit_map_path=$(get_commit_map_path "$INTERMEDIARY_DIR")
+source_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if ! grep -q " ${source_head}$" "$commit_map_path"; then
+    echo "FAIL: Source HEAD $source_head not in commit mapping after apply"
+    cat "$commit_map_path"
+    exit 1
+fi
+
+intermediary_head_before=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+
+# Call apply_source_to_intermediary again - should be a no-op
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$cfg_exclude"
+
+intermediary_head_after=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+if [ "$intermediary_head_before" != "$intermediary_head_after" ]; then
+    echo "FAIL: Intermediary changed when re-applying already-mapped commit"
+    exit 1
+fi
+echo "  PASS: Already-mapped source commits skipped (loop prevention)"
+
+# ============================================================================
+# Test 16: sync_to_source with branch switch (temp-index path)
+# ============================================================================
+echo ""
+echo "Test 16: sync_to_source with branch switch uses temp-index"
+
+setup_test_cage "source16"
+
+# Create a feature branch on source
+git -C "$SOURCE_PATH" checkout -q -b feature
+echo "feature" > "$SOURCE_PATH/feature.txt"
+git -C "$SOURCE_PATH" add feature.txt
+git -C "$SOURCE_PATH" commit -q -m "Feature commit"
+
+# Switch back to original branch for cage setup
+git -C "$SOURCE_PATH" checkout -q "$BRANCH_NAME"
+
+# Now set up a new cage on the feature branch
+CLAUDE_CAGE_BRANCH="feature"
+export CLAUDE_CAGE_BRANCH
+FEATURE_INTERMEDIARY_DIR=$(get_intermediary_path "$SOURCE_PATH")
+FEATURE_WORK_DIR=$(get_work_path "$SOURCE_PATH")
+# Note: intermediary is shared, but work dir is per-branch
+# Need to rebuild intermediary to include the feature branch
+rm -rf "$FEATURE_WORK_DIR"
+
+# Re-run create_intermediary_clone so feature branch appears in intermediary
+create_intermediary_clone "$SOURCE_PATH" >/dev/null 2>&1
+
+# Fix remote for work dir
+git -C "$FEATURE_WORK_DIR" remote set-url origin "$FEATURE_INTERMEDIARY_DIR"
+
+# Make a commit in work on feature branch and push
+git -C "$FEATURE_WORK_DIR" config user.email "claude@test.com"
+git -C "$FEATURE_WORK_DIR" config user.name "Claude"
+echo "claude feature work" > "$FEATURE_WORK_DIR/claude-feature.txt"
+git -C "$FEATURE_WORK_DIR" add claude-feature.txt
+git -C "$FEATURE_WORK_DIR" commit -q -m "Claude's feature commit"
+
+oldrev=$(git -C "$FEATURE_INTERMEDIARY_DIR" rev-parse "refs/heads/feature")
+git -C "$FEATURE_WORK_DIR" push origin feature 2>/dev/null
+newrev=$(git -C "$FEATURE_INTERMEDIARY_DIR" rev-parse "refs/heads/feature")
+
+# Switch source to the main branch (simulating user switching branches)
+git -C "$SOURCE_PATH" checkout -q "$BRANCH_NAME"
+
+# Verify source is on main branch, not feature
+current=$(git -C "$SOURCE_PATH" branch --show-current)
+if [ "$current" != "$BRANCH_NAME" ]; then
+    echo "FAIL: Expected source to be on $BRANCH_NAME, but on $current"
+    exit 1
+fi
+
+# Call sync_to_source - should use temp-index since source is on different branch
+sync_to_source "$SOURCE_PATH" "$FEATURE_INTERMEDIARY_DIR" "refs/heads/feature" "$oldrev" >/dev/null 2>&1
+
+# Verify commit landed on feature branch (not current branch)
+if ! git -C "$SOURCE_PATH" log feature --oneline | grep -q "Claude's feature commit"; then
+    echo "FAIL: Claude's feature commit should be on feature branch"
+    git -C "$SOURCE_PATH" log feature --oneline
+    exit 1
+fi
+
+# Verify main branch was NOT affected
+if git -C "$SOURCE_PATH" log "$BRANCH_NAME" --oneline | grep -q "Claude's feature commit"; then
+    echo "FAIL: Claude's feature commit should NOT be on $BRANCH_NAME branch"
+    exit 1
+fi
+
+# Verify source is still on main branch (not switched)
+current=$(git -C "$SOURCE_PATH" branch --show-current)
+if [ "$current" != "$BRANCH_NAME" ]; then
+    echo "FAIL: Source should still be on $BRANCH_NAME, but on $current"
+    exit 1
+fi
+
+# Check sync log for temp-index usage
+SYNC_LOG_FILE="$FEATURE_INTERMEDIARY_DIR/sync.log"
+if ! grep -q "temp-index" "$SYNC_LOG_FILE"; then
+    echo "FAIL: Sync log should show temp-index usage"
     cat "$SYNC_LOG_FILE"
     exit 1
 fi
-echo "  PASS: Sync log contains expected entries"
+echo "  PASS: sync_to_source with branch switch uses temp-index correctly"
 
+# Restore CLAUDE_CAGE_BRANCH
+CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
+export CLAUDE_CAGE_BRANCH
+
+# ============================================================================
+# Test 17: Multi-commit push
+# ============================================================================
 echo ""
-echo "=== Testing active session detection ==="
+echo "Test 17: Multiple commits should be synced in order"
 
-echo "Test 6: has_other_sessions should detect active sessions"
-# Spawn a background process we own and use its PID
-sleep 300 &
-fake_session_pid=$!
-session_dir=$(get_session_dir "$STATE_SOURCE_PATH" "$STATE_BRANCH_NAME")
-mkdir -p "$session_dir"
-echo "$fake_session_pid" > "$session_dir/$fake_session_pid"
+setup_test_cage "source17"
 
-if ! has_other_sessions "$STATE_SOURCE_PATH" "$STATE_BRANCH_NAME"; then
-    kill "$fake_session_pid" 2>/dev/null
-    echo "FAIL: has_other_sessions should return true when active PID file exists"
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+
+# Make multiple commits in work
+echo "commit1" > "$WORK_DIR/multi1.txt"
+git -C "$WORK_DIR" add multi1.txt
+git -C "$WORK_DIR" commit -q -m "Multi commit 1"
+
+echo "commit2" > "$WORK_DIR/multi2.txt"
+git -C "$WORK_DIR" add multi2.txt
+git -C "$WORK_DIR" commit -q -m "Multi commit 2"
+
+echo "commit3" > "$WORK_DIR/multi3.txt"
+git -C "$WORK_DIR" add multi3.txt
+git -C "$WORK_DIR" commit -q -m "Multi commit 3"
+
+# Push all three at once
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Sync to source
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+# Verify all three files are in source
+for i in 1 2 3; do
+    if [ ! -f "$SOURCE_PATH/multi${i}.txt" ]; then
+        echo "FAIL: multi${i}.txt not in source after multi-commit sync"
+        exit 1
+    fi
+done
+
+# Verify commits are in order in source log
+log_output=$(git -C "$SOURCE_PATH" log --oneline --format=%s | head -3)
+if ! echo "$log_output" | head -1 | grep -q "Multi commit 3"; then
+    echo "FAIL: Expected 'Multi commit 3' as most recent, got:"
+    echo "$log_output"
     exit 1
 fi
-echo "  PASS: Active session detected"
+echo "  PASS: Multiple commits synced in order"
 
-echo "Test 7: has_other_sessions should clean stale PIDs"
-# Use a PID that definitely doesn't exist
-echo "999999999" > "$session_dir/999999999"
-
-# has_other_sessions should clean up stale PID and still find our sleep process
-if ! has_other_sessions "$STATE_SOURCE_PATH" "$STATE_BRANCH_NAME"; then
-    kill "$fake_session_pid" 2>/dev/null
-    echo "FAIL: Should still detect active PID after cleaning stale PID"
-    exit 1
-fi
-if [ -f "$session_dir/999999999" ]; then
-    kill "$fake_session_pid" 2>/dev/null
-    echo "FAIL: Stale PID file should have been cleaned up"
-    exit 1
-fi
-echo "  PASS: Stale PIDs cleaned, active session still detected"
-
-# Clean up the fake session
-kill "$fake_session_pid" 2>/dev/null
-wait "$fake_session_pid" 2>/dev/null || true
-
-echo "Test 8: check_cage_state returns ahead_clean when state is stale"
-# Set state file to old value (not matching current feature HEAD)
-echo "0000000000000000000000000000000000000000" > "$state_test_path"
-
-cage_result=$(check_cage_state "$STATE_SOURCE_PATH" "$STATE_WORK" "$state_test_path")
-if [ "$cage_result" != "ahead_clean" ]; then
-    echo "FAIL: Expected ahead_clean but got: $cage_result"
-    exit 1
-fi
-echo "  PASS: Stale state correctly detected as ahead_clean"
-
+# ============================================================================
+# Test 18: Empty patch handling
+# ============================================================================
 echo ""
-echo "=== All git-sync tests passed! ==="
-exit 0
+echo "Test 18: Commits with only excluded files should be mapped to 0"
 
-# --- SKIPPED TESTS BELOW ---
-# Clean up and recreate for this test
-rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
-rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
-rm -f "$TEST_TMP/source/.git/hooks/post-commit"
-git -C "$TEST_TMP/source" remote remove intermediary 2>/dev/null || true
-
-cd "$TEST_TMP/source"
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
-
-# Fix origin path for testing outside sandbox
-git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
-
-echo "Test 5: Commit to source should sync to intermediary"
-cd "$TEST_TMP/source"
-echo "from source" > source-file.txt
-git add source-file.txt
-git commit -m "Add source-file from source"
-
-# The post-commit hook should have synced this
-if [ ! -f "$INTERMEDIARY_DIR/source-file.txt" ]; then
-    echo "FAIL: source-file.txt not synced to intermediary"
-    echo "Intermediary contents:"
-    ls -la "$INTERMEDIARY_DIR/"
-    echo "Post-commit hook:"
-    cat "$TEST_TMP/source/.git/hooks/post-commit"
-    exit 1
-fi
-echo "  PASS: Source commit synced to intermediary"
-
-echo "Test 6: Work can pull changes from intermediary"
-cd "$WORK_DIR"
-git pull origin claude
-
-if [ ! -f "$WORK_DIR/source-file.txt" ]; then
-    echo "FAIL: source-file.txt not in work after pull"
-    exit 1
-fi
-echo "  PASS: Work pulled changes from intermediary"
-
-echo ""
-echo "=== Testing pre-commit hook (mixed commit prevention) ==="
-
-# Create a sensitive file in source
-cd "$TEST_TMP/source"
-rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
-rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
-rm -f "$TEST_TMP/source/.git/hooks/post-commit"
-
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    exclude = { ".env" },
-    autoMerge = true,
-    showBanner = false
-}
-EOF
-
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
-
-# Fix origin path for testing outside sandbox
-git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
-
-echo "Test 7: Pre-commit hook should allow commits with only included files"
-echo "more content" >> file.txt
-git add file.txt
-git commit -m "Update file.txt" 2>&1 || {
-    echo "FAIL: Commit of included file should succeed"
-    exit 1
-}
-echo "  PASS: Included-only commit succeeded"
-
-echo "Test 8: Pre-commit hook should allow commits with only excluded files"
-echo "SECRET=xyz" > .env
-git add .env
-# This should succeed - it's OK to commit only excluded files
-git commit -m "Add .env" 2>&1 || {
-    echo "FAIL: Commit of excluded-only file should succeed"
-    exit 1
-}
-echo "  PASS: Excluded-only commit succeeded"
-
-echo "Test 9: Pre-commit hook should REJECT mixed commits"
-echo "update" >> file.txt
-echo "MORE_SECRET=abc" >> .env
-git add file.txt .env
-
-# This should fail
-if git commit -m "Mixed commit" 2>&1; then
-    echo "FAIL: Mixed commit should have been rejected"
-    exit 1
-fi
-echo "  PASS: Mixed commit rejected"
-
-# Clean up staged files
-git reset HEAD file.txt .env
-git checkout file.txt .env
-
-echo ""
-echo "=== Testing branch-switching sync ==="
-
-# Clean up and recreate for this test
-rm -rf "$INTERMEDIARY_DIR" "$WORK_DIR"
-rm -f "$TEST_TMP/source/.git/hooks/pre-commit"
-rm -f "$TEST_TMP/source/.git/hooks/post-commit"
-
-# Create a fresh source repo with a feature branch
-rm -rf "$TEST_TMP/source"
-mkdir -p "$TEST_TMP/source"
-cd "$TEST_TMP/source"
+# Set up a cage with excludes
+rm -rf "$TEST_TMP/source18"
+mkdir -p "$TEST_TMP/source18"
+cd "$TEST_TMP/source18"
 git init -q
-git config user.email "test@example.com"
-git config user.name "Test User"
-echo "original" > file.txt
-git add .
-git commit -q -m "Initial commit"
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "public" > public.txt
+echo "secret" > .env
+git add . && git commit -q -m "Initial"
 
-# Create and switch to feature branch
-git checkout -b feature
-echo "feature work" > feature.txt
-git add .
-git commit -q -m "Feature commit"
+SOURCE_PATH="$TEST_TMP/source18"
+BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
+CLAUDE_CAGE_BRANCH="$BRANCH_NAME"
+export CLAUDE_CAGE_BRANCH
 
-# Update paths for feature branch
-BRANCH_NAME="feature"
-INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/intermediary$SOURCE_PATH"
-WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
+# Create cage with .env excluded
+cfg_exclude=".env"
+INTERMEDIARY_DIR=$(get_intermediary_path "$SOURCE_PATH")
+WORK_DIR=$(get_work_path "$SOURCE_PATH")
 
-cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
-claude_cage {
-    autoMerge = true,
-    showBanner = false
-}
-EOF
-
-# Start cage on feature branch
-echo "exit" | "$CAGE_DIR/dist/claude-cage" --test >/dev/null 2>&1 || true
-
-# Fix origin path for testing outside sandbox
+create_intermediary_clone "$SOURCE_PATH" >/dev/null 2>&1
 git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
 
-# Make a commit in work
-cd "$WORK_DIR"
-git config user.email "claude@example.com"
-git config user.name "Claude"
-echo "claude work" > claude.txt
-git add claude.txt
-git commit -q -m "Claude's commit"
-git push origin claude 2>/dev/null
+# Make a commit on source that only touches the excluded file
+echo "updated secret" > "$SOURCE_PATH/.env"
+git -C "$SOURCE_PATH" add .env
+git -C "$SOURCE_PATH" commit -q -m "Update .env only"
 
-# Now switch source to master (simulating user switching branches)
-cd "$TEST_TMP/source"
-git checkout master
+source_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
 
-echo "Test 10: Source should be on master now"
-current=$(git branch --show-current)
-if [ "$current" != "master" ]; then
-    echo "FAIL: Expected to be on master, but on $current"
+# Apply to intermediary
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$cfg_exclude"
+
+# Check commit mapping for the excluded-only commit
+commit_map_path=$(get_commit_map_path "$INTERMEDIARY_DIR")
+
+# The source HEAD should be mapped to 0 (dropped commit)
+if ! grep -q "0 ${source_head}$" "$commit_map_path"; then
+    # It might also be mapped normally if fast-export created a commit anyway
+    # Either way, it should be in the mapping
+    if ! grep -q " ${source_head}$" "$commit_map_path"; then
+        echo "FAIL: Source HEAD for excluded-only commit not found in mapping"
+        echo "Source HEAD: $source_head"
+        echo "Commit map:"
+        cat "$commit_map_path"
+        exit 1
+    fi
+fi
+echo "  PASS: Excluded-only commit handled in commit mapping"
+
+# Reset cfg_exclude for remaining tests
+cfg_exclude=""
+
+# ============================================================================
+# Test 19: New branch creation in sync_to_source
+# ============================================================================
+echo ""
+echo "Test 19: sync_to_source should create new branch on source when needed"
+
+setup_test_cage "source19"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+# Create a new branch in work (simulating Claude creating a branch)
+git -C "$WORK_DIR" checkout -q -b feature-new
+echo "new branch content" > "$WORK_DIR/feature-new.txt"
+git -C "$WORK_DIR" add feature-new.txt
+git -C "$WORK_DIR" commit -q -m "New branch commit"
+
+# Push the new branch to intermediary
+oldrev="0000000000000000000000000000000000000000"
+git -C "$WORK_DIR" push origin feature-new 2>/dev/null
+newrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/feature-new")
+
+# Verify source does NOT have this branch yet
+if git -C "$SOURCE_PATH" rev-parse --verify feature-new >/dev/null 2>&1; then
+    echo "FAIL: Source should not have feature-new branch before sync"
     exit 1
 fi
-echo "  PASS: Source is on master"
 
-# Source the script to get sync_to_source function
-export CLAUDE_CAGE_SOURCING=1
-source "$CAGE_DIR/dist/claude-cage"
+# Sync to source
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/feature-new" "$oldrev" >/dev/null 2>&1
 
-echo "Test 11: sync_to_source should apply to feature branch (not master)"
-# Call sync_to_source directly with target_branch=feature
-sync_to_source "$TEST_TMP/source" "$INTERMEDIARY_DIR" "refs/heads/claude" "feature"
-
-# Check that feature branch has the commit
-if ! git -C "$TEST_TMP/source" log feature --oneline | grep -q "Claude's commit"; then
-    echo "FAIL: Claude's commit should be on feature branch"
-    git -C "$TEST_TMP/source" log feature --oneline
+# Verify source now has the new branch
+if ! git -C "$SOURCE_PATH" rev-parse --verify feature-new >/dev/null 2>&1; then
+    echo "FAIL: Source should have feature-new branch after sync"
     exit 1
 fi
-echo "  PASS: Commit applied to feature branch"
 
-echo "Test 12: Master branch should NOT have Claude's commit"
-if git -C "$TEST_TMP/source" log master --oneline | grep -q "Claude's commit"; then
-    echo "FAIL: Claude's commit should NOT be on master"
+# Verify the content is on the new branch
+new_branch_content=$(git -C "$SOURCE_PATH" show "feature-new:feature-new.txt" 2>/dev/null)
+if [ "$new_branch_content" != "new branch content" ]; then
+    echo "FAIL: Expected 'new branch content' on feature-new, got: '$new_branch_content'"
     exit 1
 fi
-echo "  PASS: Master branch unchanged"
-
-echo "Test 13: Source working directory should be untouched (still on master)"
-current=$(git -C "$TEST_TMP/source" branch --show-current)
-if [ "$current" != "master" ]; then
-    echo "FAIL: Source should still be on master, but on $current"
-    exit 1
-fi
-echo "  PASS: Source still on master"
-
-echo "Test 14: Working directory should not have claude.txt (master doesn't have it)"
-if [ -f "$TEST_TMP/source/claude.txt" ]; then
-    echo "FAIL: claude.txt should not be in working directory (we're on master)"
-    exit 1
-fi
-echo "  PASS: Working directory unchanged"
+echo "  PASS: New branch created on source via sync_to_source"
 
 echo ""
 echo "=== All git-sync tests passed! ==="

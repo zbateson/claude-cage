@@ -8,8 +8,8 @@ Documentation for `claude-cage` - a lightweight sandboxed git workflow for Claud
 
 **Key features:**
 - No sudo required - runs as current user
-- Git-based sync - uses git archive + fresh init
-- File exclusion at archive time (no history of excluded files)
+- Git-based sync - sparse checkout + fresh git init
+- File exclusion via sparse checkout (no history of excluded files)
 - Network filtering via iptables (optional)
 
 ## Platform Support
@@ -41,7 +41,7 @@ sudo apt install bubblewrap slirp4netns
 Source Project                    ~/.cache/.../intermediary        ~/.cache/.../work
 (your actual repo)                (sanitized, fresh git)           (Claude's workspace)
        │                                   │                              │
-       │  git ls-files + tar               │     git clone                │
+       │  sparse checkout + fresh init      │     git clone                │
        │  (excludes applied)               │                              │
        └──────────────────────────────────>│──────────────────────────────>
                                            │                              │
@@ -71,6 +71,33 @@ The intermediary repo serves as a buffer:
 - Clean slate - no git history containing excluded files
 - Located in `~/.cache/` - no `.gitignore` entry needed in your project
 
+### How the Intermediary Is Created
+
+`create_intermediary_clone()` uses a two-step process: **sparse checkout** for file selection, then **delete `.git` and reinitialize** for a clean history.
+
+1. `git clone --depth 1 --sparse --filter=blob:none --no-checkout` from source
+2. Configure sparse-checkout patterns (include `/*`, exclude configured patterns)
+3. `git checkout` — only non-excluded files appear in working directory
+4. Delete `.git` entirely, `git init` fresh, commit all files as a single initial commit
+5. Clone the intermediary to create the work directory
+
+This hybrid approach was arrived at after iterating through several alternatives, each of which had a fatal flaw:
+
+| Approach | Problem |
+|----------|---------|
+| **Sparse checkout alone** (no reinit) | Excluded files are still in the git object store/history — just hidden from the working tree. Claude could `git log -- .env` and see them. |
+| **`--filter=blob:none`** partial clones | Can't serve as a git remote — the work directory couldn't clone from the intermediary. |
+| **`git archive`** + fresh init | Respects `.gitattributes` `export-ignore` — silently drops files that Claude should have access to. |
+| **`git archive`** pathspec excludes | `:!**/foo` doesn't match `foo` at the repo root (`**` matches 1+ directories, not 0+). |
+| **`git ls-files`** + tar | Uses working directory state, not committed state — uncommitted changes and staged files leak into the intermediary. |
+
+The current approach avoids all of these:
+- **Sparse checkout** operates on committed state (HEAD), so uncommitted changes don't leak
+- **Sparse checkout** uses git's own exclude pattern matching (no `git archive` pathspec quirks)
+- **Sparse checkout** ignores `.gitattributes` `export-ignore` directives
+- **Deleting `.git` and reinitializing** ensures zero history of excluded files in the intermediary
+- **Cloning from the reinitialized intermediary** works because it's a normal (non-partial) repo
+
 ## Source Files
 
 | File | Purpose |
@@ -80,7 +107,7 @@ The intermediary repo serves as a buffer:
 | `src/banner.sh` | ASCII art banner (print_banner) |
 | `src/config-builder.sh` | Interactive config generator when no config exists |
 | `src/config.sh` | Lua-based config parsing (system, user, includeIf, local) |
-| `src/git-clone.sh` | `create_intermediary_clone()` - archives source with excludes |
+| `src/git-clone.sh` | `create_intermediary_clone()` - sparse checkout + fresh init with excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
 | `src/git-sync.sh` | `sync_to_source()`, pipe listener, manual merge |
@@ -464,8 +491,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 ### Implemented
 
 - [x] Config parsing (Lua-based, same as main claude-cage)
-- [x] `create_intermediary_clone()` - git ls-files + tar with excludes
-- [x] Fresh git init (no history of excluded files)
+- [x] `create_intermediary_clone()` - sparse checkout + fresh git init (no history of excluded files)
 - [x] Work directory clone using source branch name
 - [x] `run_in_bwrap()` - full bwrap sandbox
 - [x] `run_in_docker()` - Docker container sandbox
@@ -483,7 +509,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
-- [x] Sparse checkout support (only copies files that exist in working tree)
+- [x] Sparse checkout for intermediary creation (committed state, proper excludes, no history)
 - [x] Optional `.caged/` symlinks for easy cache access (`createCagedDir` option)
 - [x] Shell completions for bash and zsh (`completion` and `install-completions` commands)
 - [x] Cache cleanup commands (`clean`, `clean --branch`, `clean-all`)

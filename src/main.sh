@@ -472,6 +472,8 @@ else
                     echo "  2) Start fresh (new session)"
                     echo "  q) Quit"
                     echo ""
+                    echo "  Tip: run 'claude-cage clean' to clean up dirty sessions."
+                    echo ""
                     while true; do
                         printf "Choice: "
                         read -r choice
@@ -506,6 +508,8 @@ else
                     echo "  Pick a number to continue that session, or:"
                     echo "  n) Start fresh (new session)"
                     echo "  q) Quit"
+                    echo ""
+                    echo "  Tip: run 'claude-cage clean' to clean up dirty sessions."
                     echo ""
                     while true; do
                         printf "Choice: "

@@ -123,39 +123,57 @@ apply_source_to_intermediary() {
     subject=$(git -C "$source_dir" log -1 --format=%s HEAD 2>/dev/null | head -c 50)
     sync_log "$log_file" "$source_short" ">>intermediary" "applying: $subject"
 
-    # Use fast-export with :(exclude,glob) pathspec for single commit
-    local export_err import_err
+    # Export to temp file first so we can detect excluded-only commits before
+    # fast-import. See comment in post-commit hook for full explanation.
+    local export_err export_out
     export_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.$$")
-    import_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.$$")
+    export_out=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.$$")
 
     git -C "$source_dir" fast-export \
         --import-marks="$source_marks_path" \
         --export-marks="$source_marks_path" \
         -1 HEAD \
         ${exclude_args:+-- "${exclude_args[@]}"} \
-        2>"$export_err" \
-        | git -C "$intermediary_dir" fast-import \
-            --import-marks="$import_marks_path" \
-            --export-marks="$import_marks_path" \
-            --quiet 2>"$import_err"
-    local -a pipe_status=("${PIPESTATUS[@]}")
-    local export_rc=${pipe_status[0]}
-    local import_rc=${pipe_status[1]}
+        >"$export_out" 2>"$export_err"
+    local export_rc=$?
 
-    if [ "$export_rc" -ne 0 ] || [ "$import_rc" -ne 0 ]; then
-        sync_log "$log_file" "$source_short" ">>intermediary" "pipeline FAILED export_rc=$export_rc import_rc=$import_rc"
+    if [ "$export_rc" -ne 0 ]; then
+        sync_log "$log_file" "$source_short" ">>intermediary" "fast-export FAILED rc=$export_rc"
         [ -s "$export_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "export stderr: $(cat "$export_err")"
-        [ -s "$import_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "import stderr: $(cat "$import_err")"
-        rm -f "$export_err" "$import_err"
+        rm -f "$export_err" "$export_out"
         return 1
     fi
-    rm -f "$export_err" "$import_err"
+
+    # Excluded-only commits: fast-export either drops the commit (small repos →
+    # just a reset/empty) or emits an orphan root commit (large repos → commit
+    # without a from line, because blob marks aren't in source-marks).
+    if ! grep -q '^commit ' "$export_out" || ! grep -q '^from ' "$export_out"; then
+        echo "0 $source_head" >> "$commit_map_path"
+        sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"
+        rm -f "$export_err" "$export_out"
+        return 0
+    fi
+
+    local import_err
+    import_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.$$")
+    git -C "$intermediary_dir" fast-import \
+        --import-marks="$import_marks_path" \
+        --export-marks="$import_marks_path" \
+        --quiet <"$export_out" 2>"$import_err"
+    local import_rc=$?
+
+    if [ "$import_rc" -ne 0 ]; then
+        sync_log "$log_file" "$source_short" ">>intermediary" "fast-import FAILED rc=$import_rc"
+        [ -s "$import_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "import stderr: $(cat "$import_err")"
+        rm -f "$export_err" "$import_err" "$export_out"
+        return 1
+    fi
+    rm -f "$export_err" "$import_err" "$export_out"
 
     # Update commit mapping
     build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "" ""
 
-    # If source HEAD still not in mapping, it was an excluded-only commit
-    # (fast-export dropped it entirely). Record as 0 <source-hash>.
+    # If source HEAD still not in mapping after marks join, record as excluded-only
     if ! grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
         echo "0 $source_head" >> "$commit_map_path"
         sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"

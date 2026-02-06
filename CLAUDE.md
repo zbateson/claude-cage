@@ -180,15 +180,17 @@ When you commit to source:
 
 1. `post-commit` hook on source fires
 2. Checks commit mapping — skips if source HEAD is already mapped (loop prevention)
-3. Runs `git fast-export -1 HEAD` with `:(exclude,glob)` pathspec args to exclude filtered content
-4. Pipes stream into `git fast-import` on the bare intermediary
-5. Updates marks files and commit mapping
-6. If commit wasn't mapped (excluded-only commit, dropped by fast-export), records `0 <source-hash>` in mapping
+3. Runs `git fast-export -1 HEAD` with `:(exclude,glob)` pathspec args to a temp file
+4. Checks for excluded-only commit: if output has no `commit` line or no `from` line, records `0 <source-hash>` in mapping and skips fast-import (see note below)
+5. If valid: pipes temp file into `git fast-import` on the bare intermediary
+6. Updates marks files and commit mapping
 7. Claude runs `git pull` when ready to get changes
+
+**Note on excluded-only detection:** `git fast-export --export-marks` only writes commit marks (blob marks are ignored per git docs). In incremental mode, this means source-marks lacks blob references. For excluded-only commits on repos with many files, fast-export emits an orphan root commit (no `from` line) instead of a proper child commit, because it can't reference parent blobs. The temp-file approach detects this by checking for both `^commit ` and `^from ` in the output before feeding it to fast-import.
 
 ### Mixed Commits
 
-The `:(exclude,glob)` pathspec handles commits that touch both excluded and non-excluded files. Git's fast-export excludes the filtered file operations while preserving the commit itself. Commits that only touch excluded files are dropped entirely by fast-export, and the commit mapping records `0 <source-hash>` for these. Users don't need to worry about separating excluded and non-excluded files into different commits — the pathspec handles it transparently in both directions.
+The `:(exclude,glob)` pathspec handles commits that touch both excluded and non-excluded files. Git's fast-export excludes the filtered file operations while preserving the commit itself. Commits that only touch excluded files produce either empty output (small repos) or orphan root commits (large repos) — both are detected by the temp-file check and mapped as `0 <source-hash>`. Users don't need to worry about separating excluded and non-excluded files into different commits — the pathspec handles it transparently in both directions.
 
 ### Multiple Sessions
 
@@ -534,7 +536,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] `manual_git_merge()` for manual sync
 - [x] Cleanup on exit
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (190 tests across 13 files)
+- [x] Comprehensive test suite (191 tests across 13 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
@@ -751,7 +753,7 @@ bash tests/run-all.sh
 | test-config.sh | config.sh | 16 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
-| test-git-filter-stream.sh | pathspec exclude filtering | 22 |
+| test-git-filter-stream.sh | pathspec exclude filtering | 23 |
 | test-git-hooks.sh | git-hooks.sh | 12 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 19 |
@@ -761,7 +763,7 @@ bash tests/run-all.sh
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 190 tests across 13 files**
+**Total: 191 tests across 13 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

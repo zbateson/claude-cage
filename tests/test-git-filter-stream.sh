@@ -687,6 +687,9 @@ passed=$((passed + 1))
 # ==========================================================================
 
 # Helper: run incremental fast-export/import for a single commit
+# Uses temp-file approach matching the real post-commit hook: export to file,
+# detect excluded-only commits (missing 'commit' or 'from' line), skip fast-import.
+# Returns 0=imported, 1=excluded-only (skipped), 2=error
 # Arguments: $1=src $2=dst $3=source_marks $4=import_marks, remaining=raw patterns
 run_incremental() {
     local src="$1" dst="$2" sm="$3" im="$4"
@@ -706,14 +709,25 @@ run_incremental() {
         exclude_args+=(":(exclude,glob)${base}/**")
     done
 
+    local export_out="$TEST_TMP/incremental-export-out"
     git -C "$src" fast-export \
         --import-marks="$sm" --export-marks="$sm" \
         -1 HEAD \
         ${exclude_args:+-- "${exclude_args[@]}"} \
-        2>/dev/null \
-        | git -C "$dst" fast-import \
-            --import-marks="$im" --export-marks="$im" \
-            --quiet 2>/dev/null
+        >"$export_out" 2>/dev/null
+
+    # Detect excluded-only: missing commit line or missing from line
+    if ! grep -q '^commit ' "$export_out" || ! grep -q '^from ' "$export_out"; then
+        rm -f "$export_out"
+        return 1
+    fi
+
+    git -C "$dst" fast-import \
+        --import-marks="$im" --export-marks="$im" \
+        --quiet <"$export_out" 2>/dev/null
+    local rc=$?
+    rm -f "$export_out"
+    return $rc
 }
 
 # --------------------------------------------------------------------------
@@ -791,10 +805,10 @@ git -C "$SRC" fast-export --export-marks="$SM" --all \
     -- "${local_args[@]}" 2>/dev/null \
     | git -C "$DST" fast-import --export-marks="$IM" --quiet 2>/dev/null
 
-# Excluded-only commit (creates marks gap)
+# Excluded-only commit (creates marks gap — run_incremental returns 1)
 echo "secret2" > "$SRC/.env"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Excluded only" --quiet
-run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env" || true
 
 # Mixed commit after the gap
 echo "secret3" > "$SRC/.env"
@@ -848,10 +862,10 @@ echo "file2" > "$SRC/file2.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Add file2" --quiet
 run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
 
-# Commit 3: excluded-only
+# Commit 3: excluded-only (run_incremental returns 1)
 echo "secret2" > "$SRC/.env"
 git -C "$SRC" add -A && git -C "$SRC" commit -m "Secret only" --quiet
-run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env" || true
 
 # Commit 4: mixed
 echo "secret3" > "$SRC/.env"
@@ -887,6 +901,98 @@ if git -C "$DST" show HEAD:.env >/dev/null 2>&1; then
     exit 1
 fi
 echo "  PASS: Multiple incremental commits in sequence"
+passed=$((passed + 1))
+
+# --------------------------------------------------------------------------
+# Test 23: Excluded-only NEW file on large repo (reproduces orphan root bug)
+#
+# On repos with many files, an excluded-only commit causes fast-export to emit
+# an orphan root commit (no 'from' line) instead of a reset, because
+# --export-marks only writes commit marks (blob marks are lost). The temp-file
+# approach in run_incremental detects this and skips fast-import.
+# --------------------------------------------------------------------------
+total=$((total + 1))
+echo "Test $total: Excluded-only new file on large repo detected correctly"
+
+SRC="$TEST_TMP/test_23_src"
+DST="$TEST_TMP/test_23_dst"
+SM="$TEST_TMP/test_23_dst/source-marks"
+IM="$TEST_TMP/test_23_dst/import-marks"
+init_repo "$SRC"
+
+# Create a repo with enough files that fast-export won't optimize to a reset
+mkdir -p "$SRC/src" "$SRC/tests" "$SRC/config" "$SRC/docs"
+for i in $(seq 1 50); do
+    echo "module $i code" > "$SRC/src/module${i}.php"
+    echo "test $i code" > "$SRC/tests/test${i}.php"
+done
+echo "readme" > "$SRC/README.md"
+echo "composer" > "$SRC/composer.json"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Initial large repo" --quiet
+
+# Build ~30 commits of history
+for i in $(seq 2 30); do
+    file_num=$(( (i % 50) + 1 ))
+    echo "update $i" >> "$SRC/src/module${file_num}.php"
+    git -C "$SRC" add -A && git -C "$SRC" commit -m "Commit $i" --quiet
+done
+
+# Initial clone with marks
+git init --bare "$DST" --quiet
+local_args=(":(exclude,glob)**/application-*.properties" ":(exclude,glob)**/application-*.properties/**")
+git -C "$SRC" fast-export --export-marks="$SM" --all \
+    -- "${local_args[@]}" 2>/dev/null \
+    | git -C "$DST" fast-import --export-marks="$IM" --quiet 2>/dev/null
+
+dst_before=$(git -C "$DST" rev-parse HEAD)
+
+# Mixed commit (to advance marks)
+echo "new content" > "$SRC/TESTFILE.txt"
+echo "secret" > "$SRC/application-test.properties"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Mixed commit" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" "application-*.properties"
+
+# Excluded-only commit: add a NEW excluded file
+echo "blah config" > "$SRC/application-blah.properties"
+git -C "$SRC" add application-blah.properties
+git -C "$SRC" commit -m "Just an ignored file" --quiet
+
+# This is the critical test: run_incremental should return 1 (excluded-only)
+# NOT 2 (fast-import error), and should NOT corrupt the intermediary
+incr_rc=0
+run_incremental "$SRC" "$DST" "$SM" "$IM" "application-*.properties" || incr_rc=$?
+
+if [ "$incr_rc" -ne 1 ]; then
+    echo "FAIL: expected run_incremental to return 1 (excluded-only), got $incr_rc"
+    exit 1
+fi
+
+# Verify intermediary is still intact (TESTFILE.txt from mixed commit present)
+if ! git -C "$DST" show HEAD:TESTFILE.txt >/dev/null 2>&1; then
+    echo "FAIL: TESTFILE.txt should still be in intermediary"
+    exit 1
+fi
+
+# Verify excluded file is NOT in intermediary
+if git -C "$DST" show HEAD:application-test.properties >/dev/null 2>&1; then
+    echo "FAIL: application-test.properties should not be in intermediary"
+    exit 1
+fi
+if git -C "$DST" show HEAD:application-blah.properties >/dev/null 2>&1; then
+    echo "FAIL: application-blah.properties should not be in intermediary"
+    exit 1
+fi
+
+# Verify a subsequent normal commit still works
+echo "another file" > "$SRC/ANOTHER.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Normal after excluded-only" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" "application-*.properties"
+
+if ! git -C "$DST" show HEAD:ANOTHER.txt >/dev/null 2>&1; then
+    echo "FAIL: ANOTHER.txt should be in intermediary after normal commit"
+    exit 1
+fi
+echo "  PASS: Excluded-only new file on large repo detected and skipped"
 passed=$((passed + 1))
 
 echo ""

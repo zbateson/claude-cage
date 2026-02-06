@@ -417,25 +417,50 @@ _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
 echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
 
 EXPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.\$\$")
-IMPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.\$\$")
+EXPORT_OUT=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.\$\$")
 
+# Export to temp file first so we can detect excluded-only commits before fast-import.
+# git fast-export --export-marks only writes commit marks (blobs are ignored per docs).
+# This means incremental exports lose blob marks from source-marks. For excluded-only
+# commits, fast-export can't reference parent blobs → emits an orphan root commit
+# instead of a proper child. Piping that to fast-import would fail with
+# "new tip does not contain old tip". Detecting and skipping avoids this.
 git fast-export --import-marks="\$SOURCE_MARKS" --export-marks="\$SOURCE_MARKS" -1 HEAD \\
     \${EXCLUDE_PATHSPECS:+-- "\${EXCLUDE_PATHSPECS[@]}"} \\
-    2>"\$EXPORT_ERR" \\
-    | git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet 2>"\$IMPORT_ERR"
-PIPE_STATUS=("\${PIPESTATUS[@]}")
-EXPORT_RC=\${PIPE_STATUS[0]}
-IMPORT_RC=\${PIPE_STATUS[1]}
+    >"\$EXPORT_OUT" 2>"\$EXPORT_ERR"
+EXPORT_RC=\$?
 
-if [ "\$EXPORT_RC" -ne 0 ] || [ "\$IMPORT_RC" -ne 0 ]; then
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "pipeline FAILED export_rc=\$EXPORT_RC import_rc=\$IMPORT_RC"
+if [ "\$EXPORT_RC" -ne 0 ]; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-export FAILED rc=\$EXPORT_RC"
     [ -s "\$EXPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "export stderr: \$(cat "\$EXPORT_ERR")"
-    [ -s "\$IMPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "import stderr: \$(cat "\$IMPORT_ERR")"
-    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT (export=\$EXPORT_RC import=\$IMPORT_RC)"
-    rm -f "\$EXPORT_ERR" "\$IMPORT_ERR"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT (export=\$EXPORT_RC)"
+    rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
     exit 0
 fi
-rm -f "\$EXPORT_ERR" "\$IMPORT_ERR"
+
+# Excluded-only commits: fast-export either drops the commit (small repos → just a
+# reset/empty output) or emits an orphan root commit (large repos → commit without
+# a from line). Either way there's no valid commit to import.
+if ! grep -q '^commit ' "\$EXPORT_OUT" || ! grep -q '^from ' "\$EXPORT_OUT"; then
+    echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+    rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
+    exit 0
+fi
+
+IMPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.\$\$")
+git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet \\
+    <"\$EXPORT_OUT" 2>"\$IMPORT_ERR"
+IMPORT_RC=\$?
+
+if [ "\$IMPORT_RC" -ne 0 ]; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=\$IMPORT_RC"
+    [ -s "\$IMPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "import stderr: \$(cat "\$IMPORT_ERR")"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT (import=\$IMPORT_RC)"
+    rm -f "\$EXPORT_ERR" "\$IMPORT_ERR" "\$EXPORT_OUT"
+    exit 0
+fi
+rm -f "\$EXPORT_ERR" "\$IMPORT_ERR" "\$EXPORT_OUT"
 
 # Update commit mapping from marks
 if [ -f "\$SOURCE_MARKS" ] && [ -f "\$IMPORT_MARKS" ]; then
@@ -443,7 +468,7 @@ if [ -f "\$SOURCE_MARKS" ] && [ -f "\$IMPORT_MARKS" ]; then
         "\$SOURCE_MARKS" "\$IMPORT_MARKS" >> "\$COMMIT_MAP"
 fi
 
-# If commit still not in mapping, it was excluded-only (fast-export dropped it)
+# If commit still not in mapping after marks join, record as excluded-only
 if ! grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP" 2>/dev/null; then
     echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"

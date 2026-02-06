@@ -456,16 +456,15 @@ else
                 ;;
             "dirty")
                 # Inactive dirty session(s) - prompt
-                local dirty_count=0
+                dirty_count=0
                 if [ -n "$REUSE_DIRTY_SESSIONS" ]; then
                     dirty_count=$(echo "$REUSE_DIRTY_SESSIONS" | wc -l)
                 fi
 
                 if [ "$dirty_count" -le 1 ]; then
                     # Single dirty session
-                    local dtype
                     dtype=$(echo "$REUSE_DIRTY_SESSIONS" | head -1 | awk '{print $3}')
-                    local dirty_desc="uncommitted changes"
+                    dirty_desc="uncommitted changes"
                     case "$dtype" in
                         unpushed) dirty_desc="unpushed commits" ;;
                         uncommitted+unpushed) dirty_desc="uncommitted changes and unpushed commits" ;;
@@ -499,11 +498,11 @@ else
                     # Multiple dirty sessions - show all
                     echo "Found $dirty_count existing cages with uncommitted work:"
                     echo ""
-                    local dirty_ids=()
-                    local didx=1
+                    dirty_ids=()
+                    didx=1
                     while IFS=' ' read -r dsid dbranch dtype; do
                         dirty_ids+=("$dsid")
-                        local dirty_label="uncommitted changes"
+                        dirty_label="uncommitted changes"
                         case "$dtype" in
                             unpushed) dirty_label="unpushed commits" ;;
                             uncommitted+unpushed) dirty_label="uncommitted changes + unpushed commits" ;;

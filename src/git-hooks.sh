@@ -398,10 +398,10 @@ fi
 COMMIT_SHORT=\$(git rev-parse --short=8 HEAD)
 COMMIT_HASH=\$(git rev-parse HEAD)
 
-# Only sync commits from the branch that was active when cage started
+# Only sync commits on branches that exist in the intermediary (in-scope)
 current_branch=\$(git branch --show-current)
-if [ "\$current_branch" != "\$TARGET_BRANCH" ]; then
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: on branch \$current_branch, target is \$TARGET_BRANCH"
+if ! git -C "\$INTERMEDIARY" rev-parse --verify "\$current_branch" >/dev/null 2>&1; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: branch \$current_branch not in intermediary"
     exit 0
 fi
 
@@ -416,30 +416,39 @@ _sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
 
 echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
 
-EXPORT_RC=0
+EXPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.\$\$")
+IMPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.\$\$")
+
 git fast-export --import-marks="\$SOURCE_MARKS" --export-marks="\$SOURCE_MARKS" -1 HEAD \\
     \${EXCLUDE_PATHSPECS:+-- "\${EXCLUDE_PATHSPECS[@]}"} \\
-    2>/dev/null \\
-    | git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet 2>/dev/null \\
-    && EXPORT_RC=0 || EXPORT_RC=\$?
+    2>"\$EXPORT_ERR" \\
+    | git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet 2>"\$IMPORT_ERR"
+PIPE_STATUS=("\${PIPESTATUS[@]}")
+EXPORT_RC=\${PIPE_STATUS[0]}
+IMPORT_RC=\${PIPE_STATUS[1]}
 
-if [ "\$EXPORT_RC" -eq 0 ]; then
-    # Update commit mapping from marks
-    if [ -f "\$SOURCE_MARKS" ] && [ -f "\$IMPORT_MARKS" ]; then
-        awk 'NR==FNR { source[\$1]=\$2; next } { if (\$1 in source) print \$2, source[\$1] }' \\
-            "\$SOURCE_MARKS" "\$IMPORT_MARKS" >> "\$COMMIT_MAP"
-    fi
+if [ "\$EXPORT_RC" -ne 0 ] || [ "\$IMPORT_RC" -ne 0 ]; then
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "pipeline FAILED export_rc=\$EXPORT_RC import_rc=\$IMPORT_RC"
+    [ -s "\$EXPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "export stderr: \$(cat "\$EXPORT_ERR")"
+    [ -s "\$IMPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "import stderr: \$(cat "\$IMPORT_ERR")"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT (export=\$EXPORT_RC import=\$IMPORT_RC)"
+    rm -f "\$EXPORT_ERR" "\$IMPORT_ERR"
+    exit 0
+fi
+rm -f "\$EXPORT_ERR" "\$IMPORT_ERR"
 
-    # If commit still not in mapping, it was excluded-only (fast-export dropped it)
-    if ! grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP" 2>/dev/null; then
-        echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
-        _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
-    else
-        _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import ok"
-    fi
+# Update commit mapping from marks
+if [ -f "\$SOURCE_MARKS" ] && [ -f "\$IMPORT_MARKS" ]; then
+    awk 'NR==FNR { source[\$1]=\$2; next } { if (\$1 in source) print \$2, source[\$1] }' \\
+        "\$SOURCE_MARKS" "\$IMPORT_MARKS" >> "\$COMMIT_MAP"
+fi
+
+# If commit still not in mapping, it was excluded-only (fast-export dropped it)
+if ! grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP" 2>/dev/null; then
+    echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
 else
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=\$EXPORT_RC"
-    echo -e "\033[1;31mclaude-cage:\033[0m Fast-import failed for commit \$COMMIT_SHORT"
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import ok"
 fi
 EOF
         chmod +x "$hook_path"

@@ -124,16 +124,32 @@ apply_source_to_intermediary() {
     sync_log "$log_file" "$source_short" ">>intermediary" "applying: $subject"
 
     # Use fast-export with :(exclude,glob) pathspec for single commit
+    local export_err import_err
+    export_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.$$")
+    import_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.$$")
+
     git -C "$source_dir" fast-export \
         --import-marks="$source_marks_path" \
         --export-marks="$source_marks_path" \
         -1 HEAD \
         ${exclude_args:+-- "${exclude_args[@]}"} \
-        2>/dev/null \
+        2>"$export_err" \
         | git -C "$intermediary_dir" fast-import \
             --import-marks="$import_marks_path" \
             --export-marks="$import_marks_path" \
-            --quiet 2>/dev/null
+            --quiet 2>"$import_err"
+    local -a pipe_status=("${PIPESTATUS[@]}")
+    local export_rc=${pipe_status[0]}
+    local import_rc=${pipe_status[1]}
+
+    if [ "$export_rc" -ne 0 ] || [ "$import_rc" -ne 0 ]; then
+        sync_log "$log_file" "$source_short" ">>intermediary" "pipeline FAILED export_rc=$export_rc import_rc=$import_rc"
+        [ -s "$export_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "export stderr: $(cat "$export_err")"
+        [ -s "$import_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "import stderr: $(cat "$import_err")"
+        rm -f "$export_err" "$import_err"
+        return 1
+    fi
+    rm -f "$export_err" "$import_err"
 
     # Update commit mapping
     build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "" ""

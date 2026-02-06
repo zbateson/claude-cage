@@ -25,7 +25,7 @@ claude_cage {
     -- =========================================================================
     -- FILE EXCLUSION
     -- =========================================================================
-    -- Files matching these patterns are stripped at archive time.
+    -- Files matching these patterns are excluded during fast-export.
     -- They never enter the cage - not in files, not in git history.
 
     exclude = {

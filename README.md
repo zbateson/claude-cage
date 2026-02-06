@@ -29,28 +29,27 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 │  (your repo)    │      │  (sanitized)    │      │  (Claude's copy)│
 └─────────────────┘      └─────────────────┘      └─────────────────┘
         │                        │                        │
-        │   Secrets excluded     │    Fresh git clone     │
-        │   via git archive      │    on 'claude' branch  │
-        │                        │                        │
+        │   Secrets excluded     │    git clone            │
+        │   via fast-export      │    (same branch name)   │
+        │   (real commit history)│                        │
         │<─────────────────────────────────────────────────
                     Claude pushes → patches applied to source
 ```
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** - Fresh git repo with excluded files stripped out. No history of your secrets.
+2. **Intermediary** - Persistent bare repo with real commit history (configurable depth, default 50). Excluded file content is stripped during export — no secrets in the object store.
 3. **Work** - Where Claude operates inside the sandbox. Pushes sync back to source.
 
-**Note:** All non-excluded files from your working tree are copied to the intermediary. For large repos, consider running from a subdirectory or using sparse checkout (see [Working with Large Repos](#working-with-large-repos)).
+**Note:** The intermediary is built from your committed history via `git fast-export`. For large repos, consider running from a subdirectory or using sparse checkout (see [Working with Large Repos](#working-with-large-repos)).
 
 **Git hooks make it work:**
 
 | Hook | Location | What It Does |
 |------|----------|--------------|
 | `post-receive` | Intermediary | When Claude pushes, generates patches and applies them to the original branch |
+| `pre-receive` | Intermediary | Guards against branch name collisions with source branches |
 | `post-commit` | Source | When you commit, syncs changes to intermediary for Claude to pull |
-| `pre-commit` | Source | **Blocks commits that mix excluded and non-excluded files** |
-
-That last one's important. If you try to commit both `.env` and `app.js` together, the hook stops you. Why? Because we can't create a clean patch from a commit that contains secrets. Keep 'em separate.
+| `pre-commit` | Work | Blocks commits containing force-added gitignored files (configurable) |
 
 **Plus optional network isolation** - Allowlist or blocklist mode using iptables. No sudo required.
 
@@ -370,7 +369,7 @@ Each branch maintains separate cache directories (`~/.cache/claude-cage/branches
 
 ## Working with Large Repos
 
-**By default, claude-cage copies your entire working tree** (minus excluded files) into the sandbox. For a small project, no big deal. For a massive monorepo? That's a lot of files, a lot of disk space, and a lot of wait time.
+**By default, claude-cage exports your committed history** (minus excluded files) into the sandbox. For a small project, no big deal. For a massive monorepo? That's a lot of files, a lot of disk space, and a lot of wait time.
 
 Two ways to focus the work:
 
@@ -408,7 +407,7 @@ claude-cage
 Both approaches work seamlessly. Hooks install at the repo root. Commits sync correctly. Claude works in a focused sandbox without the noise of unrelated code.
 
 **Why this matters:**
-- Faster cage setup (less files to copy)
+- Faster cage setup (less files to export)
 - Smaller context for Claude to reason about
 - Keep Claude away from parts of the codebase you don't want touched
 
@@ -417,16 +416,15 @@ Both approaches work seamlessly. Hooks install at the repo root. Commits sync co
 **On your machine:**
 ```
 ~/.cache/claude-cage/
+├── intermediary/<project-path>/      # Shared bare repo (git origin for all branches)
 └── branches/<branch>/
-    ├── intermediary/<project-path>/  # Sanitized repo (git origin)
-    └── work/<project-path>/          # Claude's working copy
+    └── work/<project-path>/          # Claude's working copy (per-branch)
 
 your-project/
 ├── .claude-cage            # Your config
 ├── .caged/                 # Optional symlinks (createCagedDir=true)
 │   └── <branch>/           # Shortcuts to work/ and intermediary/ in cache
 └── .git/hooks/             # Hooks added when autoMerge=true
-    ├── pre-commit          # Prevents mixing excluded/included files
     └── post-commit         # Syncs your commits to intermediary
 ```
 

@@ -310,10 +310,89 @@ fi
 echo "  PASS: post-receive hook logs to sync.log with post-recv direction"
 
 echo ""
+echo "=== Testing post-commit hook branch guard ==="
+echo ""
+
+# Set up a proper intermediary with marks and commit map for the hook to work
+rm -rf "$INTERMEDIARY_DIR"
+mkdir -p "$(dirname "$INTERMEDIARY_DIR")"
+git init --bare "$INTERMEDIARY_DIR" --quiet
+
+# Create marks and commit map
+local_source_marks=$(get_source_marks_path "$INTERMEDIARY_DIR")
+local_import_marks=$(get_import_marks_path "$INTERMEDIARY_DIR")
+local_commit_map=$(get_commit_map_path "$INTERMEDIARY_DIR")
+
+git -C "$SOURCE_PATH" fast-export --export-marks="$local_source_marks" HEAD 2>/dev/null \
+    | git -C "$INTERMEDIARY_DIR" fast-import --export-marks="$local_import_marks" --quiet 2>/dev/null
+: > "$local_commit_map"
+build_commit_map_from_marks "$local_source_marks" "$local_import_marks" "$local_commit_map" "$SOURCE_PATH" "HEAD"
+
+# Create a second branch in source and add it to intermediary
+git -C "$SOURCE_PATH" checkout -b feature-branch --quiet
+echo "feature content" > "$SOURCE_PATH/feature.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Feature commit" --quiet
+
+git -C "$SOURCE_PATH" fast-export --import-marks="$local_source_marks" --export-marks="$local_source_marks" \
+    feature-branch 2>/dev/null \
+    | git -C "$INTERMEDIARY_DIR" fast-import --import-marks="$local_import_marks" --export-marks="$local_import_marks" \
+        --quiet 2>/dev/null
+build_commit_map_from_marks "$local_source_marks" "$local_import_marks" "$local_commit_map" "" ""
+
+# Go back to master
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+
+# Install the hook (target branch is master)
+rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
+rm -f "$SOURCE_PATH/.git/hooks/post-commit"
+setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR" "$BRANCH_NAME"
+post_commit_hook="$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$BRANCH_NAME"
+
+echo "Test 12: Post-commit hook syncs in-scope branch (not just target)"
+# Switch to feature-branch (which exists in intermediary) and commit
+git -C "$SOURCE_PATH" checkout feature-branch --quiet
+echo "new feature" > "$SOURCE_PATH/feature2.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Feature commit 2" --quiet
+
+# Verify the hook synced this commit to the intermediary
+feature_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if grep -q " ${feature_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "  PASS: In-scope branch commit synced to intermediary"
+else
+    echo "FAIL: In-scope branch commit was NOT synced to intermediary"
+    echo "  feature HEAD: $feature_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+
+echo "Test 13: Post-commit hook skips out-of-scope branch"
+# Create a branch that does NOT exist in intermediary and commit
+git -C "$SOURCE_PATH" checkout -b out-of-scope-branch --quiet
+echo "out of scope" > "$SOURCE_PATH/outofscope.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Out of scope" --quiet
+
+out_of_scope_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if grep -q " ${out_of_scope_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "FAIL: Out-of-scope branch commit should NOT have been synced"
+    exit 1
+fi
+echo "  PASS: Out-of-scope branch commit correctly skipped"
+
+# Verify sync.log has the skip message
+if grep -q "not in intermediary" "$INTERMEDIARY_DIR/sync.log" 2>/dev/null; then
+    echo "  (sync.log confirms: 'not in intermediary' skip logged)"
+fi
+
+# Go back to master for remaining tests
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+cleanup_source_hooks "$SOURCE_PATH" "$BRANCH_NAME"
+
+echo ""
 echo "=== Testing autoMerge=false (no hooks) ==="
 echo ""
 
-echo "Test 12: No hooks when autoMerge=false"
+echo "Test 14: No hooks when autoMerge=false"
 # Clean up all existing state
 rm -rf "$INTERMEDIARY_DIR" "$CLAUDE_CAGE_RUNTIME"
 rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"

@@ -679,6 +679,216 @@ fi
 echo "  PASS: build_exclude_pathspecs() empty input"
 passed=$((passed + 1))
 
+# ==========================================================================
+# Incremental (post-commit hook) tests
+#
+# These test the --import-marks + -1 HEAD path used by the source post-commit
+# hook, not the --all path used during initial clone.
+# ==========================================================================
+
+# Helper: run incremental fast-export/import for a single commit
+# Arguments: $1=src $2=dst $3=source_marks $4=import_marks, remaining=raw patterns
+run_incremental() {
+    local src="$1" dst="$2" sm="$3" im="$4"
+    shift 4
+
+    local -a exclude_args=()
+    local pat pathspec base
+    for pat in "$@"; do
+        if [[ "$pat" == */* ]]; then
+            pathspec="$pat"
+        else
+            pathspec="**/$pat"
+        fi
+        exclude_args+=(":(exclude,glob)$pathspec")
+        base="${pathspec%/}"
+        base="${base%/\*}"
+        exclude_args+=(":(exclude,glob)${base}/**")
+    done
+
+    git -C "$src" fast-export \
+        --import-marks="$sm" --export-marks="$sm" \
+        -1 HEAD \
+        ${exclude_args:+-- "${exclude_args[@]}"} \
+        2>/dev/null \
+        | git -C "$dst" fast-import \
+            --import-marks="$im" --export-marks="$im" \
+            --quiet 2>/dev/null
+}
+
+# --------------------------------------------------------------------------
+# Test 20: Incremental mixed commit preserves all non-excluded files
+# --------------------------------------------------------------------------
+total=$((total + 1))
+echo "Test $total: Incremental mixed commit preserves all non-excluded files"
+
+SRC="$TEST_TMP/test_20_src"
+DST="$TEST_TMP/test_20_dst"
+SM="$TEST_TMP/test_20_dst/source-marks"
+IM="$TEST_TMP/test_20_dst/import-marks"
+init_repo "$SRC"
+
+echo "readme" > "$SRC/readme.txt"
+echo "app" > "$SRC/app.js"
+echo "style" > "$SRC/style.css"
+echo "secret" > "$SRC/.env"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Initial" --quiet
+
+# Initial clone
+run_export "$SRC" "$DST" ".env"
+# Save marks (run_export uses --all without marks, need to redo with marks)
+rm -rf "$DST"
+git init --bare "$DST" --quiet
+local_args=(":(exclude,glob)**/.env" ":(exclude,glob)**/.env/**")
+git -C "$SRC" fast-export --export-marks="$SM" --all \
+    -- "${local_args[@]}" 2>/dev/null \
+    | git -C "$DST" fast-import --export-marks="$IM" --quiet 2>/dev/null
+
+# Mixed commit: change .env + app.js (readme.txt and style.css unchanged)
+echo "secret2" > "$SRC/.env"
+echo "app updated" > "$SRC/app.js"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Mixed" --quiet
+
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+
+# All 3 non-excluded files must survive
+for f in readme.txt app.js style.css; do
+    if ! git -C "$DST" show "HEAD:$f" >/dev/null 2>&1; then
+        echo "FAIL: $f missing from intermediary after mixed commit"
+        exit 1
+    fi
+done
+content=$(git -C "$DST" show HEAD:app.js)
+if [ "$content" != "app updated" ]; then
+    echo "FAIL: app.js content should be updated (got '$content')"
+    exit 1
+fi
+echo "  PASS: Incremental mixed commit preserves all non-excluded files"
+passed=$((passed + 1))
+
+# --------------------------------------------------------------------------
+# Test 21: Incremental after excluded-only commit preserves all files
+# --------------------------------------------------------------------------
+total=$((total + 1))
+echo "Test $total: Incremental mixed commit after excluded-only gap"
+
+SRC="$TEST_TMP/test_21_src"
+DST="$TEST_TMP/test_21_dst"
+SM="$TEST_TMP/test_21_dst/source-marks"
+IM="$TEST_TMP/test_21_dst/import-marks"
+init_repo "$SRC"
+
+echo "readme" > "$SRC/readme.txt"
+echo "app" > "$SRC/app.js"
+echo "style" > "$SRC/style.css"
+echo "secret" > "$SRC/.env"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Initial" --quiet
+
+# Initial clone with marks
+git init --bare "$DST" --quiet
+local_args=(":(exclude,glob)**/.env" ":(exclude,glob)**/.env/**")
+git -C "$SRC" fast-export --export-marks="$SM" --all \
+    -- "${local_args[@]}" 2>/dev/null \
+    | git -C "$DST" fast-import --export-marks="$IM" --quiet 2>/dev/null
+
+# Excluded-only commit (creates marks gap)
+echo "secret2" > "$SRC/.env"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Excluded only" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+
+# Mixed commit after the gap
+echo "secret3" > "$SRC/.env"
+echo "readme updated" > "$SRC/readme.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Mixed after gap" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+
+# All 3 non-excluded files must survive (especially app.js and style.css)
+for f in readme.txt app.js style.css; do
+    if ! git -C "$DST" show "HEAD:$f" >/dev/null 2>&1; then
+        echo "FAIL: $f missing from intermediary after mixed commit following excluded-only gap"
+        exit 1
+    fi
+done
+content=$(git -C "$DST" show HEAD:readme.txt)
+if [ "$content" != "readme updated" ]; then
+    echo "FAIL: readme.txt content should be updated (got '$content')"
+    exit 1
+fi
+if git -C "$DST" show HEAD:.env >/dev/null 2>&1; then
+    echo "FAIL: .env should not be in intermediary"
+    exit 1
+fi
+echo "  PASS: Incremental mixed commit after excluded-only gap preserves files"
+passed=$((passed + 1))
+
+# --------------------------------------------------------------------------
+# Test 22: Multiple incremental commits in sequence
+# --------------------------------------------------------------------------
+total=$((total + 1))
+echo "Test $total: Multiple incremental commits in sequence"
+
+SRC="$TEST_TMP/test_22_src"
+DST="$TEST_TMP/test_22_dst"
+SM="$TEST_TMP/test_22_dst/source-marks"
+IM="$TEST_TMP/test_22_dst/import-marks"
+init_repo "$SRC"
+
+echo "file1" > "$SRC/file1.txt"
+echo "secret" > "$SRC/.env"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Initial" --quiet
+
+git init --bare "$DST" --quiet
+local_args=(":(exclude,glob)**/.env" ":(exclude,glob)**/.env/**")
+git -C "$SRC" fast-export --export-marks="$SM" --all \
+    -- "${local_args[@]}" 2>/dev/null \
+    | git -C "$DST" fast-import --export-marks="$IM" --quiet 2>/dev/null
+
+# Commit 2: add new non-excluded file
+echo "file2" > "$SRC/file2.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add file2" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+
+# Commit 3: excluded-only
+echo "secret2" > "$SRC/.env"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Secret only" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+
+# Commit 4: mixed
+echo "secret3" > "$SRC/.env"
+echo "file1 updated" > "$SRC/file1.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Mixed" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+
+# Commit 5: normal
+echo "file3" > "$SRC/file3.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add file3" --quiet
+run_incremental "$SRC" "$DST" "$SM" "$IM" ".env"
+
+# Verify final state
+dst_count=$(git -C "$DST" rev-list --all --count)
+# 5 source commits, 1 excluded-only dropped = 4 in dest
+if [ "$dst_count" != "4" ]; then
+    echo "FAIL: expected 4 commits in dest, got $dst_count"
+    exit 1
+fi
+for f in file1.txt file2.txt file3.txt; do
+    if ! git -C "$DST" show "HEAD:$f" >/dev/null 2>&1; then
+        echo "FAIL: $f missing"
+        exit 1
+    fi
+done
+content=$(git -C "$DST" show HEAD:file1.txt)
+if [ "$content" != "file1 updated" ]; then
+    echo "FAIL: file1.txt should be updated"
+    exit 1
+fi
+if git -C "$DST" show HEAD:.env >/dev/null 2>&1; then
+    echo "FAIL: .env should not be in dest"
+    exit 1
+fi
+echo "  PASS: Multiple incremental commits in sequence"
+passed=$((passed + 1))
+
 echo ""
 echo "Results: $passed/$total passed"
 [ $passed -eq $total ] || exit 1

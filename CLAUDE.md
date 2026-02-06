@@ -534,7 +534,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] `manual_git_merge()` for manual sync
 - [x] Cleanup on exit
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (180+ tests across 13 files)
+- [x] Comprehensive test suite (190 tests across 13 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
@@ -751,7 +751,7 @@ bash tests/run-all.sh
 | test-config.sh | config.sh | 16 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
-| test-git-filter-stream.sh | pathspec exclude filtering | 19 |
+| test-git-filter-stream.sh | pathspec exclude filtering | 22 |
 | test-git-hooks.sh | git-hooks.sh | 12 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 19 |
@@ -761,7 +761,7 @@ bash tests/run-all.sh
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 187 tests across 13 files**
+**Total: 190 tests across 13 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

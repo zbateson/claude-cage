@@ -204,6 +204,7 @@ find_reusable_session() {
     REUSE_SESSION_STATE="none"
     REUSE_SESSION_BRANCH=""
     REUSE_ACTIVE_SESSIONS=""
+    REUSE_DIRTY_SESSIONS=""
 
     if [ ! -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
         return
@@ -226,16 +227,33 @@ find_reusable_session() {
         # Check if session has a live PID
         if session_is_active "$source_dir" "$session_id"; then
             active_sessions+=("$session_id $branch")
-        elif is_work_dirty "$work" || work_has_unpushed "$work"; then
-            inactive_dirty+=("$session_id $branch")
         else
-            inactive_clean+=("$session_id $branch")
+            local has_uncommitted=false has_unpushed=false dirty_type=""
+            is_work_dirty "$work" && has_uncommitted=true
+            work_has_unpushed "$work" && has_unpushed=true
+            if [ "$has_uncommitted" = true ] && [ "$has_unpushed" = true ]; then
+                dirty_type="uncommitted+unpushed"
+            elif [ "$has_uncommitted" = true ]; then
+                dirty_type="uncommitted"
+            elif [ "$has_unpushed" = true ]; then
+                dirty_type="unpushed"
+            fi
+            if [ -n "$dirty_type" ]; then
+                inactive_dirty+=("$session_id $branch $dirty_type")
+            else
+                inactive_clean+=("$session_id $branch")
+            fi
         fi
     done
 
     # Build active sessions list
     if [ ${#active_sessions[@]} -gt 0 ]; then
         REUSE_ACTIVE_SESSIONS=$(printf '%s\n' "${active_sessions[@]}")
+    fi
+
+    # Build dirty sessions list
+    if [ ${#inactive_dirty[@]} -gt 0 ]; then
+        REUSE_DIRTY_SESSIONS=$(printf '%s\n' "${inactive_dirty[@]}")
     fi
 
     # Priority: active > inactive dirty > inactive clean

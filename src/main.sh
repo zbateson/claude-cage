@@ -455,32 +455,91 @@ else
                 echo "Pickin' up clean session $REUSE_SESSION_ID on branch '$REUSE_SESSION_BRANCH'."
                 ;;
             "dirty")
-                # Inactive dirty session - prompt
-                echo "Found an existing cage ($REUSE_SESSION_ID) on branch '$REUSE_SESSION_BRANCH'."
-                echo "  It's got uncommitted changes."
-                echo ""
-                echo "What do you wanna do?"
-                echo "  1) Pick it up (cage stays on branch '$REUSE_SESSION_BRANCH')"
-                echo "  2) Start fresh (new session)"
-                echo "  q) Quit"
-                echo ""
-                while true; do
-                    printf "Choice: "
-                    read -r choice
-                    case "$choice" in
-                        1) CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"; break ;;
-                        2)
-                            CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                            if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
-                                sleep 1
-                                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                            fi
-                            break
-                            ;;
-                        q|Q) echo "Catch you later."; exit 0 ;;
-                        *) echo "Pick 1, 2, or q." ;;
+                # Inactive dirty session(s) - prompt
+                local dirty_count=0
+                if [ -n "$REUSE_DIRTY_SESSIONS" ]; then
+                    dirty_count=$(echo "$REUSE_DIRTY_SESSIONS" | wc -l)
+                fi
+
+                if [ "$dirty_count" -le 1 ]; then
+                    # Single dirty session
+                    local dtype
+                    dtype=$(echo "$REUSE_DIRTY_SESSIONS" | head -1 | awk '{print $3}')
+                    local dirty_desc="uncommitted changes"
+                    case "$dtype" in
+                        unpushed) dirty_desc="unpushed commits" ;;
+                        uncommitted+unpushed) dirty_desc="uncommitted changes and unpushed commits" ;;
                     esac
-                done
+                    echo "Found an existing cage ($REUSE_SESSION_ID) on branch '$REUSE_SESSION_BRANCH'."
+                    echo "  It's got $dirty_desc."
+                    echo ""
+                    echo "What do you wanna do?"
+                    echo "  1) Pick it up (cage stays on branch '$REUSE_SESSION_BRANCH')"
+                    echo "  2) Start fresh (new session)"
+                    echo "  q) Quit"
+                    echo ""
+                    while true; do
+                        printf "Choice: "
+                        read -r choice
+                        case "$choice" in
+                            1) CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"; break ;;
+                            2)
+                                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
+                                    sleep 1
+                                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                                fi
+                                break
+                                ;;
+                            q|Q) echo "Catch you later."; exit 0 ;;
+                            *) echo "Pick 1, 2, or q." ;;
+                        esac
+                    done
+                else
+                    # Multiple dirty sessions - show all
+                    echo "Found $dirty_count existing cages with uncommitted work:"
+                    echo ""
+                    local dirty_ids=()
+                    local didx=1
+                    while IFS=' ' read -r dsid dbranch dtype; do
+                        dirty_ids+=("$dsid")
+                        local dirty_label="uncommitted changes"
+                        case "$dtype" in
+                            unpushed) dirty_label="unpushed commits" ;;
+                            uncommitted+unpushed) dirty_label="uncommitted changes + unpushed commits" ;;
+                        esac
+                        printf "  %d) %s  branch: %-20s (%s)\n" "$didx" "$dsid" "$dbranch" "$dirty_label"
+                        ((didx++))
+                    done <<< "$REUSE_DIRTY_SESSIONS"
+                    echo ""
+                    echo "What do you wanna do?"
+                    echo "  Pick a number to continue that session, or:"
+                    echo "  n) Start fresh (new session)"
+                    echo "  q) Quit"
+                    echo ""
+                    while true; do
+                        printf "Choice: "
+                        read -r choice
+                        case "$choice" in
+                            n|N)
+                                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
+                                    sleep 1
+                                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+                                fi
+                                break
+                                ;;
+                            q|Q) echo "Catch you later."; exit 0 ;;
+                            *)
+                                if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#dirty_ids[@]} ]; then
+                                    CLAUDE_CAGE_SESSION="${dirty_ids[$((choice-1))]}"
+                                    break
+                                fi
+                                echo "Pick a number, n, or q."
+                                ;;
+                        esac
+                    done
+                fi
                 ;;
             "none"|*)
                 # No existing session - create fresh

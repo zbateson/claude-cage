@@ -421,6 +421,343 @@ fi
 echo "  PASS: Nested directory exclude"
 passed=$((passed + 1))
 
+# ==========================================================================
+# Gitignore-semantics tests (XFAIL — known gaps in pattern matching)
+#
+# These tests document differences between our glob matching and gitignore
+# semantics. They are expected to fail until we fix the pattern engine.
+#
+# Reference: gitignore(5) and git's wildmatch implementation
+#   - * matches anything except /
+#   - ** matches anything including /
+#   - ? matches one character except /
+#   - Pattern without / is matched against basename at any depth
+#   - **/ prefix matches zero or more directories
+#   - [abc] character classes work
+# ==========================================================================
+
+xfail=0
+xfail_total=0
+
+# Helper: run a filter and capture the file list (reusable for xfail tests)
+run_filter() {
+    local src="$1" dst="$2"
+    shift 2
+    git init --bare "$dst" --quiet
+    git -C "$src" fast-export --all \
+        | filter_fast_export_stream "$@" \
+        | git -C "$dst" fast-import --quiet 2>/dev/null
+    git -C "$dst" ls-tree -r --name-only HEAD 2>/dev/null || true
+}
+
+# --------------------------------------------------------------------------
+# XFAIL 1: **/ prefix should match zero directories (root-level match)
+#
+# In gitignore, **/__pycache__ matches __pycache__ at ANY depth including
+# the repo root. Our regex ^.*/__pycache__(/.*)?$ requires at least one
+# directory prefix, so root-level __pycache__ is missed.
+# --------------------------------------------------------------------------
+xfail_total=$((xfail_total + 1))
+echo "XFAIL $xfail_total: **/__pycache__ should match at root level"
+
+SRC="$TEST_TMP/xfail_1_src"
+DST="$TEST_TMP/xfail_1_dst"
+init_repo "$SRC"
+
+mkdir -p "$SRC/__pycache__" "$SRC/src/__pycache__"
+echo "root-cache" > "$SRC/__pycache__/root.pyc"
+echo "nested-cache" > "$SRC/src/__pycache__/module.pyc"
+echo "code" > "$SRC/main.py"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
+
+file_list=$(run_filter "$SRC" "$DST" "**/__pycache__")
+_xfail_ok=true
+if echo "$file_list" | grep -q "^__pycache__/"; then
+    echo "  BUG: root-level __pycache__/ not excluded by **/__pycache__"
+    _xfail_ok=false
+fi
+if echo "$file_list" | grep -q "^src/__pycache__/"; then
+    echo "  BUG: src/__pycache__/ not excluded by **/__pycache__"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^main\.py$"; then
+    echo "  BUG: main.py should be present"
+    _xfail_ok=false
+fi
+if $_xfail_ok; then
+    echo "  SURPRISE PASS (fixed?)"
+    passed=$((passed + 1))
+else
+    echo "  XFAIL (expected)"
+    xfail=$((xfail + 1))
+fi
+
+# --------------------------------------------------------------------------
+# XFAIL 2: Plain name without / should match at any depth (basename match)
+#
+# In gitignore, a pattern without / is matched against the file's basename,
+# so ".env" matches both root .env and config/.env. Our regex ^\.env(/.*)?$
+# only matches at root.
+# --------------------------------------------------------------------------
+xfail_total=$((xfail_total + 1))
+echo "XFAIL $xfail_total: Plain name .env should match at any depth"
+
+SRC="$TEST_TMP/xfail_2_src"
+DST="$TEST_TMP/xfail_2_dst"
+init_repo "$SRC"
+
+echo "root-secret" > "$SRC/.env"
+mkdir -p "$SRC/config" "$SRC/deploy/staging"
+echo "config-secret" > "$SRC/config/.env"
+echo "staging-secret" > "$SRC/deploy/staging/.env"
+echo "public" > "$SRC/readme.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
+
+file_list=$(run_filter "$SRC" "$DST" ".env")
+_xfail_ok=true
+if echo "$file_list" | grep -q "^\.env$"; then
+    echo "  BUG: root .env not excluded"
+    _xfail_ok=false
+fi
+if echo "$file_list" | grep -q "^config/\.env$"; then
+    echo "  BUG: config/.env not excluded by plain .env pattern"
+    _xfail_ok=false
+fi
+if echo "$file_list" | grep -q "^deploy/staging/\.env$"; then
+    echo "  BUG: deploy/staging/.env not excluded by plain .env pattern"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^readme\.txt$"; then
+    echo "  BUG: readme.txt should be present"
+    _xfail_ok=false
+fi
+if $_xfail_ok; then
+    echo "  SURPRISE PASS (fixed?)"
+    passed=$((passed + 1))
+else
+    echo "  XFAIL (expected)"
+    xfail=$((xfail + 1))
+fi
+
+# --------------------------------------------------------------------------
+# XFAIL 3: * should not cross / when pattern contains /
+#
+# In gitignore, dir/*.log matches dir/app.log but NOT dir/sub/app.log
+# because * does not cross directory separators. Our regex dir/.*\.log
+# matches both because .* crosses /.
+# --------------------------------------------------------------------------
+xfail_total=$((xfail_total + 1))
+echo "XFAIL $xfail_total: dir/*.log should not match dir/sub/app.log"
+
+SRC="$TEST_TMP/xfail_3_src"
+DST="$TEST_TMP/xfail_3_dst"
+init_repo "$SRC"
+
+mkdir -p "$SRC/dir/sub"
+echo "direct" > "$SRC/dir/app.log"
+echo "nested" > "$SRC/dir/sub/app.log"
+echo "public" > "$SRC/readme.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
+
+file_list=$(run_filter "$SRC" "$DST" "dir/*.log")
+_xfail_ok=true
+if echo "$file_list" | grep -q "^dir/app\.log$"; then
+    echo "  BUG: dir/app.log should be excluded by dir/*.log"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^dir/sub/app\.log$"; then
+    echo "  BUG: dir/sub/app.log should NOT be excluded by dir/*.log (* doesn't cross /)"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^readme\.txt$"; then
+    echo "  BUG: readme.txt should be present"
+    _xfail_ok=false
+fi
+if $_xfail_ok; then
+    echo "  SURPRISE PASS (fixed?)"
+    passed=$((passed + 1))
+else
+    echo "  XFAIL (expected)"
+    xfail=$((xfail + 1))
+fi
+
+# --------------------------------------------------------------------------
+# XFAIL 4: **/ should match zero or more directories
+#
+# **/foo.txt should match foo.txt at root (zero directories) AND
+# dir/foo.txt, a/b/foo.txt, etc. Our regex ^.*/foo\.txt(/.*)?$ requires
+# at least one directory level, missing root.
+# --------------------------------------------------------------------------
+xfail_total=$((xfail_total + 1))
+echo "XFAIL $xfail_total: **/foo.txt should match root-level foo.txt"
+
+SRC="$TEST_TMP/xfail_4_src"
+DST="$TEST_TMP/xfail_4_dst"
+init_repo "$SRC"
+
+echo "root-secret" > "$SRC/foo.txt"
+mkdir -p "$SRC/dir" "$SRC/a/b"
+echo "dir-secret" > "$SRC/dir/foo.txt"
+echo "deep-secret" > "$SRC/a/b/foo.txt"
+echo "public" > "$SRC/readme.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
+
+file_list=$(run_filter "$SRC" "$DST" "**/foo.txt")
+_xfail_ok=true
+if echo "$file_list" | grep -q "^foo\.txt$"; then
+    echo "  BUG: root foo.txt not excluded by **/foo.txt"
+    _xfail_ok=false
+fi
+if echo "$file_list" | grep -q "^dir/foo\.txt$"; then
+    echo "  BUG: dir/foo.txt not excluded by **/foo.txt"
+    _xfail_ok=false
+fi
+if echo "$file_list" | grep -q "^a/b/foo\.txt$"; then
+    echo "  BUG: a/b/foo.txt not excluded by **/foo.txt"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^readme\.txt$"; then
+    echo "  BUG: readme.txt should be present"
+    _xfail_ok=false
+fi
+if $_xfail_ok; then
+    echo "  SURPRISE PASS (fixed?)"
+    passed=$((passed + 1))
+else
+    echo "  XFAIL (expected)"
+    xfail=$((xfail + 1))
+fi
+
+# --------------------------------------------------------------------------
+# XFAIL 5: Plain directory name should match at any depth
+#
+# __pycache__ (no / in pattern) should match __pycache__ at any depth,
+# like gitignore basename matching. Currently only matches root.
+# --------------------------------------------------------------------------
+xfail_total=$((xfail_total + 1))
+echo "XFAIL $xfail_total: Plain __pycache__ should match at any depth"
+
+SRC="$TEST_TMP/xfail_5_src"
+DST="$TEST_TMP/xfail_5_dst"
+init_repo "$SRC"
+
+mkdir -p "$SRC/__pycache__" "$SRC/src/__pycache__" "$SRC/src/deep/__pycache__"
+echo "root" > "$SRC/__pycache__/root.pyc"
+echo "src" > "$SRC/src/__pycache__/module.pyc"
+echo "deep" > "$SRC/src/deep/__pycache__/deep.pyc"
+echo "code" > "$SRC/main.py"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
+
+file_list=$(run_filter "$SRC" "$DST" "__pycache__")
+_xfail_ok=true
+if echo "$file_list" | grep -q "__pycache__"; then
+    echo "  BUG: __pycache__ found in output: $(echo "$file_list" | grep '__pycache__' | head -3)"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^main\.py$"; then
+    echo "  BUG: main.py should be present"
+    _xfail_ok=false
+fi
+if $_xfail_ok; then
+    echo "  SURPRISE PASS (fixed?)"
+    passed=$((passed + 1))
+else
+    echo "  XFAIL (expected)"
+    xfail=$((xfail + 1))
+fi
+
+# --------------------------------------------------------------------------
+# XFAIL 6: *.ext without / should match at any depth (basename semantics)
+#
+# In gitignore, *.log (no /) matches the basename, so it excludes
+# app.log AND dir/debug.log AND deep/nested/trace.log. Our current
+# implementation happens to get this right (*.log → ^.*\.log(/.*)?$),
+# but for the WRONG reason (* crosses / in our regex). This test
+# verifies the behavior works, but also tests that a similar pattern
+# WITH a / component (logs/*.log) correctly restricts depth.
+# --------------------------------------------------------------------------
+xfail_total=$((xfail_total + 1))
+echo "XFAIL $xfail_total: logs/*.log should not match logs/sub/deep.log"
+
+SRC="$TEST_TMP/xfail_6_src"
+DST="$TEST_TMP/xfail_6_dst"
+init_repo "$SRC"
+
+mkdir -p "$SRC/logs/sub"
+echo "direct" > "$SRC/logs/app.log"
+echo "nested" > "$SRC/logs/sub/deep.log"
+echo "root" > "$SRC/app.log"
+echo "public" > "$SRC/readme.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
+
+file_list=$(run_filter "$SRC" "$DST" "logs/*.log")
+_xfail_ok=true
+if echo "$file_list" | grep -q "^logs/app\.log$"; then
+    echo "  BUG: logs/app.log should be excluded by logs/*.log"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^logs/sub/deep\.log$"; then
+    echo "  BUG: logs/sub/deep.log should NOT be excluded by logs/*.log (* doesn't cross /)"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^app\.log$"; then
+    echo "  BUG: root app.log should NOT be excluded by logs/*.log (has / so full-path match)"
+    _xfail_ok=false
+fi
+if $_xfail_ok; then
+    echo "  SURPRISE PASS (fixed?)"
+    passed=$((passed + 1))
+else
+    echo "  XFAIL (expected)"
+    xfail=$((xfail + 1))
+fi
+
+# --------------------------------------------------------------------------
+# XFAIL 7: dir/**/file should match dir/file (zero intermediate dirs)
+#
+# In gitignore, dir/**/file.txt matches dir/file.txt (zero intermediate
+# directories), dir/a/file.txt, dir/a/b/file.txt, etc.
+# --------------------------------------------------------------------------
+xfail_total=$((xfail_total + 1))
+echo "XFAIL $xfail_total: dir/**/file.txt should match dir/file.txt (zero intermediate)"
+
+SRC="$TEST_TMP/xfail_7_src"
+DST="$TEST_TMP/xfail_7_dst"
+init_repo "$SRC"
+
+mkdir -p "$SRC/dir/a/b"
+echo "direct" > "$SRC/dir/file.txt"
+echo "one-deep" > "$SRC/dir/a/file.txt"
+echo "two-deep" > "$SRC/dir/a/b/file.txt"
+echo "public" > "$SRC/readme.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -m "Add files" --quiet
+
+file_list=$(run_filter "$SRC" "$DST" "dir/**/file.txt")
+_xfail_ok=true
+if echo "$file_list" | grep -q "^dir/file\.txt$"; then
+    echo "  BUG: dir/file.txt not excluded by dir/**/file.txt (zero intermediate)"
+    _xfail_ok=false
+fi
+if echo "$file_list" | grep -q "^dir/a/file\.txt$"; then
+    echo "  BUG: dir/a/file.txt not excluded by dir/**/file.txt"
+    _xfail_ok=false
+fi
+if echo "$file_list" | grep -q "^dir/a/b/file\.txt$"; then
+    echo "  BUG: dir/a/b/file.txt not excluded by dir/**/file.txt"
+    _xfail_ok=false
+fi
+if ! echo "$file_list" | grep -q "^readme\.txt$"; then
+    echo "  BUG: readme.txt should be present"
+    _xfail_ok=false
+fi
+if $_xfail_ok; then
+    echo "  SURPRISE PASS (fixed?)"
+    passed=$((passed + 1))
+else
+    echo "  XFAIL (expected)"
+    xfail=$((xfail + 1))
+fi
+
 echo ""
-echo "Results: $passed/$total passed"
+echo "Results: $passed/$total passed, $xfail/$xfail_total xfail (expected failures)"
 [ $passed -eq $total ] || exit 1

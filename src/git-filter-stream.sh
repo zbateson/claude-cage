@@ -27,34 +27,44 @@ filter_fast_export_stream() {
         return
     fi
 
-    # should_exclude <path>
-    # Returns 0 (true) if the path matches any exclusion pattern.
-    # Handles quoted paths from fast-export (e.g. "src/has spaces.txt").
-    _fes_should_exclude() {
-        local path="$1"
+    # Convert glob patterns to awk-compatible regex patterns.
+    # Each pattern becomes a line: "P:<regex>" (prefix) or "G:<regex>" (glob).
+    local regex_patterns=""
+    local pat
+    for pat in "${PATTERNS[@]}"; do
+        # Escape regex special characters (except * and ?)
+        # Use multiple s/// commands because bracket expressions with
+        # backslashes and brackets are unreliable across sed implementations.
+        local regex
+        regex=$(printf '%s' "$pat" | sed \
+            -e 's/\\/\\\\/g' \
+            -e 's/\./\\./g' \
+            -e 's/+/\\+/g' \
+            -e 's/(/\\(/g' \
+            -e 's/)/\\)/g' \
+            -e 's/{/\\{/g' \
+            -e 's/}/\\}/g' \
+            -e 's/|/\\|/g' \
+            -e 's/\^/\\^/g' \
+            -e 's/\$/\\$/g' \
+            -e 's/\[/\\[/g' \
+            -e 's/\]/\\]/g')
+        # Convert ** to placeholder, then * to .*, then restore placeholder.
+        # This prevents the * inside .* from being double-converted.
+        regex="${regex//\*\*/__DSTAR__}"
+        regex="${regex//\*/.*}"
+        regex="${regex//__DSTAR__/.*}"
+        # Convert ? to .
+        regex="${regex//\?/.}"
 
-        # Strip surrounding quotes (fast-export quotes paths with spaces/special chars)
-        if [[ "$path" =~ ^\"(.*)\"$ ]]; then
-            path="${BASH_REMATCH[1]}"
+        if [[ "$pat" == */ ]]; then
+            # Directory prefix: match path starting with this prefix
+            regex_patterns+="P:^${regex}"$'\n'
+        else
+            # Glob: exact match OR files within matching directory
+            regex_patterns+="G:^${regex}(/.*)?$"$'\n'
         fi
-
-        local pat
-        for pat in "${PATTERNS[@]}"; do
-            if [[ "$pat" == */ ]]; then
-                # Directory prefix match
-                [[ "$path" == "${pat}"* || "$path" == "${pat%/}" ]] && return 0
-            else
-                # Glob match (bash [[ ]] glob -- * crosses directory separators)
-                # shellcheck disable=SC2254
-                [[ "$path" == $pat ]] && return 0
-                # Also match files within matching directories
-                # e.g. pattern **/__pycache__ should match src/__pycache__/module.pyc
-                # shellcheck disable=SC2254
-                [[ "$path" == $pat/* ]] && return 0
-            fi
-        done
-        return 1
-    }
+    done
 
     # Stage input into a seekable temp file (two-pass processing)
     local TMPSTREAM
@@ -66,62 +76,92 @@ filter_fast_export_stream() {
 
     cat > "$TMPSTREAM"
 
-    # Pass 1: Identify blob marks to strip
+    # Pass 1 (awk): Identify blob marks to strip and excluded paths.
     #
     # A mark is stripped only if every M line referencing it is for an excluded
     # path. If the same blob is referenced by both an excluded and a kept path,
     # the blob is preserved.
-    local -A MARK_EXCLUDED
-    local -A MARK_KEPT
-
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^M\ [0-9]+\ (:[0-9]+)\ (.+)$ ]]; then
-            local mark="${BASH_REMATCH[1]}"
-            local path="${BASH_REMATCH[2]}"
-            if _fes_should_exclude "$path"; then
-                MARK_EXCLUDED["$mark"]=1
-            else
-                MARK_KEPT["$mark"]=1
-            fi
-        fi
-    done < "$TMPSTREAM"
-
-    local -A STRIP_MARKS
-    local mark
-    for mark in "${!MARK_EXCLUDED[@]}"; do
-        if [[ -z "${MARK_KEPT[$mark]+_}" ]]; then
-            STRIP_MARKS["$mark"]=1
-        fi
-    done
-
-    # Pass 1b: Collect all excluded paths for awk lookup
-    local -A EXCLUDED_PATHS
-
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^M\ [0-9]+\ :[0-9]+\ (.+)$ ]]; then
-            local path="${BASH_REMATCH[1]}"
-            _fes_should_exclude "$path" && EXCLUDED_PATHS["$path"]=1
-        elif [[ "$line" =~ ^D\ (.+)$ ]]; then
-            local path="${BASH_REMATCH[1]}"
-            _fes_should_exclude "$path" && EXCLUDED_PATHS["$path"]=1
-        fi
-    done < "$TMPSTREAM"
-
-    # Build space-separated strings for awk
-    local strip_marks_str=""
-    for mark in "${!STRIP_MARKS[@]}"; do
-        strip_marks_str="${strip_marks_str}${mark} "
-    done
-
-    local excluded_paths_str=""
-    local p
-    for p in "${!EXCLUDED_PATHS[@]}"; do
-        excluded_paths_str="${excluded_paths_str}${p}"$'\n'
-    done
-
-    # Pass 2: Filter the stream via awk
     #
-    # Awk handles stateful line-by-line processing: tracking blob sections,
+    # LC_ALL=C for binary-safe byte counting in data sections.
+    local analysis
+    analysis=$(LC_ALL=C _FES_PATTERNS="$regex_patterns" awk '
+BEGIN {
+    patterns = ENVIRON["_FES_PATTERNS"]
+    n = split(patterns, pat_arr, "\n")
+    pat_count = 0
+    for (i = 1; i <= n; i++) {
+        if (pat_arr[i] == "") continue
+        pat_count++
+        pat_types[pat_count] = substr(pat_arr[i], 1, 1)
+        pat_regexes[pat_count] = substr(pat_arr[i], 3)
+    }
+    state = "normal"
+    remaining = 0
+}
+
+function should_exclude(path) {
+    # Strip surrounding quotes (fast-export quotes paths with spaces)
+    if (substr(path, 1, 1) == "\"")
+        path = substr(path, 2, length(path) - 2)
+    for (i = 1; i <= pat_count; i++) {
+        if (path ~ pat_regexes[i]) return 1
+    }
+    return 0
+}
+
+# Skip over data sections to avoid matching binary content
+state == "skip_data" {
+    remaining -= (length($0) + 1)
+    if (remaining <= 0) state = "normal"
+    next
+}
+
+state == "normal" && /^data [0-9]+$/ {
+    remaining = $2 + 0
+    if (remaining > 0) state = "skip_data"
+    next
+}
+
+state == "normal" && /^M [0-9]+ :[0-9]+ / {
+    mark = $3
+    path = $0; sub(/^M [0-9]+ :[0-9]+ /, "", path)
+    if (should_exclude(path)) {
+        mark_excl[mark] = 1
+        excl_paths[path] = 1
+    } else {
+        mark_kept[mark] = 1
+    }
+}
+
+state == "normal" && /^D / {
+    path = $0; sub(/^D /, "", path)
+    if (should_exclude(path)) {
+        excl_paths[path] = 1
+    }
+}
+
+END {
+    for (m in mark_excl) {
+        if (!(m in mark_kept)) printf "S:%s\n", m
+    }
+    for (p in excl_paths) {
+        printf "E:%s\n", p
+    }
+}
+' "$TMPSTREAM")
+
+    # Parse analysis output into space/newline-separated strings for pass 2
+    local strip_marks_str="" excluded_paths_str=""
+    while IFS= read -r aline; do
+        case "$aline" in
+            S:*) strip_marks_str+="${aline#S:} " ;;
+            E:*) excluded_paths_str+="${aline#E:}"$'\n' ;;
+        esac
+    done <<< "$analysis"
+
+    # Pass 2 (awk): Filter the stream.
+    #
+    # Stateful line-by-line processing: tracking blob sections,
     # skipping data payloads by byte count, removing excluded M/D lines,
     # and collapsing consecutive blank lines left behind.
     #

@@ -8,8 +8,9 @@ Documentation for `claude-cage` - a lightweight sandboxed git workflow for Claud
 
 **Key features:**
 - No sudo required - runs as current user
-- Git-based sync - sparse checkout + fresh git init
-- File exclusion via sparse checkout (no history of excluded files)
+- Git-based sync with real commit history (fast-export/fast-import)
+- File exclusion via stream filter (no excluded file content in intermediary)
+- Configurable history depth (default: 50 commits)
 - Network filtering via iptables (optional)
 
 ## Platform Support
@@ -39,10 +40,10 @@ sudo apt install bubblewrap slirp4netns
 
 ```
 Source Project                    ~/.cache/.../intermediary        ~/.cache/.../work
-(your actual repo)                (sanitized, fresh git)           (Claude's workspace)
+(your actual repo)                (bare repo, shared)              (Claude's workspace)
        │                                   │                              │
-       │  sparse checkout + fresh init      │     git clone                │
-       │  (excludes applied)               │                              │
+       │  fast-export + stream filter       │     git clone                │
+       │  (excludes stripped, N commits)   │                              │
        └──────────────────────────────────>│──────────────────────────────>
                                            │                              │
                                            │<────── git push ─────────────┤
@@ -55,48 +56,59 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 ### Three-Repository Model
 
 1. **Source** - Your actual project with full git history
-2. **Intermediary** (`~/.cache/claude-cage/branches/<branch>/intermediary/<project-path>/`) - Fresh git repo using same branch name as source (e.g., `main`), excluded files removed, no history of sensitive data
-3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary using same branch name as source where Claude works
+2. **Intermediary** (`~/.cache/claude-cage/intermediary/<project-path>/`) - Persistent bare repo shared across branches, with real commit history (configurable depth). Excluded file content is stripped by the stream filter during export — no excluded data ever enters the intermediary object store.
+3. **Work** (`~/.cache/claude-cage/branches/<branch>/work/<project-path>/`) - Clone of intermediary where Claude works
 
-Each source branch gets its own isolated cache directories, allowing concurrent sessions on different branches. Inside the sandbox, each project's work directory is mounted at its original path, and intermediaries are mounted at `/run<project-path>`, so git origins are accessible there.
+The intermediary is shared across all branches for a given project. Work directories are per-branch, allowing concurrent sessions on different branches. Inside the sandbox, each project's work directory is mounted at its original path, and intermediaries are mounted at `/run<intermediary-path>`, so git origins are accessible there.
 
-Both intermediary and work use the same branch name as your source project (e.g., if you're on `main`, they use `main`; if you're on `feature/foo`, they use `feature/foo`). Intermediary has `receive.denyCurrentBranch=updateInstead` to allow pushing to the checked-out branch.
+Both intermediary and work use the same branch name as your source project (e.g., if you're on `main`, they use `main`; if you're on `feature/foo`, they use `feature/foo`). The intermediary is a bare repo with `receive.denyNonFastForwards=true` to prevent force pushes.
 
 ### Why Intermediary?
 
 The intermediary repo serves as a buffer:
 - Claude's git remote points here, not your source
-- Post-receive hook triggers sync to source
-- Prevents accidental direct access to source history
-- Clean slate - no git history containing excluded files
+- Post-receive hook triggers sync to source via named pipe
+- Prevents accidental direct access to full source history
+- No excluded file content in the object store (stripped during export)
+- Preserves real commit history (configurable depth) for meaningful `git log`
+- Persistent across sessions — only rebuilt when exclude patterns change
 - Located in `~/.cache/` - no `.gitignore` entry needed in your project
 
 ### How the Intermediary Is Created
 
-`create_intermediary_clone()` uses a two-step process: **sparse checkout** for file selection, then **delete `.git` and reinitialize** for a clean history.
+`create_intermediary_clone()` uses `git fast-export` piped through a stream filter into `git fast-import` to create a bare repo with real history but no excluded content.
 
-1. `git clone --depth 1 --sparse --filter=blob:none --no-checkout` from source
-2. Configure sparse-checkout patterns (include `/*`, exclude configured patterns)
-3. `git checkout` — only non-excluded files appear in working directory
-4. Delete `.git` entirely, `git init` fresh, commit all files as a single initial commit
-5. Clone the intermediary to create the work directory
+1. `git init --bare` the intermediary directory
+2. Calculate export range: `default_branch~historyDepth..HEAD` (widened to include merge-base if on a feature branch)
+3. Discover in-scope branches (any branch whose merge-base falls within the range)
+4. `git fast-export` with `:(exclude)` pathspec hints, piped through `filter_fast_export_stream` to strip excluded file content, piped into `git fast-import` on the bare intermediary
+5. Build commit hash mapping from fast-export/fast-import marks files
+6. Install pre-receive (branch name guard) and post-receive (pipe notification) hooks
+7. `git clone` the intermediary to create the work directory
+8. Set work origin URL to `/run<intermediary-path>` (sandbox mount point)
 
-This hybrid approach was arrived at after iterating through several alternatives, each of which had a fatal flaw:
+**Key properties:**
+- **Two-layer exclude filtering**: `:(exclude)` pathspec as first pass (performance), `filter_fast_export_stream` as safety net (correctness for all glob patterns)
+- **1:1 commit mapping**: Every source commit maps to exactly one intermediary commit (or `0` for excluded-only commits). This enables bidirectional sync without loops.
+- **Incremental updates**: When the intermediary already exists, new commits are added via `--import-marks`/`--export-marks` without rebuilding from scratch.
+- **Exclude hash tracking**: If exclude patterns change, the intermediary is rebuilt automatically.
+
+The stream filter approach was chosen after iterating through alternatives that each had fatal flaws:
 
 | Approach | Problem |
 |----------|---------|
-| **Sparse checkout alone** (no reinit) | Excluded files are still in the git object store/history — just hidden from the working tree. Claude could `git log -- .env` and see them. |
-| **`--filter=blob:none`** partial clones | Can't serve as a git remote — the work directory couldn't clone from the intermediary. |
-| **`git archive`** + fresh init | Respects `.gitattributes` `export-ignore` — silently drops files that Claude should have access to. |
-| **`git archive`** pathspec excludes | `:!**/foo` doesn't match `foo` at the repo root (`**` matches 1+ directories, not 0+). |
-| **`git ls-files`** + tar | Uses working directory state, not committed state — uncommitted changes and staged files leak into the intermediary. |
+| **Sparse checkout + reinit** (previous approach) | No commit history — single initial commit loses all context |
+| **Sparse checkout alone** (no reinit) | Excluded files still in git object store, visible via `git log -- .env` |
+| **`--filter=blob:none`** partial clones | Can't serve as a git remote for the work directory |
+| **`git archive`** + fresh init | Respects `.gitattributes` `export-ignore`, silently drops wanted files |
+| **`:(exclude)` pathspec alone** | `**/__pycache__` doesn't work without `(glob)` magic; unreliable for all patterns |
 
-The current approach avoids all of these:
-- **Sparse checkout** operates on committed state (HEAD), so uncommitted changes don't leak
-- **Sparse checkout** uses git's own exclude pattern matching (no `git archive` pathspec quirks)
-- **Sparse checkout** ignores `.gitattributes` `export-ignore` directives
-- **Deleting `.git` and reinitializing** ensures zero history of excluded files in the intermediary
-- **Cloning from the reinitialized intermediary** works because it's a normal (non-partial) repo
+The fast-export + stream filter approach avoids all of these:
+- **Real history** with configurable depth — `git log` shows meaningful commit messages
+- **Stream filter** handles all glob patterns reliably (bash `[[ ]]` matching)
+- **No excluded content** ever enters the intermediary — blobs are stripped before `fast-import`
+- **Operates on committed state** — uncommitted changes don't leak
+- **Bare repo** serves as a proper git remote for the work directory
 
 ## Source Files
 
@@ -107,7 +119,8 @@ The current approach avoids all of these:
 | `src/banner.sh` | ASCII art banner (print_banner) |
 | `src/config-builder.sh` | Interactive config generator when no config exists |
 | `src/config.sh` | Lua-based config parsing (system, user, includeIf, local) |
-| `src/git-clone.sh` | `create_intermediary_clone()` - sparse checkout + fresh init with excludes |
+| `src/git-clone.sh` | `create_intermediary_clone()` - bare repo via fast-export/fast-import with excludes |
+| `src/git-filter-stream.sh` | `filter_fast_export_stream()` - strips excluded paths from fast-export streams |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
 | `src/git-sync.sh` | `sync_to_source()`, pipe listener, manual merge |
@@ -127,14 +140,15 @@ The current approach avoids all of these:
 4. `config-builder.sh` - Interactive config
 5. `config.sh` - Lua parsing
 6. `git-clone.sh` - Intermediary creation
-7. `git-hooks.sh` - Hook setup
-8. `git-patches.sh` - Patch recovery
-9. `git-sync.sh` - Manual merge
-10. `network.sh` - Network isolation
-11. `mounts.sh` - Shared mount logic
-12. `bwrap.sh` - Bwrap sandbox
-13. `docker.sh` - Docker sandbox
-14. `main.sh` - Orchestration
+7. `git-filter-stream.sh` - Fast-export stream filter
+8. `git-hooks.sh` - Hook setup
+9. `git-patches.sh` - Patch recovery
+10. `git-sync.sh` - Sync and state management
+11. `network.sh` - Network isolation
+12. `mounts.sh` - Shared mount logic
+13. `bwrap.sh` - Bwrap sandbox
+14. `docker.sh` - Docker sandbox
+15. `main.sh` - Orchestration
 
 ```bash
 make        # Build dist/claude-cage
@@ -150,28 +164,32 @@ When `autoMerge = true`:
 1. Claude makes commits in the work directory
 2. Claude runs `git push origin`
 3. Intermediary's `post-receive` hook fires
-4. Hook writes `<refname> <newrev>` to named pipe (mounted at `/tmp/claude-cage/pipe` inside sandbox)
+4. Hook writes `<refname> <newrev> <oldrev>` to named pipe (mounted at `/tmp/claude-cage/pipe` inside sandbox)
 5. Pipe listener on host reads the message
 6. `sync_to_source()` runs:
-   - Skips initial commit (just a copy)
-   - Uses `git format-patch` on intermediary
+   - Walks commits `oldrev..newrev` in topological order
+   - Skips commits already in the commit mapping (loop prevention)
+   - Uses `git format-patch` for each new commit
    - Applies to source with `git am --3way` (same branch) or temp-index + `git update-ref` (user switched branches)
-   - Updates state file after successful apply (critical for branch-switch path where hooks don't fire)
+   - Adds `<intermediary-hash> <source-hash>` to commit mapping after each successful apply
+   - For new branches (oldrev is 0000...): creates branch on source from mapped parent
 
 ### Inbound (Source -> Intermediary)
 
 When you commit to source:
 
 1. `post-commit` hook on source fires
-2. Creates patch excluding sensitive files using pathspec excludes
-3. Applies patch to intermediary's matching branch with `git am`
-4. Claude runs `git pull` when ready to get changes
+2. Checks commit mapping — skips if source HEAD is already mapped (loop prevention)
+3. Runs `git fast-export -1 HEAD` piped through `filter_fast_export_stream` to strip excluded content
+4. Pipes filtered stream into `git fast-import` on the bare intermediary
+5. Updates marks files and commit mapping
+6. Claude runs `git pull` when ready to get changes
 
-If commit only contains excluded files, shows: "Only excluded files in this commit, nothin' to sync."
+If commit only contains excluded files, the stream filter produces an empty commit. The commit mapping records `0 <source-hash>` for these (no intermediary commit created).
 
-### Commit Separation
+### Mixed Commits
 
-`pre-commit` hook on source prevents mixing excluded and included files in the same commit. This ensures patches can be cleanly created without sensitive data.
+The stream filter handles commits that touch both excluded and non-excluded files. It strips the excluded file operations from the fast-export stream while preserving the commit itself. This means users don't need to worry about separating excluded and non-excluded files into different commits — the filter handles it transparently in both directions.
 
 ### Multiple Sessions
 
@@ -179,7 +197,7 @@ Multiple claude-cage sessions can run concurrently on the same project (even on 
 
 1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<branch>/<path-hash>/` early at startup (before any destructive operations), regardless of autoMerge setting
 2. **Rebuild protection** - If another session is active for the same branch+project, the cage is never rebuilt (even if source has moved ahead). New sessions join the existing cage instead.
-3. **Hook dispatcher** - Source hooks use a dispatcher pattern (`.git/hooks/post-commit` runs all scripts in `post-commit.d/`)
+3. **Hook dispatcher** - Source `post-commit` hook uses a dispatcher pattern (`.git/hooks/post-commit` runs all scripts in `post-commit.d/`)
 4. **Branch-specific hooks** - Each branch gets its own hook file: `post-commit.d/claude-cage-<branch>`
 5. **Safe cleanup** - Sessions are unregistered on exit. Hooks are only removed when no other sessions need them.
 
@@ -274,6 +292,8 @@ claude_cage {
 
     -- Git options
     git = {
+        historyDepth = 50,    -- Number of commits to include in intermediary (default: 50)
+        defaultBranch = "auto", -- Branch detection: "auto" or explicit name
         -- Block commits containing force-added gitignored files (default: true).
         -- Force-added ignored files break patch-based sync between cage and source.
         -- Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
@@ -304,6 +324,8 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 | `block` | `{}` | Blocked destinations (domains, ips, networks with optional ports) |
 | `docker.image` | `"node:lts-slim"` | Docker image to use (docker mode only) |
 | `docker.packages` | `{"curl", "iputils-ping"}` | Packages to install in Docker container (as root, before dropping privileges) |
+| `git.historyDepth` | `50` | Number of commits to include in intermediary history |
+| `git.defaultBranch` | `"auto"` | Default branch for history anchoring (`"auto"` detects from remote/main/master) |
 | `git.blockForceAdd` | `true` | Block commits containing force-added gitignored files in work repo |
 
 ### Direct Mount Mode
@@ -383,11 +405,15 @@ project/.caged/
 ├── .gitignore           # Self-ignoring: contains "* \n !.gitignore"
 ├── main/
 │   ├── work         → ~/.cache/claude-cage/branches/main/work/<project-path>/
-│   └── intermediary → ~/.cache/claude-cage/branches/main/intermediary/<project-path>/
+│   ├── intermediary → ~/.cache/claude-cage/intermediary/<project-path>/
+│   └── sync.log     → ~/.cache/claude-cage/intermediary/<project-path>/sync.log
 ├── feature--foo/
 │   ├── work         → ~/.cache/.../branches/feature--foo/work/<project-path>/
-│   └── intermediary → ~/.cache/.../branches/feature--foo/intermediary/<project-path>/
+│   ├── intermediary → ~/.cache/.../intermediary/<project-path>/
+│   └── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
 ```
+
+Note: The intermediary symlink points to the same shared bare repo for all branches (it's not per-branch).
 
 **Benefits:**
 - `ls .caged/` shows all caged branches at a glance
@@ -490,26 +516,29 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 
 ### Implemented
 
-- [x] Config parsing (Lua-based, same as main claude-cage)
-- [x] `create_intermediary_clone()` - sparse checkout + fresh git init (no history of excluded files)
-- [x] Work directory clone using source branch name
+- [x] Config parsing (Lua-based, system/user/includeIf/local merge)
+- [x] `create_intermediary_clone()` - bare repo via fast-export/fast-import with stream filter
+- [x] Persistent intermediary shared across branches (only rebuilt on exclude change)
+- [x] Configurable history depth (`git.historyDepth`, default 50 commits)
+- [x] Commit hash mapping for bidirectional sync and loop prevention
+- [x] Stream filter (`filter_fast_export_stream`) for reliable exclude pattern handling
+- [x] Work directory clone with per-branch isolation
 - [x] `run_in_bwrap()` - full bwrap sandbox
 - [x] `run_in_docker()` - Docker container sandbox
 - [x] Named pipe communication (`$XDG_RUNTIME_DIR/claude-cage/pipes/`)
-- [x] `post-receive` hook on intermediary
-- [x] `sync_to_source()` using format-patch/git-am
+- [x] `post-receive` hook on bare intermediary (pipe notification)
+- [x] `pre-receive` hook on bare intermediary (branch name collision guard)
+- [x] `sync_to_source()` using commit-mapping-based format-patch/git-am
+- [x] `apply_source_to_intermediary()` using fast-export + stream filter
 - [x] Pipe listener background process
-- [x] `pre-commit` hook (prevents mixed commits)
-- [x] `post-commit` hook (syncs source -> intermediary)
+- [x] `post-commit` hook on source (syncs source -> intermediary via fast-export)
 - [x] `manual_git_merge()` for manual sync
 - [x] Cleanup on exit
-- [x] `receive.denyCurrentBranch=updateInstead` for push to checked-out branch
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (167 tests across 12 files)
+- [x] Comprehensive test suite (180+ tests across 13 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-branch projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
-- [x] Sparse checkout for intermediary creation (committed state, proper excludes, no history)
 - [x] Optional `.caged/` symlinks for easy cache access (`createCagedDir` option)
 - [x] Shell completions for bash and zsh (`completion` and `install-completions` commands)
 - [x] Cache cleanup commands (`clean`, `clean --branch`, `clean-all`)
@@ -634,14 +663,19 @@ claude_cage {
 
 ```
 ~/.cache/claude-cage/
+├── intermediary/<project-path>/          # Shared bare repo (git origin for work)
+│   ├── hooks/
+│   │   ├── post-receive                  # Triggers sync via named pipe
+│   │   └── pre-receive                   # Guards against branch name collisions
+│   ├── claude-cage-commit-map            # <intermediary-hash> <source-hash> lines
+│   ├── claude-cage-source-marks          # Fast-export marks (source side)
+│   ├── claude-cage-import-marks          # Fast-import marks (intermediary side)
+│   ├── claude-cage-source-branches       # All source branch names (for pre-receive guard)
+│   ├── claude-cage-exclude-hash          # Hash of exclude patterns (rebuild detection)
+│   └── sync.log                          # Sync activity log
 └── branches/
     └── <branch>/                         # Sanitized branch name (e.g., "main", "feature--foo")
-        ├── intermediary/<project-path>/  # Sanitized repo (git origin for work)
-        │   └── .git/
-        │       ├── hooks/post-receive    # Triggers sync
-        │       └── sync.log             # Sync activity log (all hooks/pipe writes here)
-        ├── work/<project-path>/          # Claude's working directory
-        └── state-<path-hash>             # Last processed source commit ID (12-char md5)
+        └── work/<project-path>/          # Claude's working directory
 
 $XDG_RUNTIME_DIR/claude-cage/           # Runtime files (typically /run/user/$UID/)
 ├── pipes/<branch>/<project-path>       # Named pipe for communication
@@ -653,16 +687,13 @@ project/
 ├── .caged/                             # Optional symlinks to cache (createCagedDir = true)
 │   ├── .gitignore                      # Self-ignoring (* and !.gitignore)
 │   └── <branch>/                       # One directory per caged branch
-│       ├── work         → ~/.cache/.../work/<project-path>/
+│       ├── work         → ~/.cache/.../branches/<branch>/work/<project-path>/
 │       ├── intermediary → ~/.cache/.../intermediary/<project-path>/
-│       └── sync.log     → ~/.cache/.../intermediary/<project-path>/.git/sync.log
+│       └── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
 └── .git/hooks/
-    ├── pre-commit                      # Dispatcher (runs all in pre-commit.d/)
-    ├── pre-commit.d/
-    │   └── claude-cage-<branch>        # Branch-specific hook
     ├── post-commit                     # Dispatcher (runs all in post-commit.d/)
     └── post-commit.d/
-        └── claude-cage-<branch>        # Branch-specific hook
+        └── claude-cage-<branch>        # Branch-specific hook (fast-export to intermediary)
 ```
 
 ### Sandbox Mount Structure
@@ -671,11 +702,11 @@ Inside the sandbox, directories are mounted to preserve original paths:
 
 | Host Path | Sandbox Path | Purpose |
 |-----------|--------------|---------|
-| `branches/<branch>/work/` | `/` | All same-branch work dirs visible at original paths |
-| `branches/<branch>/intermediary/` | `/run` | All same-branch intermediaries as git origins |
+| `branches/<branch>/work/<project>/` | `/<project>/` | Work dirs visible at original paths |
+| `intermediary/<project>/` | `/run<intermediary-path>/` | Bare intermediaries as git origins |
 | Named pipe | `/tmp/claude-cage/pipe` | Git hook communication |
 
-This means if you have projects at `/home/user/project-a` and `/home/user/project-b` on the same branch, both are visible inside the sandbox at their original paths, and their git origins are at `/run/home/user/project-a` and `/run/home/user/project-b`.
+This means if you have projects at `/home/user/project-a` and `/home/user/project-b` on the same branch, both are visible inside the sandbox at their original paths, and their git origins are at `/run/.cache/claude-cage/intermediary/home/user/project-a` etc.
 
 With `isolated = true`, only the single project's work and intermediary are mounted.
 
@@ -721,8 +752,9 @@ bash tests/run-all.sh
 | test-config.sh | config.sh | 16 |
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
+| test-git-filter-stream.sh | git-filter-stream.sh | 10 |
 | test-git-hooks.sh | git-hooks.sh | 12 |
-| test-git-patches.sh | git-patches.sh | 12 |
+| test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 19 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
@@ -730,7 +762,7 @@ bash tests/run-all.sh
 | test-clean.sh | clean commands | 11 |
 | test-direct-mount.sh | direct mount mode | 8 |
 
-**Total: 167 tests across 12 files**
+**Total: 178 tests across 13 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 
@@ -741,15 +773,25 @@ Note: bwrap execution tests are skipped if user namespaces are unavailable.
 
 ## Gotchas / Technical Notes
 
+### Git Fast-Export Range with Root Commits
+
+`git fast-export root..HEAD` is **empty** when HEAD is the root commit (repo has only one commit). The `root..HEAD` range means "commits reachable from HEAD but not from root", which excludes root itself.
+
+**Fix:** Detect root commits with `git rev-parse --verify "${hash}^"` (fails for root commits). When range_base is a root commit, pass branch names directly to `fast-export` without a range prefix.
+
 ### Git Pathspec Excludes
 
-When using git pathspec to exclude files (e.g., in `git format-patch`), be aware:
+`:(exclude)` pathspec is used as a first pass in fast-export, but it has limitations:
 
-- **`:!pattern` vs `:(exclude,glob)pattern`**: The short form `:!**/foo` does NOT match `foo` at the repository root. The `**` only matches one or more directories, not zero. Use `:(exclude,glob)**/foo` for proper glob behavior where `**` matches zero or more directories.
+- **`:(exclude)**/__pycache__`** does NOT work — `**` needs `(glob)` magic: `:(exclude,glob)**/__pycache__/**`
+- The stream filter (`filter_fast_export_stream`) catches anything pathspec misses, so pathspec is a performance optimization, not a correctness requirement
 
-- **Don't use `.` before excludes**: `git format-patch -- . :!pattern` breaks exclude matching. Use `git format-patch -- :!pattern` instead.
+### Stream Filter Glob Matching
 
-- **`-1 HEAD` vs `HEAD~1..HEAD`**: When pathspec excludes all files from a commit, `git format-patch -1 HEAD -- :!pattern` outputs the parent commit instead of empty. Use `HEAD~1..HEAD` for correct behavior.
+In bash `[[ "$path" == $pat ]]`, `*` crosses directory separators. But:
+
+- **`**/__pycache__`** does NOT match `src/__pycache__/module.pyc` — it only matches the directory name itself
+- The stream filter also checks `[[ "$path" == $pat/* ]]` to match files inside matching directories
 
 ### Branch-Switching Sync
 
@@ -757,6 +799,13 @@ When syncing commits from intermediary to source, if the user has switched branc
 - We use a temp index (`.git/claude-cage-tmp-index`) to apply changes without checkout
 - Commits are applied to the original branch the user started on
 - User's current checkout remains untouched
+
+### Commit Mapping and Loop Prevention
+
+The commit mapping (`claude-cage-commit-map`) is the single source of truth for bidirectional sync:
+- **Outbound** (`sync_to_source`): Walks `oldrev..newrev`, skips commits already in mapping
+- **Inbound** (`apply_source_to_intermediary`): Checks if source HEAD is mapped before exporting
+- **Exclude-only commits**: Mapped as `0 <source-hash>` (no intermediary commit created)
 
 ## Voice/Style
 

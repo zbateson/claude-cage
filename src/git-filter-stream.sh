@@ -124,7 +124,11 @@ filter_fast_export_stream() {
     # Awk handles stateful line-by-line processing: tracking blob sections,
     # skipping data payloads by byte count, removing excluded M/D lines,
     # and collapsing consecutive blank lines left behind.
-    awk -v strip_marks="$strip_marks_str" -v excluded_paths="$excluded_paths_str" '
+    #
+    # LC_ALL=C ensures length() returns bytes (not multibyte characters)
+    # which is critical for correctly counting data section payloads
+    # that may contain binary content (images, etc.).
+    LC_ALL=C awk -v strip_marks="$strip_marks_str" -v excluded_paths="$excluded_paths_str" '
 BEGIN {
     n = split(strip_marks, marks_arr, " ")
     for (i = 1; i <= n; i++) {
@@ -138,6 +142,15 @@ BEGIN {
     remaining = 0
     prev_blank = 0
     pending_blob = ""
+}
+
+# Pass through data payload verbatim (kept blobs, commit messages, etc.)
+# No blank-line collapsing or M/D checks inside data sections.
+state == "pass_data" {
+    remaining -= (length($0) + 1)
+    print
+    if (remaining <= 0) state = "normal"
+    next
 }
 
 # Skip data payload of a stripped blob (byte-counted)
@@ -164,6 +177,16 @@ state == "normal" {
     if ($0 == "blob") {
         pending_blob = $0
         state = "pending_mark"
+        next
+    }
+
+    # Data section (commit messages, tag messages, kept blob data)
+    # Enter pass_data to avoid corrupting binary content
+    if ($0 ~ /^data [0-9]+$/) {
+        remaining = $2 + 0
+        prev_blank = 0
+        print
+        if (remaining > 0) state = "pass_data"
         next
     }
 

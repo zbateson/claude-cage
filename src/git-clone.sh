@@ -375,15 +375,6 @@ create_intermediary_clone() {
     echo "Source branch: $source_branch"
     echo "Default branch: $default_branch"
 
-    # Build pathspec excludes from cfg_exclude
-    local -a exclude_args=()
-    if [ -n "$cfg_exclude" ]; then
-        IFS='|' read -ra excludes <<< "$cfg_exclude"
-        for pattern in "${excludes[@]}"; do
-            exclude_args+=(":(exclude)$pattern")
-        done
-    fi
-
     # Compute exclude hash for change detection
     local current_exclude_hash
     current_exclude_hash=$(compute_exclude_hash "$cfg_exclude")
@@ -482,9 +473,9 @@ create_intermediary_clone() {
             fi
 
             # Run fast-export -> stream filter -> fast-import
-            # The pathspec excludes handle most patterns, but :(exclude) doesn't
-            # support all glob patterns (e.g. **/__pycache__). The stream filter
-            # catches anything pathspec misses, ensuring no excluded content leaks.
+            # We don't use :(exclude) pathspec on fast-export because it has
+            # non-deterministic bugs with multiple branch refs (git 2.51.0).
+            # Instead, filter_fast_export_stream handles all exclude filtering.
             local -a filter_patterns=()
             if [ -n "$cfg_exclude" ]; then
                 IFS='|' read -ra filter_patterns <<< "$cfg_exclude"
@@ -503,7 +494,7 @@ create_intermediary_clone() {
             git -C "$source_dir" fast-export \
                 --export-marks="$source_marks_path" \
                 "${export_range_args[@]}" \
-                -- "${exclude_args[@]}" 2>/dev/null \
+                2>/dev/null \
                 | filter_fast_export_stream "${filter_patterns[@]}" \
                 | git -C "$intermediary_dir" fast-import \
                     --export-marks="$import_marks_path" \
@@ -581,7 +572,7 @@ create_intermediary_clone() {
                     --import-marks="$source_marks_path" \
                     --export-marks="$source_marks_path" \
                     "${source_range_base}..${branch_name}" \
-                    -- "${exclude_args[@]}" 2>/dev/null \
+                    2>/dev/null \
                     | filter_fast_export_stream "${filter_patterns[@]}" \
                     | git -C "$intermediary_dir" fast-import \
                         --import-marks="$import_marks_path" \
@@ -623,12 +614,16 @@ create_intermediary_clone() {
 
             echo "  Catching up branch $ib..."
             if [ "$dry_run" != true ]; then
+                local -a catchup_filter_patterns=()
+                if [ -n "$cfg_exclude" ]; then
+                    IFS='|' read -ra catchup_filter_patterns <<< "$cfg_exclude"
+                fi
                 git -C "$source_dir" fast-export \
                     --import-marks="$source_marks_path" \
                     --export-marks="$source_marks_path" \
                     "${intermediary_head}..${ib}" \
-                    -- "${exclude_args[@]}" 2>/dev/null \
-                    | filter_fast_export_stream "${excludes[@]}" \
+                    2>/dev/null \
+                    | filter_fast_export_stream "${catchup_filter_patterns[@]}" \
                     | git -C "$intermediary_dir" fast-import \
                         --import-marks="$import_marks_path" \
                         --export-marks="$import_marks_path" \

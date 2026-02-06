@@ -197,6 +197,7 @@ get_work_branch() {
 #   REUSE_SESSION_STATE   - "active" | "clean" | "dirty" | "none"
 #   REUSE_SESSION_BRANCH  - branch name of the session's work dir
 #   REUSE_ACTIVE_SESSIONS - newline-separated list of "session_id branch" for active sessions
+#   REUSE_CLEAN_SESSIONS  - newline-separated list of "session_id branch" for inactive clean sessions
 find_reusable_session() {
     local source_dir="$1"
 
@@ -205,6 +206,7 @@ find_reusable_session() {
     REUSE_SESSION_BRANCH=""
     REUSE_ACTIVE_SESSIONS=""
     REUSE_DIRTY_SESSIONS=""
+    REUSE_CLEAN_SESSIONS=""
 
     if [ ! -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
         return
@@ -256,6 +258,11 @@ find_reusable_session() {
         REUSE_DIRTY_SESSIONS=$(printf '%s\n' "${inactive_dirty[@]}")
     fi
 
+    # Build clean sessions list
+    if [ ${#inactive_clean[@]} -gt 0 ]; then
+        REUSE_CLEAN_SESSIONS=$(printf '%s\n' "${inactive_clean[@]}")
+    fi
+
     # Priority: active > inactive dirty > inactive clean
     if [ ${#active_sessions[@]} -gt 0 ]; then
         REUSE_SESSION_ID="${active_sessions[0]%% *}"
@@ -269,6 +276,73 @@ find_reusable_session() {
         REUSE_SESSION_ID="${inactive_clean[0]%% *}"
         REUSE_SESSION_BRANCH="${inactive_clean[0]#* }"
         REUSE_SESSION_STATE="clean"
+    fi
+}
+
+# Reuse an inactive clean session or create a new one
+# Arguments: $1 = source_dir
+# Uses globals: REUSE_CLEAN_SESSIONS, CLAUDE_CAGE_CACHE
+# Sets: CLAUDE_CAGE_SESSION
+reuse_or_create_session() {
+    local source_dir="$1"
+    if [ -n "${REUSE_CLEAN_SESSIONS:-}" ]; then
+        CLAUDE_CAGE_SESSION=$(echo "$REUSE_CLEAN_SESSIONS" | head -1 | awk '{print $1}')
+        echo "Reusin' clean session $CLAUDE_CAGE_SESSION."
+    else
+        CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+        if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$source_dir" ]; then
+            sleep 1
+            CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+        fi
+    fi
+}
+
+# Clean up inactive clean sessions we're not using
+# Removes work dirs and empty parent/session dirs for all inactive clean
+# sessions except the one currently selected (CLAUDE_CAGE_SESSION).
+# Arguments: $1 = source_dir
+# Uses globals: REUSE_CLEAN_SESSIONS, CLAUDE_CAGE_SESSION, CLAUDE_CAGE_CACHE
+cleanup_stale_sessions() {
+    local source_dir="$1"
+    [ -z "${REUSE_CLEAN_SESSIONS:-}" ] && return
+    [ "${dry_run:-}" = true ] && return
+
+    local count=0
+    local csid cbranch
+    while IFS=' ' read -r csid cbranch; do
+        [ -z "$csid" ] && continue
+        [ "$csid" = "$CLAUDE_CAGE_SESSION" ] && continue
+
+        local session_cache="$CLAUDE_CAGE_CACHE/sessions/$csid"
+        local work_dir="$session_cache/work$source_dir"
+        [ -d "$work_dir" ] || continue
+
+        rm -rf "$work_dir"
+        ((count++))
+
+        # Remove .caged symlink for this session
+        local caged_link="$source_dir/.caged/sessions/$csid"
+        [ -d "$caged_link" ] && rm -rf "$caged_link"
+
+        # Clean empty parent dirs up to session_cache/work
+        local parent_dir
+        parent_dir=$(dirname "$work_dir")
+        while [ "$parent_dir" != "$session_cache/work" ] && [ "$parent_dir" != "$session_cache" ]; do
+            [ -d "$parent_dir" ] && [ -z "$(ls -A "$parent_dir" 2>/dev/null)" ] && rm -rf "$parent_dir" || break
+            parent_dir=$(dirname "$parent_dir")
+        done
+
+        # Clean empty session dir
+        if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
+            rm -rf "$session_cache/work"
+        fi
+        if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
+            rm -rf "$session_cache"
+        fi
+    done <<< "$REUSE_CLEAN_SESSIONS"
+
+    if [ "$count" -gt 0 ]; then
+        echo "Cleaned up $count stale session(s)."
     fi
 }
 

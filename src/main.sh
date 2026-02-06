@@ -442,12 +442,7 @@ else
             "active")
                 # Another session is running - create a fresh one alongside it
                 echo "Another session's runnin' ($REUSE_SESSION_ID). Firin' up a fresh one alongside it."
-                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                # Handle timestamp collision
-                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
-                    sleep 1
-                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                fi
+                reuse_or_create_session "$cfg_source"
                 ;;
             "clean")
                 # Inactive clean session - reuse it
@@ -483,11 +478,7 @@ else
                         case "$choice" in
                             1) CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"; break ;;
                             2)
-                                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
-                                    sleep 1
-                                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                                fi
+                                reuse_or_create_session "$cfg_source"
                                 break
                                 ;;
                             q|Q) echo "Catch you later."; exit 0 ;;
@@ -521,11 +512,7 @@ else
                         read -r choice
                         case "$choice" in
                             n|N)
-                                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
-                                    sleep 1
-                                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                                fi
+                                reuse_or_create_session "$cfg_source"
                                 break
                                 ;;
                             q|Q) echo "Catch you later."; exit 0 ;;
@@ -542,17 +529,15 @@ else
                 ;;
             "none"|*)
                 # No existing session - create fresh
-                CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                # Handle timestamp collision
-                if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$cfg_source" ]; then
-                    sleep 1
-                    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-                fi
+                reuse_or_create_session "$cfg_source"
                 ;;
         esac
     fi
 
     export CLAUDE_CAGE_SESSION
+
+    # Clean up inactive clean sessions we're not using
+    cleanup_stale_sessions "$cfg_source"
 
     # Now compute paths using the selected session
     work_dir=$(get_work_path "$cfg_source")

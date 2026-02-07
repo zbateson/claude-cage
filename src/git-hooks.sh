@@ -420,6 +420,12 @@ if [ "\$EXPORT_RC" -ne 0 ]; then
     exit 0
 fi
 
+# Strip scope prefix from fast-export paths (scoped intermediaries only).
+# Uses the shared strip-prefix script installed in the intermediary.
+if [ -n "\$SCOPE_PATH" ]; then
+    "\$INTERMEDIARY/claude-cage-strip-prefix" "\${SCOPE_PATH}/" "\$EXPORT_OUT"
+fi
+
 # Excluded-only commits: fast-export either drops the commit (small repos → just a
 # reset/empty output) or emits an orphan root commit (large repos → commit without
 # a from line). Either way there's no valid commit to import.

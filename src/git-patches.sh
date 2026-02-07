@@ -63,6 +63,7 @@ count_patches_for_branch() {
 #   $4 - branch name
 #   $5 - commit subject (for filename)
 #   $6 - work_dir (optional): Also save to work directory for Claude to see
+#   $7 - scope_path (optional): Scope prefix for --directory hint
 save_failed_patch() {
     local source_dir="${1%/}"  # Strip trailing slash if present
     local direction="$2"
@@ -70,6 +71,7 @@ save_failed_patch() {
     local branch="$4"
     local subject="$5"
     local work_dir="${6%/}"  # Optional
+    local scope_path="${7:-}"  # Optional
 
     local sanitized_branch
     sanitized_branch=$(sanitize_branch_name "$branch")
@@ -84,18 +86,32 @@ save_failed_patch() {
     local source_failed_dir="$source_dir/$rel_path"
     mkdir -p "$source_failed_dir"
     local patch_file="$source_failed_dir/$patch_filename"
-    echo "$patch" > "$patch_file"
+    if [ -n "$scope_path" ]; then
+        printf '# claude-cage: scoped to '\''%s'\'' — apply with: git am --directory=%s <patch>\n' "$scope_path" "$scope_path" > "$patch_file"
+        echo "$patch" >> "$patch_file"
+    else
+        echo "$patch" > "$patch_file"
+    fi
     echo "  Saved patch to: $patch_file"
 
     # Also save to work directory if provided (so Claude can see it inside cage)
     if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
         local work_failed_dir="$work_dir/$rel_path"
         mkdir -p "$work_failed_dir"
-        echo "$patch" > "$work_failed_dir/$patch_filename"
+        if [ -n "$scope_path" ]; then
+            printf '# claude-cage: scoped to '\''%s'\'' — apply with: git am --directory=%s <patch>\n' "$scope_path" "$scope_path" > "$work_failed_dir/$patch_filename"
+            echo "$patch" >> "$work_failed_dir/$patch_filename"
+        else
+            echo "$patch" > "$work_failed_dir/$patch_filename"
+        fi
         echo "  Also available inside cage at: $rel_path/$patch_filename"
     fi
 
-    echo "  (Apply with: git am <patch_file>)"
+    if [ -n "$scope_path" ]; then
+        echo "  (Apply with: git am --directory=$scope_path <patch_file>)"
+    else
+        echo "  (Apply with: git am <patch_file>)"
+    fi
 }
 
 # Apply a single patch with conflict handling

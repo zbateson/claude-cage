@@ -673,6 +673,58 @@ clean_session_cache() {
     fi
 }
 
+# Install the scope-prefix-stripping script into the intermediary.
+# This is the single source of truth for the binary-safe awk logic that
+# strips scope prefixes from fast-export stream paths. Called once during
+# intermediary setup; invoked by strip_scope_prefix() and the post-commit hook.
+# Arguments: $1 = intermediary_dir
+install_strip_prefix_script() {
+    local intermediary_dir="$1"
+    cat > "$intermediary_dir/claude-cage-strip-prefix" << 'STRIPEOF'
+#!/bin/sh
+# Strip a path prefix from fast-export stream M/D/R/C lines (in-place).
+# Binary-safe: tracks "data N" byte counts to skip over blob/message content
+# so only actual path operation lines are modified.
+# Usage: claude-cage-strip-prefix <prefix> <file>
+PREFIX="$1"
+FILE="$2"
+TMP="${FILE}.strip-tmp"
+LC_ALL=C awk -v prefix="$PREFIX" '
+BEGIN { OFS = " "; dr = 0; plen = length(prefix) }
+{
+    # Inside a data section: pass through, count bytes consumed
+    # (length + 1 accounts for the newline awk consumed as RS)
+    if (dr > 0) { print; dr -= length($0) + 1; next }
+
+    # "data N" starts a data section — pass through, enter byte-counting mode
+    if (/^data [0-9]+$/) { dr = substr($0, 6) + 0; print; next }
+
+    # Strip prefix from M/D/R/C path fields
+    if ($1 == "M" && NF >= 4 && substr($4, 1, plen) == prefix)
+        $4 = substr($4, plen + 1)
+    else if ($1 == "D" && NF >= 2 && substr($2, 1, plen) == prefix)
+        $2 = substr($2, plen + 1)
+    else if (($1 == "R" || $1 == "C") && NF >= 3) {
+        if (substr($2, 1, plen) == prefix) $2 = substr($2, plen + 1)
+        if (substr($3, 1, plen) == prefix) $3 = substr($3, plen + 1)
+    }
+    print
+}
+' "$FILE" > "$TMP" && mv "$TMP" "$FILE"
+STRIPEOF
+    chmod +x "$intermediary_dir/claude-cage-strip-prefix"
+}
+
+# Strip the scope prefix from fast-export stream paths in a temp file.
+# Thin wrapper around the installed strip-prefix script.
+# Arguments: $1 = file, $2 = prefix (e.g. "services/api/"), $3 = intermediary_dir
+strip_scope_prefix() {
+    local file="$1"
+    local prefix="$2"
+    local intermediary_dir="$3"
+    "$intermediary_dir/claude-cage-strip-prefix" "$prefix" "$file"
+}
+
 # Build :(exclude,glob) pathspec args from pipe-delimited exclude patterns
 # Patterns without / get **/ prepended for basename matching at any depth
 # Patterns with / are used as-is for full path matching
@@ -824,16 +876,20 @@ catchup_intermediary_branches() {
         fi
 
         if [ -n "$source_range_base" ] && [ "$dry_run" != true ]; then
+            local catchup_tmp
+            catchup_tmp=$(mktemp)
             git -C "$export_dir" fast-export \
                 --import-marks="$source_marks_path" \
                 --export-marks="$source_marks_path" \
                 "${source_range_base}..${branch_name}" \
                 ${pathspec_args:+-- "${pathspec_args[@]}"} \
-                2>/dev/null \
-                | git -C "$intermediary_dir" fast-import \
-                    --import-marks="$import_marks_path" \
-                    --export-marks="$import_marks_path" \
-                    --quiet 2>/dev/null
+                >"$catchup_tmp" 2>/dev/null
+            [ -n "$scope_path" ] && strip_scope_prefix "$catchup_tmp" "$scope_path/" "$intermediary_dir"
+            git -C "$intermediary_dir" fast-import \
+                --import-marks="$import_marks_path" \
+                --export-marks="$import_marks_path" \
+                --quiet <"$catchup_tmp" 2>/dev/null
+            rm -f "$catchup_tmp"
 
             # Update commit map
             build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${source_range_base}..${branch_name}"
@@ -871,16 +927,20 @@ catchup_intermediary_branches() {
         echo "  Catching up branch $ib..."
         any_updated=true
         if [ "$dry_run" != true ]; then
+            local catchup_tmp
+            catchup_tmp=$(mktemp)
             git -C "$export_dir" fast-export \
                 --import-marks="$source_marks_path" \
                 --export-marks="$source_marks_path" \
                 "${intermediary_head}..${ib}" \
                 ${pathspec_args:+-- "${pathspec_args[@]}"} \
-                2>/dev/null \
-                | git -C "$intermediary_dir" fast-import \
-                    --import-marks="$import_marks_path" \
-                    --export-marks="$import_marks_path" \
-                    --quiet 2>/dev/null || true
+                >"$catchup_tmp" 2>/dev/null
+            [ -n "$scope_path" ] && strip_scope_prefix "$catchup_tmp" "$scope_path/" "$intermediary_dir"
+            git -C "$intermediary_dir" fast-import \
+                --import-marks="$import_marks_path" \
+                --export-marks="$import_marks_path" \
+                --quiet <"$catchup_tmp" 2>/dev/null || true
+            rm -f "$catchup_tmp"
 
             build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${intermediary_head}..${ib}"
         fi
@@ -1023,6 +1083,9 @@ create_intermediary_clone() {
         else
             git init --bare "$intermediary_dir" --quiet
 
+            # Install strip-prefix script (needed before first fast-export for scoped)
+            [ -n "$scope_path" ] && install_strip_prefix_script "$intermediary_dir"
+
             # Calculate export range with merge-base widening
             local range_base
             range_base=$(git -C "$source_dir" rev-parse "${default_branch}~${history_depth}" 2>/dev/null) || \
@@ -1104,14 +1167,18 @@ create_intermediary_clone() {
                 export_range_args=("${range_base}..${range_args[0]}" "${range_args[@]:1}")
             fi
 
+            local export_tmp
+            export_tmp=$(mktemp)
             git -C "$export_dir" fast-export \
                 --export-marks="$source_marks_path" \
                 "${export_range_args[@]}" \
                 ${pathspec_args:+-- "${pathspec_args[@]}"} \
-                2>/dev/null \
-                | git -C "$intermediary_dir" fast-import \
-                    --export-marks="$import_marks_path" \
-                    --quiet 2>/dev/null
+                >"$export_tmp" 2>/dev/null
+            [ -n "$scope_path" ] && strip_scope_prefix "$export_tmp" "$scope_path/" "$intermediary_dir"
+            git -C "$intermediary_dir" fast-import \
+                --export-marks="$import_marks_path" \
+                --quiet <"$export_tmp" 2>/dev/null
+            rm -f "$export_tmp"
 
             # Fix bare HEAD to point to default branch
             git -C "$intermediary_dir" symbolic-ref HEAD "refs/heads/$default_branch"

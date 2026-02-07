@@ -101,6 +101,24 @@ apply_source_to_intermediary() {
     commit_map_path=$(get_commit_map_path "$intermediary_dir")
     local log_file="$intermediary_dir/sync.log"
 
+    # Read scope_path from intermediary metadata (empty for unscoped)
+    local scope_path=""
+    local scope_path_file
+    scope_path_file=$(get_scope_path_file "$intermediary_dir")
+    if [ -f "$scope_path_file" ]; then
+        scope_path=$(cat "$scope_path_file")
+    fi
+
+    # When scoped, fast-export must run from git root (pathspecs are CWD-relative)
+    local export_dir="$source_dir"
+    if [ -n "$scope_path" ]; then
+        local git_root_file
+        git_root_file=$(get_git_root_file "$intermediary_dir")
+        if [ -f "$git_root_file" ]; then
+            export_dir=$(cat "$git_root_file")
+        fi
+    fi
+
     # Get source HEAD
     local source_head
     source_head=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
@@ -112,11 +130,12 @@ apply_source_to_intermediary() {
         return 0
     fi
 
-    # Build :(exclude,glob) pathspec args
-    local -a exclude_args=()
+    # Build combined pathspec args: scope include + exclude
+    local -a pathspec_args=()
+    [ -n "$scope_path" ] && pathspec_args+=("$scope_path/")
     if [ -n "$exclude_patterns" ]; then
         while IFS= read -r _ea; do
-            exclude_args+=("$_ea")
+            pathspec_args+=("$_ea")
         done < <(build_exclude_pathspecs "$exclude_patterns")
     fi
 
@@ -130,11 +149,11 @@ apply_source_to_intermediary() {
     export_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.$$")
     export_out=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.$$")
 
-    git -C "$source_dir" fast-export \
+    git -C "$export_dir" fast-export \
         --import-marks="$source_marks_path" \
         --export-marks="$source_marks_path" \
         -1 HEAD \
-        ${exclude_args:+-- "${exclude_args[@]}"} \
+        ${pathspec_args:+-- "${pathspec_args[@]}"} \
         >"$export_out" 2>"$export_err"
     local export_rc=$?
 
@@ -144,6 +163,9 @@ apply_source_to_intermediary() {
         rm -f "$export_err" "$export_out"
         return 1
     fi
+
+    # Strip scope prefix from fast-export paths (scoped intermediaries only)
+    [ -n "$scope_path" ] && strip_scope_prefix "$export_out" "$scope_path/" "$intermediary_dir"
 
     # Excluded-only commits: fast-export either drops the commit (small repos →
     # just a reset/empty) or emits an orphan root commit (large repos → commit
@@ -206,6 +228,14 @@ sync_to_source() {
 
     local commit_map_path
     commit_map_path=$(get_commit_map_path "$intermediary_dir")
+
+    # Read scope_path from intermediary metadata (empty for unscoped)
+    local scope_path=""
+    local scope_path_file
+    scope_path_file=$(get_scope_path_file "$intermediary_dir")
+    if [ -f "$scope_path_file" ]; then
+        scope_path=$(cat "$scope_path_file")
+    fi
 
     # Determine which commits to process
     local commits
@@ -291,8 +321,10 @@ sync_to_source() {
 
         if [ "$current_branch" = "$branch_name" ]; then
             # Simple case: user on same branch
+            local -a am_args=(--3way)
+            [ -n "$scope_path" ] && am_args+=(--directory="$scope_path")
             local am_output am_rc
-            am_output=$(echo "$patch" | git -C "$source_dir" am --3way 2>&1) && am_rc=0 || am_rc=$?
+            am_output=$(echo "$patch" | git -C "$source_dir" am "${am_args[@]}" 2>&1) && am_rc=0 || am_rc=$?
             if [ "$am_rc" -eq 0 ]; then
                 local new_source_hash
                 new_source_hash=$(git -C "$source_dir" rev-parse HEAD)
@@ -302,7 +334,7 @@ sync_to_source() {
             else
                 echo "  Well now, that didn't go smooth."
                 git -C "$source_dir" am --abort 2>/dev/null || true
-                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg"
+                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
                 sync_log "$log_file" "$commit_short" ">>source" "git-am FAILED rc=$am_rc: $(echo "$am_output" | tail -1)"
             fi
         else
@@ -322,8 +354,10 @@ sync_to_source() {
 
                 git read-tree "$branch_name"
 
+                local -a apply_args=(--cached)
+                [ -n "$scope_path" ] && apply_args+=(--directory="$scope_path")
                 local apply_output apply_rc
-                apply_output=$(echo "$patch" | git apply --cached 2>&1) && apply_rc=0 || apply_rc=$?
+                apply_output=$(echo "$patch" | git apply "${apply_args[@]}" 2>&1) && apply_rc=0 || apply_rc=$?
                 if [ "$apply_rc" -eq 0 ]; then
                     local tree
                     tree=$(git write-tree)
@@ -345,7 +379,7 @@ sync_to_source() {
                     sync_log "$log_file" "$commit_short" ">>source" "applied via temp-index to $branch_name new_commit=${new_commit:0:8}"
                 else
                     echo "  Patch didn't apply clean to $branch_name."
-                    save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg"
+                    save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
                     sync_log "$log_file" "$commit_short" ">>source" "git-apply FAILED rc=$apply_rc on $branch_name: $(echo "$apply_output" | tail -1)"
                 fi
             )

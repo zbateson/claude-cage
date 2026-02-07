@@ -29,7 +29,8 @@ enumerate_projects() {
     fi
 
     # Determine mount destination for current project
-    # When scoped, mount at git root so fast-export's full paths resolve correctly
+    # When scoped, paths are stripped so work dir IS the scope subdirectory.
+    # Mount at git_root/scope_path so CWD matches the original subdirectory.
     local mount_dest="$project_path"
     local scope_path_file
     scope_path_file=$(get_scope_path_file "$intermediary_dir")
@@ -40,7 +41,9 @@ enumerate_projects() {
             local git_root_file
             git_root_file=$(get_git_root_file "$intermediary_dir")
             if [ -f "$git_root_file" ]; then
-                mount_dest=$(cat "$git_root_file")
+                local gr
+                gr=$(cat "$git_root_file")
+                mount_dest="$gr/$sp"
             fi
         fi
     fi
@@ -82,10 +85,10 @@ enumerate_projects() {
         fi
         [ "$orig_path" = "$project_path" ] && continue
 
-        # Determine mount destination (scope-aware: mount at git root when scoped)
+        # Determine mount destination (scope-aware: mount at git_root/scope_path)
         local other_mount_dest="$orig_path"
         if [ -n "$other_sp" ] && [ -n "$other_gr" ]; then
-            other_mount_dest="$other_gr"
+            other_mount_dest="$other_gr/$other_sp"
         fi
 
         # Skip if we'd duplicate a mount destination

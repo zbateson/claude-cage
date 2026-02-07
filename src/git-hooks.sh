@@ -380,6 +380,9 @@ if ! git -C "\$INTERMEDIARY" rev-parse --verify "\$current_branch" >/dev/null 2>
     exit 0
 fi
 
+# Skip during sync_to_source (git-am triggers post-commit; marks handled by sync)
+[ "\${CLAUDE_CAGE_SYNCING:-}" = "1" ] && exit 0
+
 # Check commit mapping: already mapped -> skip (loop prevention)
 if [ -f "\$COMMIT_MAP" ] && grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP"; then
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "already mapped, skipping (loop prevention)"
@@ -426,15 +429,46 @@ if [ -n "\$SCOPE_PATH" ]; then
     "\$INTERMEDIARY/claude-cage-strip-prefix" "\${SCOPE_PATH}/" "\$EXPORT_OUT"
 fi
 
-# Excluded-only commits: fast-export either drops the commit (small repos → just a
-# reset/empty output) or emits an orphan root commit (large repos → commit without
-# a from line). Either way there's no valid commit to import.
-if ! grep -q '^commit ' "\$EXPORT_OUT" || ! grep -q '^from ' "\$EXPORT_OUT"; then
+# Excluded-only detection: no commit line means fast-export dropped it entirely (small repos).
+if ! grep -q '^commit ' "\$EXPORT_OUT"; then
     echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+    _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit (no commit line), mapped to 0"
     echo -e "\033[1;31mclaude-cage:\033[0m Nothin' changed in intermediary — commit only has excluded files"
     rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
     exit 0
+fi
+
+# No from line: either excluded-only (parent in marks, all changes filtered out)
+# or marks gap (parent not in marks, e.g. from sync_to_source/git-am or prior
+# excluded-only commit). Check parent to distinguish.
+if ! grep -q '^from ' "\$EXPORT_OUT"; then
+    _PARENT=\$(git rev-parse HEAD^ 2>/dev/null) || true
+    _PARENT_MARKED=false
+    if [ -n "\$_PARENT" ] && [ -f "\$SOURCE_MARKS" ] && grep -q " \${_PARENT}\$" "\$SOURCE_MARKS" 2>/dev/null; then
+        _PARENT_MARKED=true
+    fi
+    if [ "\$_PARENT_MARKED" = true ] || [ -z "\$_PARENT" ]; then
+        # Parent IS in marks (or root commit) but no from line → truly excluded-only
+        echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' changed in intermediary — commit only has excluded files"
+        rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
+        exit 0
+    fi
+    # Parent NOT in marks — marks gap. Inject intermediary branch HEAD as parent.
+    # The deleteall + full-tree reconstruction produces the correct tree state.
+    _INT_HEAD=\$(git -C "\$INTERMEDIARY" rev-parse "\$current_branch" 2>/dev/null)
+    if [ -n "\$_INT_HEAD" ]; then
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "marks gap: injecting parent \${_INT_HEAD:0:8}"
+        awk -v parent="\$_INT_HEAD" '/^deleteall\$/ && !done { print "from " parent; done=1 } { print }' \\
+            "\$EXPORT_OUT" > "\$EXPORT_OUT.fix" && mv "\$EXPORT_OUT.fix" "\$EXPORT_OUT"
+    else
+        echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only (no intermediary HEAD for \$current_branch)"
+        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' changed in intermediary — commit only has excluded files"
+        rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
+        exit 0
+    fi
 fi
 
 echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"

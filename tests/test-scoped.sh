@@ -556,10 +556,75 @@ fi
 echo "  PASS: Out-of-scope files untouched"
 
 echo ""
+echo "=== Testing source commit after cage round-trip ==="
+echo ""
+
+echo "Test 22: Source commit after round-trip syncs to scoped intermediary"
+# After Test 21, sync_to_source applied a cage commit to source via git am.
+# Now verify that a new source commit correctly syncs to the intermediary.
+# This tests the marks gap fix: sync_to_source records marks for git-am'd commits
+# so post-commit hook fast-exports can reference them as parents.
+CLAUDE_CAGE_SESSION="test-roundtrip"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+cd "$MONOREPO_PATH"
+
+# Install post-commit hook (re-install with current intermediary paths)
+cfg_exclude=".env"
+setup_source_post_commit "$SOURCE_API" "$cfg_exclude" "$INTERMEDIARY_DIR"
+
+# Get intermediary HEAD before the source commit
+int_head_before=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+
+# Make a new in-scope commit on source
+echo "post-roundtrip update" > services/api/app.go
+git add services/api/app.go
+hook_output=$(git commit -m "Source commit after round-trip" 2>&1)
+
+# The hook should NOT say "excluded files"
+if echo "$hook_output" | grep -q "only has excluded files"; then
+    echo "FAIL: Post-commit hook falsely reported excluded-only"
+    echo "  Hook output: $hook_output"
+    echo "  Sync log:"
+    cat "$INTERMEDIARY_DIR/sync.log" 2>/dev/null
+    exit 1
+fi
+
+# Verify the intermediary HEAD advanced
+int_head_after=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+if [ "$int_head_after" = "$int_head_before" ]; then
+    echo "FAIL: Intermediary HEAD didn't advance after source commit"
+    echo "  Hook output: $hook_output"
+    echo "  Sync log:"
+    cat "$INTERMEDIARY_DIR/sync.log" 2>/dev/null
+    exit 1
+fi
+echo "  PASS: Source commit after round-trip synced to intermediary"
+
+# Verify the synced commit has correct content (stripped paths)
+int_content=$(git -C "$INTERMEDIARY_DIR" show "$BRANCH_NAME:app.go" 2>/dev/null)
+if [ "$int_content" != "post-roundtrip update" ]; then
+    echo "FAIL: Intermediary app.go should be 'post-roundtrip update', got '$int_content'"
+    exit 1
+fi
+echo "  PASS: Synced commit has correct content with stripped paths"
+
+# Verify commit mapping was updated
+source_head=$(git -C "$MONOREPO_PATH" rev-parse HEAD)
+if ! grep -q " ${source_head}$" "$INTERMEDIARY_DIR/claude-cage-commit-map" 2>/dev/null; then
+    echo "FAIL: Source HEAD not in commit mapping after hook sync"
+    exit 1
+fi
+echo "  PASS: Commit mapping updated correctly"
+
+# Clean up hook so subsequent test commits don't trigger stale hook
+path_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$path_hash"
+
+echo ""
 echo "=== Testing binary blob safety in scoped stripping ==="
 echo ""
 
-echo "Test 22: Binary blob with scope-prefix-like content survives stripping"
+echo "Test 23: Binary blob with scope-prefix-like content survives stripping"
 # Create a fresh scoped intermediary with a binary file that contains bytes
 # mimicking fast-export M/D lines with the scope prefix. The sed filter must
 # not corrupt blob data — only actual M/D/R/C path lines should be modified.
@@ -616,7 +681,7 @@ echo ""
 echo "=== Testing C-quoted path stripping ==="
 echo ""
 
-echo "Test 23: C-quoted paths (non-ASCII filenames) have scope prefix stripped"
+echo "Test 24: C-quoted paths (non-ASCII filenames) have scope prefix stripped"
 # Git C-quotes paths containing high-bit bytes (>= 0x80), backslashes, tabs, or
 # double quotes. The strip-prefix awk must handle both unquoted and quoted forms.
 cd "$MONOREPO_PATH"
@@ -661,7 +726,7 @@ echo ""
 echo "=== Testing cross-scope session discovery ==="
 echo ""
 
-echo "Test 24: list_cached_sessions from git root shows scoped session"
+echo "Test 25: list_cached_sessions from git root shows scoped session"
 # The scoped session (test-scoped) created earlier should be visible from git root
 CLAUDE_CAGE_SESSION="test-scoped"
 # Ensure repos.list has the services/api entry
@@ -687,7 +752,7 @@ if ! echo "$sessions" | grep -q "services/api"; then
 fi
 echo "  PASS: Scoped session visible from git root"
 
-echo "Test 25: list_cached_sessions from scoped dir shows unscoped session"
+echo "Test 26: list_cached_sessions from scoped dir shows unscoped session"
 # The unscoped session (test-unscoped) created earlier should be visible from services/api
 repos_list_add "$SOURCE_API" ""  # Ensure root/unscoped is registered
 sessions_from_api=$(list_cached_sessions "$SOURCE_API")
@@ -699,7 +764,7 @@ if ! echo "$sessions_from_api" | grep -q "test-unscoped"; then
 fi
 echo "  PASS: Unscoped session visible from scoped dir"
 
-echo "Test 26: list_cached_sessions output includes source_dir and scope fields"
+echo "Test 27: list_cached_sessions output includes source_dir and scope fields"
 # Check format: session_id branch source_dir scope
 line=$(echo "$sessions_from_api" | head -1)
 field_count=$(echo "$line" | wc -w)
@@ -710,7 +775,7 @@ if [ "$field_count" -lt 3 ]; then
 fi
 echo "  PASS: Session output has expected field count"
 
-echo "Test 27: find_reusable_session discovers cross-scope dirty sessions"
+echo "Test 28: find_reusable_session discovers cross-scope dirty sessions"
 # Make the scoped session dirty
 SCOPED_WORK="$CLAUDE_CAGE_CACHE/sessions/test-scoped/work$SOURCE_API"
 if [ -d "$SCOPED_WORK" ]; then

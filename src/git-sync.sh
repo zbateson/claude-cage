@@ -167,14 +167,41 @@ apply_source_to_intermediary() {
     # Strip scope prefix from fast-export paths (scoped intermediaries only)
     [ -n "$scope_path" ] && strip_scope_prefix "$export_out" "$scope_path/" "$intermediary_dir"
 
-    # Excluded-only commits: fast-export either drops the commit (small repos →
-    # just a reset/empty) or emits an orphan root commit (large repos → commit
-    # without a from line, because blob marks aren't in source-marks).
-    if ! grep -q '^commit ' "$export_out" || ! grep -q '^from ' "$export_out"; then
+    # Excluded-only detection: no commit line means fast-export dropped it entirely.
+    if ! grep -q '^commit ' "$export_out"; then
         echo "0 $source_head" >> "$commit_map_path"
-        sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"
+        sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit (no commit line), mapped to 0"
         rm -f "$export_err" "$export_out"
         return 0
+    fi
+
+    # No from line: check if parent is in marks to distinguish excluded-only from marks gap.
+    if ! grep -q '^from ' "$export_out"; then
+        local _parent _parent_marked=false
+        _parent=$(git -C "$source_dir" rev-parse HEAD^ 2>/dev/null) || true
+        if [ -n "$_parent" ] && [ -f "$source_marks_path" ] && grep -q " ${_parent}$" "$source_marks_path" 2>/dev/null; then
+            _parent_marked=true
+        fi
+        if [ "$_parent_marked" = true ] || [ -z "$_parent" ]; then
+            echo "0 $source_head" >> "$commit_map_path"
+            sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"
+            rm -f "$export_err" "$export_out"
+            return 0
+        fi
+        # Marks gap: inject intermediary branch HEAD as parent
+        local _current_branch _int_head
+        _current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)
+        _int_head=$(git -C "$intermediary_dir" rev-parse "$_current_branch" 2>/dev/null) || true
+        if [ -n "$_int_head" ]; then
+            sync_log "$log_file" "$source_short" ">>intermediary" "marks gap: injecting parent ${_int_head:0:8}"
+            awk -v parent="$_int_head" '/^deleteall$/ && !done { print "from " parent; done=1 } { print }' \
+                "$export_out" > "$export_out.fix" && mv "$export_out.fix" "$export_out"
+        else
+            echo "0 $source_head" >> "$commit_map_path"
+            sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only (no intermediary HEAD)"
+            rm -f "$export_err" "$export_out"
+            return 0
+        fi
     fi
 
     local import_err
@@ -228,6 +255,10 @@ sync_to_source() {
 
     local commit_map_path
     commit_map_path=$(get_commit_map_path "$intermediary_dir")
+    local source_marks_path
+    source_marks_path=$(get_source_marks_path "$intermediary_dir")
+    local import_marks_path
+    import_marks_path=$(get_import_marks_path "$intermediary_dir")
 
     # Read scope_path from intermediary metadata (empty for unscoped)
     local scope_path=""
@@ -324,11 +355,21 @@ sync_to_source() {
             local -a am_args=(--3way)
             [ -n "$scope_path" ] && am_args+=(--directory="$scope_path")
             local am_output am_rc
-            am_output=$(echo "$patch" | git -C "$source_dir" am "${am_args[@]}" 2>&1) && am_rc=0 || am_rc=$?
+            am_output=$(echo "$patch" | CLAUDE_CAGE_SYNCING=1 git -C "$source_dir" am "${am_args[@]}" 2>&1) && am_rc=0 || am_rc=$?
             if [ "$am_rc" -eq 0 ]; then
                 local new_source_hash
                 new_source_hash=$(git -C "$source_dir" rev-parse HEAD)
                 echo "$commit $new_source_hash" >> "$commit_map_path"
+                # Record marks so post-commit hook can reference this commit as a parent.
+                # git-am commits bypass fast-export, so source marks lack them.
+                if [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
+                    local _max_mark _new_mark
+                    _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
+                        "$source_marks_path" "$import_marks_path" 2>/dev/null)
+                    _new_mark=$((_max_mark + 1))
+                    echo ":$_new_mark $new_source_hash" >> "$source_marks_path"
+                    echo ":$_new_mark $commit" >> "$import_marks_path"
+                fi
                 echo "  Got it. Changes are in."
                 sync_log "$log_file" "$commit_short" ">>source" "git-am ok (same branch) new=${new_source_hash:0:8}"
             else
@@ -375,6 +416,15 @@ sync_to_source() {
                     git update-ref "refs/heads/$branch_name" "$new_commit"
 
                     echo "$commit $new_commit" >> "$commit_map_path"
+                    # Record marks (same as git-am case)
+                    if [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
+                        local _max_mark _new_mark
+                        _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
+                            "$source_marks_path" "$import_marks_path" 2>/dev/null)
+                        _new_mark=$((_max_mark + 1))
+                        echo ":$_new_mark $new_commit" >> "$source_marks_path"
+                        echo ":$_new_mark $commit" >> "$import_marks_path"
+                    fi
                     echo "  Got it. Changes are on $branch_name."
                     sync_log "$log_file" "$commit_short" ">>source" "applied via temp-index to $branch_name new_commit=${new_commit:0:8}"
                 else

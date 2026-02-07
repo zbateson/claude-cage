@@ -293,6 +293,10 @@ sync_to_source() {
 
     echo "Bringin' changes home: $branch_name"
 
+    # Hash used to target CLAUDE_CAGE_SYNCING at this intermediary's hook only
+    local _sync_hash
+    _sync_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+
     local commit
     for commit in $commits; do
         local commit_short="${commit:0:8}"
@@ -355,7 +359,7 @@ sync_to_source() {
             local -a am_args=(--3way)
             [ -n "$scope_path" ] && am_args+=(--directory="$scope_path")
             local am_output am_rc
-            am_output=$(echo "$patch" | CLAUDE_CAGE_SYNCING=1 git -C "$source_dir" am "${am_args[@]}" 2>&1) && am_rc=0 || am_rc=$?
+            am_output=$(echo "$patch" | CLAUDE_CAGE_SYNCING="$_sync_hash" git -C "$source_dir" am "${am_args[@]}" 2>&1) && am_rc=0 || am_rc=$?
             if [ "$am_rc" -eq 0 ]; then
                 local new_source_hash
                 new_source_hash=$(git -C "$source_dir" rev-parse HEAD)

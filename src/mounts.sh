@@ -28,10 +28,13 @@ enumerate_projects() {
         return
     fi
 
-    # Determine mount destination for current project
-    # When scoped, paths are stripped so work dir IS the scope subdirectory.
-    # Mount at git_root/scope_path so CWD matches the original subdirectory.
+    # Determine mount destination for current project.
+    # When scoped, mount at git root so the user sees empty parent dirs above
+    # the scope with no .git — the work dir (with .git) lives at scope_path
+    # inside the mount.  Mount source is the git-root-level parent directory
+    # (automatically created by git clone when creating the nested work dir).
     local mount_dest="$project_path"
+    local mount_src="$work_dir"
     local scope_path_file
     scope_path_file=$(get_scope_path_file "$intermediary_dir")
     if [ -f "$scope_path_file" ]; then
@@ -43,13 +46,14 @@ enumerate_projects() {
             if [ -f "$git_root_file" ]; then
                 local gr
                 gr=$(cat "$git_root_file")
-                mount_dest="$gr/$sp"
+                mount_dest="$gr"
+                mount_src="$session_work_root$gr"
             fi
         fi
     fi
 
     # Always include the current project (needed for dry-run when dirs don't exist yet)
-    CAGE_WORK_PROJECTS+=("$work_dir|$mount_dest")
+    CAGE_WORK_PROJECTS+=("$mount_src|$mount_dest")
     CAGE_INTERMEDIARY_PROJECTS+=("$intermediary_dir|$mount_dest")
 
     # Track seen mount destinations to avoid duplicates (two scopes for same git root)
@@ -85,10 +89,12 @@ enumerate_projects() {
         fi
         [ "$orig_path" = "$project_path" ] && continue
 
-        # Determine mount destination (scope-aware: mount at git_root/scope_path)
+        # Determine mount destination (scope-aware: mount at git root)
         local other_mount_dest="$orig_path"
+        local other_mount_src="$session_work_root$orig_path"
         if [ -n "$other_sp" ] && [ -n "$other_gr" ]; then
-            other_mount_dest="$other_gr/$other_sp"
+            other_mount_dest="$other_gr"
+            other_mount_src="$session_work_root$other_gr"
         fi
 
         # Skip if we'd duplicate a mount destination
@@ -100,7 +106,7 @@ enumerate_projects() {
         # Look for this project's work dir in our session
         local other_work="$session_work_root$orig_path"
         if [ -d "$other_work/.git" ]; then
-            CAGE_WORK_PROJECTS+=("$other_work|$other_mount_dest")
+            CAGE_WORK_PROJECTS+=("$other_mount_src|$other_mount_dest")
         fi
         CAGE_INTERMEDIARY_PROJECTS+=("$bare_dir|$other_mount_dest")
     done < <({
@@ -171,7 +177,24 @@ build_mount_specs() {
     else
         # Isolated git mode: mount only the specific project
         CAGE_MOUNTS+=("bind|$intermediary_dir|/run$intermediary_dir|rw")
-        CAGE_MOUNTS+=("bind|$work_dir|$project_path|rw")
+        # For scoped projects, mount at git root (work dir is nested inside)
+        local _iso_src="$work_dir"
+        local _iso_dest="$project_path"
+        local _iso_sp_file
+        _iso_sp_file=$(get_scope_path_file "$intermediary_dir")
+        if [ -f "$_iso_sp_file" ]; then
+            local _iso_sp
+            _iso_sp=$(cat "$_iso_sp_file")
+            if [ -n "$_iso_sp" ]; then
+                local _iso_gr
+                _iso_gr=$(cat "$(get_git_root_file "$intermediary_dir")" 2>/dev/null)
+                if [ -n "$_iso_gr" ]; then
+                    _iso_dest="$_iso_gr"
+                    _iso_src="${work_dir%"/$_iso_sp"}"
+                fi
+            fi
+        fi
+        CAGE_MOUNTS+=("bind|$_iso_src|$_iso_dest|rw")
     fi
 
     # Mount pipe for git hook communication (if it exists and we have an intermediary)

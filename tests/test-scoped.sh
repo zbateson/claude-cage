@@ -444,7 +444,7 @@ echo ""
 echo "=== Testing scoped mount logic ==="
 echo ""
 
-echo "Test 20: enumerate_projects mounts scoped work at scope subdirectory"
+echo "Test 20: enumerate_projects mounts scoped work at git root"
 # Reset session to the scoped one
 CLAUDE_CAGE_SESSION="test-scoped"
 cfg_isolated="false"
@@ -454,22 +454,37 @@ session_work_root=$(get_session_work_root)
 
 enumerate_projects "$session_work_root" "$intermediary_root" "$(get_work_path "$SOURCE_API")" "$INTERMEDIARY_DIR" "$SOURCE_API"
 
-# The current project should be mounted at git_root/scope_path (= SOURCE_API)
-found_scope_mount=false
+# The current project should be mounted at git_root (not scope_path)
+# so the user sees empty parent dirs above scope with no .git
+found_root_mount=false
+found_correct_src=false
 for entry in "${CAGE_WORK_PROJECTS[@]}"; do
     IFS='|' read -r proj_dir mount_path <<< "$entry"
-    if [ "$mount_path" = "$SOURCE_API" ]; then
-        found_scope_mount=true
+    if [ "$mount_path" = "$GIT_ROOT" ]; then
+        found_root_mount=true
+        # Mount source should be session_work_root + git_root (parent of work dir)
+        expected_src="$session_work_root$GIT_ROOT"
+        if [ "$proj_dir" = "$expected_src" ]; then
+            found_correct_src=true
+        fi
         break
     fi
 done
-if [ "$found_scope_mount" != true ]; then
-    echo "FAIL: Scoped project should mount at scope path ($SOURCE_API)"
+if [ "$found_root_mount" != true ]; then
+    echo "FAIL: Scoped project should mount at git root ($GIT_ROOT)"
     echo "  Work projects:"
     printf '    %s\n' "${CAGE_WORK_PROJECTS[@]}"
     exit 1
 fi
-echo "  PASS: Scoped work mounts at scope subdirectory"
+echo "  PASS: Scoped work mounts at git root"
+if [ "$found_correct_src" != true ]; then
+    echo "FAIL: Mount source should be session_work_root + git_root"
+    echo "  Expected: $expected_src"
+    echo "  Work projects:"
+    printf '    %s\n' "${CAGE_WORK_PROJECTS[@]}"
+    exit 1
+fi
+echo "  PASS: Mount source is git-root-level parent directory"
 
 echo ""
 echo "=== Testing scoped round-trip sync (intermediary → source) ==="

@@ -311,6 +311,17 @@ fi
 if [ "$direct_mount_mode" = false ] && is_git_repo "$cfg_source"; then
     cleanup_orphaned_hooks "$cfg_source"
     repos_list_clean_orphans "$cfg_source" 2>/dev/null || true
+
+    # Scope promotion: absorb narrower-scope intermediaries into broader ones
+    _promote_children=$(repos_list_children "$cfg_source" "$scope_path" 2>/dev/null) || true
+    if [ -n "$_promote_children" ]; then
+        while IFS= read -r _child_scope; do
+            [ -z "$_child_scope" ] && continue
+            if can_promote_scope "$cfg_source" "$_child_scope" 2>/dev/null; then
+                promote_scope "$cfg_source" "$_child_scope"
+            fi
+        done <<< "$_promote_children"
+    fi
 fi
 
 # Show banner if enabled
@@ -386,6 +397,7 @@ session_work_root=""
 intermediary_root=""
 pipe_path=""
 project_path="$cfg_source"
+sparse_reuse_mode=false
 
 if [ "$direct_mount_mode" = true ]; then
     # Direct mount mode: mount source directory directly (no git sync)
@@ -421,6 +433,23 @@ else
     fi
 
     intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
+
+    # Sparse checkout reuse: when scoped and no scoped intermediary exists,
+    # check if a broader-scope intermediary can serve via sparse checkout
+    sparse_reuse_mode=false
+    original_scope_path="$scope_path"
+    original_cfg_source="$cfg_source"
+
+    if [ -n "$scope_path" ] && [ ! -d "$intermediary_dir" ]; then
+        if find_broader_intermediary "$cfg_source" "$scope_path"; then
+            sparse_reuse_mode=true
+            cfg_source="$BROADER_SOURCE_DIR"
+            intermediary_dir="$BROADER_INTERMEDIARY_DIR"
+            scope_path="$BROADER_SCOPE_PATH"
+            echo "Reusing broader intermediary via sparse checkout."
+        fi
+    fi
+
     intermediary_root=$(get_intermediary_root)
 
     # Session selection flow: find reusable sessions, handle --attach-session
@@ -624,36 +653,70 @@ else
     # Check if existing cage is in sync with source
     cage_state=$(check_cage_state "$cfg_source" "$intermediary_dir" "$work_dir")
 
-    case "$cage_state" in
-        "in_sync")
-            echo "Pickin' up where we left off."
-            # Current branch is in sync, but other branches may have new commits
-            if catchup_intermediary_branches "$cfg_source" "$intermediary_dir"; then
-                # Branches were updated - refresh work dir's remote-tracking refs
-                git -C "$work_dir" fetch "$intermediary_dir" '+refs/heads/*:refs/remotes/origin/*' --quiet 2>/dev/null || true
-            fi
-            ;;
-        "needs_work_dir")
-            if [ "$other_session_active" = true ] && [ "$cli_attach_session_mode" = true ]; then
-                echo "Attachin' to active session's workspace."
-            else
-                echo "Intermediary exists but work dir is gone. Rebuildin' workspace..."
+    if [ "$sparse_reuse_mode" = true ]; then
+        # Sparse checkout reuse: work with broader intermediary
+        case "$cage_state" in
+            "in_sync")
+                echo "Pickin' up where we left off (sparse reuse)."
+                # Configure sparse checkout on existing work dir (idempotent)
+                local _rel_scope
+                if [ -z "$BROADER_SCOPE_PATH" ]; then
+                    _rel_scope="$original_scope_path"
+                else
+                    _rel_scope="${original_scope_path#"$BROADER_SCOPE_PATH/"}"
+                fi
+                if [ "$dry_run" != true ] && [ -d "$work_dir/.git" ]; then
+                    git -C "$work_dir" sparse-checkout init --cone 2>/dev/null || true
+                    git -C "$work_dir" sparse-checkout set "$_rel_scope" 2>/dev/null || true
+                    echo "$original_scope_path" > "$work_dir/.git/claude-cage-scope-path"
+                    echo "1" > "$work_dir/.git/claude-cage-sparse-reuse"
+                    echo "$BROADER_INTERMEDIARY_DIR" > "$work_dir/.git/claude-cage-broader-intermediary"
+                fi
+                if catchup_intermediary_branches "$cfg_source" "$intermediary_dir"; then
+                    git -C "$work_dir" fetch "$intermediary_dir" '+refs/heads/*:refs/remotes/origin/*' --quiet 2>/dev/null || true
+                fi
+                ;;
+            "needs_work_dir"|"needs_update")
+                catchup_intermediary_branches "$cfg_source" "$intermediary_dir" || true
+                create_sparse_work_dir "$BROADER_INTERMEDIARY_DIR" "$BROADER_SOURCE_DIR" "$original_scope_path" "$BROADER_SCOPE_PATH"
+                ;;
+            "no_cage"|*)
+                catchup_intermediary_branches "$cfg_source" "$intermediary_dir" || true
+                create_sparse_work_dir "$BROADER_INTERMEDIARY_DIR" "$BROADER_SOURCE_DIR" "$original_scope_path" "$BROADER_SCOPE_PATH"
+                ;;
+        esac
+    else
+        case "$cage_state" in
+            "in_sync")
+                echo "Pickin' up where we left off."
+                # Current branch is in sync, but other branches may have new commits
+                if catchup_intermediary_branches "$cfg_source" "$intermediary_dir"; then
+                    # Branches were updated - refresh work dir's remote-tracking refs
+                    git -C "$work_dir" fetch "$intermediary_dir" '+refs/heads/*:refs/remotes/origin/*' --quiet 2>/dev/null || true
+                fi
+                ;;
+            "needs_work_dir")
+                if [ "$other_session_active" = true ] && [ "$cli_attach_session_mode" = true ]; then
+                    echo "Attachin' to active session's workspace."
+                else
+                    echo "Intermediary exists but work dir is gone. Rebuildin' workspace..."
+                    create_intermediary_clone "$cfg_source" "$scope_path"
+                fi
+                ;;
+            "needs_update")
+                if [ "$other_session_active" = true ]; then
+                    echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
+                else
+                    echo "Source moved ahead. Catchin' up..."
+                    create_intermediary_clone "$cfg_source" "$scope_path"
+                fi
+                ;;
+            "no_cage"|*)
+                # No existing cage, create fresh
                 create_intermediary_clone "$cfg_source" "$scope_path"
-            fi
-            ;;
-        "needs_update")
-            if [ "$other_session_active" = true ]; then
-                echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
-            else
-                echo "Source moved ahead. Catchin' up..."
-                create_intermediary_clone "$cfg_source" "$scope_path"
-            fi
-            ;;
-        "no_cage"|*)
-            # No existing cage, create fresh
-            create_intermediary_clone "$cfg_source" "$scope_path"
-            ;;
-    esac
+                ;;
+        esac
+    fi
 
     # Set up .caged/ symlinks if enabled
     if [ "$cfg_createCagedDir" = "true" ]; then

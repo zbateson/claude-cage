@@ -291,6 +291,149 @@ repos_list_has_parent() {
     return 1
 }
 
+# List child scopes that are narrower than scope_path
+# Arguments: $1 = source_dir, $2 = scope_path (empty = root, matches all non-empty)
+# Output: one child scope per line
+repos_list_children() {
+    local source_dir="$1"
+    local scope_path="${2:-}"
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+
+    [ -f "$repos_file" ] || return
+
+    while IFS= read -r existing; do
+        if [ -z "$scope_path" ]; then
+            # Root scope: every non-empty entry is a child
+            [ -n "$existing" ] && echo "$existing"
+        else
+            # Non-empty scope: entries starting with scope_path/
+            if [ -n "$existing" ] && [ "$existing" != "$scope_path" ] && \
+               [[ "$existing" == "$scope_path/"* ]]; then
+                echo "$existing"
+            fi
+        fi
+    done < "$repos_file"
+}
+
+# Check if a child scope can be safely promoted (absorbed by parent).
+# Criteria: no active sessions, no dirty inactive work dirs, all branches synced.
+# Arguments: $1 = source_dir, $2 = child_scope
+# Returns 0 if promotable, 1 otherwise
+can_promote_scope() {
+    local source_dir="$1"
+    local child_scope="$2"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local child_source="$git_root/$child_scope"
+
+    # Check: no active sessions
+    if has_any_sessions "$child_source" 2>/dev/null; then
+        return 1
+    fi
+
+    # Check: no dirty inactive work dirs
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        local session_dir
+        for session_dir in "$CLAUDE_CAGE_CACHE/sessions"/*; do
+            [ -d "$session_dir" ] || continue
+            local work="$session_dir/work$child_source"
+            [ -d "$work/.git" ] || continue
+            if is_work_dirty "$work" || work_has_unpushed "$work"; then
+                return 1
+            fi
+        done
+    fi
+
+    # Check: all branch HEADs in scoped intermediary are mapped
+    local child_intermediary
+    child_intermediary=$(get_scoped_intermediary_path "$git_root" "$child_scope")
+    [ -d "$child_intermediary" ] || return 1
+    local commit_map
+    commit_map=$(get_commit_map_path "$child_intermediary")
+    [ -f "$commit_map" ] || return 1
+
+    local branch
+    while IFS= read -r branch; do
+        branch="${branch#  }"
+        branch="${branch#\* }"
+        [ -z "$branch" ] && continue
+        local ihead
+        ihead=$(git -C "$child_intermediary" rev-parse "$branch" 2>/dev/null) || continue
+        if ! grep -q "^${ihead} " "$commit_map" 2>/dev/null; then
+            return 1
+        fi
+    done < <(git -C "$child_intermediary" branch --list 2>/dev/null)
+
+    return 0
+}
+
+# Promote a scope by removing its scoped intermediary and work dirs.
+# Only call after can_promote_scope() returns 0.
+# Arguments: $1 = source_dir, $2 = child_scope
+promote_scope() {
+    local source_dir="$1"
+    local child_scope="$2"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local child_source="$git_root/$child_scope"
+
+    echo "Promotin' scope '$child_scope' — broader intermediary covers it now."
+
+    # Delete clean inactive work dirs for child_source
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        local session_dir
+        for session_dir in "$CLAUDE_CAGE_CACHE/sessions"/*; do
+            [ -d "$session_dir" ] || continue
+            local work="$session_dir/work$child_source"
+            [ -d "$work/.git" ] || continue
+            rm -rf "$work"
+            # Clean empty parent dirs up to session/work
+            local parent_dir
+            parent_dir=$(dirname "$work")
+            while [ "$parent_dir" != "$session_dir/work" ] && [ "$parent_dir" != "$session_dir" ]; do
+                [ -d "$parent_dir" ] && [ -z "$(ls -A "$parent_dir" 2>/dev/null)" ] && rm -rf "$parent_dir" || break
+                parent_dir=$(dirname "$parent_dir")
+            done
+            # Clean empty session dirs
+            if [ -d "$session_dir/work" ] && [ -z "$(ls -A "$session_dir/work" 2>/dev/null)" ]; then
+                rm -rf "$session_dir/work"
+            fi
+            if [ -d "$session_dir" ] && [ -z "$(ls -A "$session_dir" 2>/dev/null)" ]; then
+                rm -rf "$session_dir"
+            fi
+        done
+    fi
+
+    # Delete scoped intermediary
+    local child_intermediary
+    child_intermediary=$(get_scoped_intermediary_path "$git_root" "$child_scope")
+    if [ -d "$child_intermediary" ]; then
+        rm -rf "$child_intermediary"
+        echo "  Removed scoped intermediary: $child_intermediary"
+    fi
+
+    # Remove from repos.list
+    repos_list_remove "$source_dir" "$child_scope"
+
+    # Clean empty parent dirs in scoped/ directory
+    local parent
+    parent=$(dirname "$child_intermediary")
+    while [ "$parent" != "$CLAUDE_CAGE_CACHE/scoped" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
+        [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && rm -rf "$parent" || break
+        parent=$(dirname "$parent")
+    done
+
+    # Remove stale source post-commit hook for child_source (if no sessions need it)
+    local path_hash
+    path_hash=$(echo -n "$child_source" | md5sum | cut -c1-12)
+    local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$path_hash"
+    if [ -f "$post_commit_hook" ] && ! has_any_sessions "$child_source" 2>/dev/null; then
+        rm -f "$post_commit_hook"
+        maybe_remove_dispatcher "$git_root" "post-commit" 2>/dev/null || true
+    fi
+}
+
 # Clean orphaned repos.list entries (intermediary dir doesn't exist)
 # Arguments: $1 = source_dir
 repos_list_clean_orphans() {
@@ -319,6 +462,163 @@ repos_list_clean_orphans() {
     else
         mv "$tmp" "$repos_file"
     fi
+}
+
+# Find a broader-scope intermediary that can serve a narrower scope via sparse checkout.
+# Reads repos.list for parent scopes, preferring the narrowest valid parent (longest prefix).
+# Verifies the broader intermediary exists and has matching exclude hash.
+# Arguments: $1 = source_dir, $2 = scope_path
+# Sets globals:
+#   BROADER_INTERMEDIARY_DIR — path to the broader intermediary
+#   BROADER_SOURCE_DIR — source_dir for the broader scope
+#   BROADER_SCOPE_PATH — the broader scope's scope_path (empty for root)
+# Returns 0 if valid broader intermediary found, 1 otherwise
+find_broader_intermediary() {
+    local source_dir="$1"
+    local scope_path="$2"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+
+    BROADER_INTERMEDIARY_DIR=""
+    BROADER_SOURCE_DIR=""
+    BROADER_SCOPE_PATH=""
+
+    [ -f "$repos_file" ] || return 1
+
+    local current_exclude_hash
+    current_exclude_hash=$(compute_exclude_hash "$cfg_exclude")
+
+    local best_scope=""
+    local best_len=-1
+
+    while IFS= read -r existing; do
+        # Skip self
+        [ "$existing" = "$scope_path" ] && continue
+
+        # Check if existing is a parent of scope_path
+        local is_parent=false
+        if [ -z "$existing" ]; then
+            # Root scope is parent of everything
+            is_parent=true
+        elif [[ "$scope_path" == "$existing/"* ]]; then
+            is_parent=true
+        fi
+        [ "$is_parent" = true ] || continue
+
+        # Prefer narrowest parent (longest prefix match)
+        local elen=${#existing}
+        if [ "$elen" -gt "$best_len" ]; then
+            # Verify intermediary exists
+            local candidate_dir
+            candidate_dir=$(get_scoped_intermediary_path "$git_root" "$existing")
+            [ -d "$candidate_dir" ] || continue
+
+            # Verify exclude hash matches
+            local stored_hash=""
+            local hash_file
+            hash_file=$(get_exclude_hash_path "$candidate_dir")
+            [ -f "$hash_file" ] && stored_hash=$(cat "$hash_file")
+            [ "$stored_hash" = "$current_exclude_hash" ] || continue
+
+            best_scope="$existing"
+            best_len=$elen
+        fi
+    done < "$repos_file"
+
+    # Check if we found anything (best_len -1 means nothing matched)
+    [ "$best_len" -ge 0 ] || return 1
+
+    BROADER_SCOPE_PATH="$best_scope"
+    BROADER_INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$git_root" "$best_scope")
+    if [ -z "$best_scope" ]; then
+        BROADER_SOURCE_DIR="$git_root"
+    else
+        BROADER_SOURCE_DIR="$git_root/$best_scope"
+    fi
+    return 0
+}
+
+# Create a work directory as a sparse checkout of a broader intermediary.
+# The sparse checkout cone is set to the relative scope (original scope with
+# broader scope prefix stripped). Work dir is placed at the broader source level.
+# Arguments:
+#   $1 = broader_intermediary_dir
+#   $2 = broader_source_dir
+#   $3 = original_scope_path (user's actual scope)
+#   $4 = broader_scope_path (the broader intermediary's scope, may be empty)
+create_sparse_work_dir() {
+    local broader_intermediary_dir="$1"
+    local broader_source_dir="$2"
+    local original_scope_path="$3"
+    local broader_scope_path="$4"
+
+    # Compute relative sparse scope
+    local relative_scope
+    if [ -z "$broader_scope_path" ]; then
+        relative_scope="$original_scope_path"
+    else
+        relative_scope="${original_scope_path#"$broader_scope_path/"}"
+    fi
+
+    local work_dir
+    work_dir=$(get_work_path "$broader_source_dir")
+
+    # Get source branch
+    local branch_name
+    branch_name=$(get_source_branch "$broader_source_dir")
+
+    if [ -d "$work_dir" ]; then
+        run rm -rf "$work_dir"
+    fi
+
+    echo ""
+    echo "Settin' up a sparse workspace (reusing broader intermediary)..."
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] git clone --no-checkout $broader_intermediary_dir $work_dir"
+        echo "[dry-run] git sparse-checkout set $relative_scope"
+    else
+        run mkdir -p "$(dirname "$work_dir")"
+        run_quiet git clone --no-checkout --quiet "$broader_intermediary_dir" "$work_dir"
+        git -C "$work_dir" sparse-checkout init --cone
+        git -C "$work_dir" sparse-checkout set "$relative_scope"
+
+        # Checkout the correct branch
+        if [ -n "$branch_name" ]; then
+            local default_head
+            default_head=$(git -C "$broader_intermediary_dir" symbolic-ref --short HEAD 2>/dev/null)
+            if [ "$branch_name" != "$default_head" ] && \
+               git -C "$broader_intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+                run_quiet git -C "$work_dir" checkout --quiet "$branch_name" 2>/dev/null
+            else
+                run_quiet git -C "$work_dir" checkout --quiet 2>/dev/null
+            fi
+        else
+            run_quiet git -C "$work_dir" checkout --quiet 2>/dev/null
+        fi
+
+        # Set remote URL to sandbox mount point
+        local mounted_intermediary="/run${broader_intermediary_dir}"
+        run_quiet git -C "$work_dir" remote set-url origin "$mounted_intermediary"
+        run_quiet git -C "$work_dir" config push.autoSetupRemote true
+
+        # Write metadata
+        echo "$original_scope_path" > "$work_dir/.git/claude-cage-scope-path"
+        echo "1" > "$work_dir/.git/claude-cage-sparse-reuse"
+        echo "$broader_intermediary_dir" > "$work_dir/.git/claude-cage-broader-intermediary"
+    fi
+
+    # Record this session as the latest for the broader project
+    if [ "$dry_run" != true ]; then
+        write_latest_session "$broader_intermediary_dir" "${CLAUDE_CAGE_SESSION:-}"
+    fi
+
+    echo ""
+    echo "Sparse workspace ready: $work_dir"
+    echo "  Sparse cone: $relative_scope"
+    echo "  Branch: ${branch_name:-<default>}"
 }
 
 # List all cached sessions for a source directory (newest first)
@@ -654,8 +954,17 @@ clean_session_cache() {
     if [ -f "$work_dir/.git/claude-cage-scope-path" ]; then
         _clean_scope=$(cat "$work_dir/.git/claude-cage-scope-path")
     fi
+
+    # Check for sparse-reuse session: intermediary belongs to broader scope
+    local _is_sparse_reuse=false
     local intermediary_dir
-    intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$_clean_scope")
+    if [ -f "$work_dir/.git/claude-cage-sparse-reuse" ]; then
+        _is_sparse_reuse=true
+        intermediary_dir=$(cat "$work_dir/.git/claude-cage-broader-intermediary" 2>/dev/null)
+    fi
+    if [ -z "$intermediary_dir" ]; then
+        intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$_clean_scope")
+    fi
     local caged_link="$source_dir/.caged/sessions/$session_id"
 
     # Remove source hooks for this project (only if no other sessions active)
@@ -703,40 +1012,45 @@ clean_session_cache() {
     fi
 
     # Check if shared intermediary should be removed
-    # Only remove if no other sessions use it (no work dirs reference this source)
-    local other_sessions_exist=false
-    if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
-        for sd in "$CLAUDE_CAGE_CACHE/sessions"/*; do
-            [ -d "$sd" ] || continue
-            if [ -d "$sd/work$source_dir/.git" ]; then
-                other_sessions_exist=true
-                break
-            fi
-        done
-    fi
-
-    if [ "$other_sessions_exist" = false ] && [ -d "$intermediary_dir" ]; then
-        # Read scope_path before removing intermediary (for repos.list cleanup)
-        local scope_path=""
-        local scope_path_file
-        scope_path_file=$(get_scope_path_file "$intermediary_dir")
-        if [ -f "$scope_path_file" ]; then
-            scope_path=$(cat "$scope_path_file")
+    # Skip intermediary deletion for sparse-reuse sessions (intermediary belongs to broader scope)
+    if [ "$_is_sparse_reuse" = true ]; then
+        : # Broader intermediary is shared — don't touch it
+    else
+        # Only remove if no other sessions use it (no work dirs reference this source)
+        local other_sessions_exist=false
+        if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+            for sd in "$CLAUDE_CAGE_CACHE/sessions"/*; do
+                [ -d "$sd" ] || continue
+                if [ -d "$sd/work$source_dir/.git" ]; then
+                    other_sessions_exist=true
+                    break
+                fi
+            done
         fi
 
-        run rm -rf "$intermediary_dir"
-        echo "Removed shared intermediary: $intermediary_dir"
+        if [ "$other_sessions_exist" = false ] && [ -d "$intermediary_dir" ]; then
+            # Read scope_path before removing intermediary (for repos.list cleanup)
+            local scope_path=""
+            local scope_path_file
+            scope_path_file=$(get_scope_path_file "$intermediary_dir")
+            if [ -f "$scope_path_file" ]; then
+                scope_path=$(cat "$scope_path_file")
+            fi
 
-        # Remove from repos.list
-        repos_list_remove "$source_dir" "$scope_path"
+            run rm -rf "$intermediary_dir"
+            echo "Removed shared intermediary: $intermediary_dir"
 
-        # Clean up empty parent dirs
-        local parent
-        parent=$(dirname "$intermediary_dir")
-        while [ "$parent" != "$CLAUDE_CAGE_CACHE/intermediary" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE/scoped" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
-            [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && run rm -rf "$parent" || break
-            parent=$(dirname "$parent")
-        done
+            # Remove from repos.list
+            repos_list_remove "$source_dir" "$scope_path"
+
+            # Clean up empty parent dirs
+            local parent
+            parent=$(dirname "$intermediary_dir")
+            while [ "$parent" != "$CLAUDE_CAGE_CACHE/intermediary" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE/scoped" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
+                [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && run rm -rf "$parent" || break
+                parent=$(dirname "$parent")
+            done
+        fi
     fi
 
     # Remove empty top-level cache dirs (scoped/ and intermediary/)

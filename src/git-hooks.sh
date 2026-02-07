@@ -394,9 +394,9 @@ if ! git -C "\$INTERMEDIARY" rev-parse --verify "\$current_branch" >/dev/null 2>
 fi
 
 # Skip during sync_to_source (git-am triggers post-commit; marks handled by sync).
-# Value is the path_hash of the source_dir whose intermediary is being synced,
-# so only THIS hook skips — other hooks (different intermediaries) still process.
-[ "\${CLAUDE_CAGE_SYNCING:-}" = "$path_hash" ] && exit 0
+# Any non-empty value means a sync is in progress — all hooks skip.
+# Cross-level propagation is handled explicitly by propagate_to_sibling_intermediaries().
+[ -n "\${CLAUDE_CAGE_SYNCING:-}" ] && exit 0
 
 # Check commit mapping: already mapped -> skip (loop prevention)
 if [ -f "\$COMMIT_MAP" ] && grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP"; then

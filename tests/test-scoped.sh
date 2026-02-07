@@ -1174,4 +1174,213 @@ rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$api_hash"
 rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$web_hash"
 
 echo ""
+
+echo "Test 38: Cage commits propagate to sibling intermediary via propagate_to_sibling_intermediaries"
+# Set up two scoped intermediaries for api and web
+cd "$MONOREPO_PATH"
+git checkout "$BRANCH_NAME"
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+
+CLAUDE_CAGE_SESSION="test-prop-api"
+cfg_exclude=".env"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+CLAUDE_CAGE_SESSION="test-prop-web"
+WEB_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "services/web")
+WEB_SOURCE="$MONOREPO_PATH/services/web"
+create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
+
+# Simulate a cage commit by pushing to API intermediary's work dir
+CLAUDE_CAGE_SESSION="test-prop-api"
+api_work=$(get_work_path "$SOURCE_API")
+echo "cage-change-api" > "$api_work/app.go"
+cd "$api_work"
+git add app.go && git commit -m "Cage commit in api" --quiet 2>/dev/null
+
+# Push to intermediary (simulate cage push)
+# Set origin to local path for push (no sandbox mount)
+git remote set-url origin "$INTERMEDIARY_DIR"
+git push origin "$BRANCH_NAME" --quiet 2>/dev/null
+
+# Get the pushed commit
+pushed_commit=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")
+old_commit=$(git -C "$INTERMEDIARY_DIR" rev-parse "${BRANCH_NAME}~1")
+
+# Record web intermediary state before propagation
+web_head_before=$(git -C "$WEB_IDIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+
+# Run sync_to_source (which calls propagate_to_sibling_intermediaries at the end)
+cd "$MONOREPO_PATH"
+sync_to_source "$SOURCE_API" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$old_commit" >/dev/null 2>&1
+
+# Verify source has the commit
+source_head=$(git rev-parse HEAD)
+api_content=$(cat services/api/app.go)
+if [ "$api_content" != "cage-change-api" ]; then
+    echo "FAIL: Source should have cage commit content, got '$api_content'"
+    exit 1
+fi
+echo "  PASS: Source received the cage commit"
+
+# Verify web intermediary received the update via propagation
+web_commit_map=$(get_commit_map_path "$WEB_IDIR")
+if ! grep -q " ${source_head}$" "$web_commit_map" 2>/dev/null; then
+    echo "FAIL: Web intermediary should have the propagated commit in its map"
+    echo "  Web commit map:"
+    cat "$web_commit_map" 2>/dev/null | tail -5
+    echo "  Web sync log:"
+    cat "$WEB_IDIR/sync.log" 2>/dev/null | tail -5
+    exit 1
+fi
+echo "  PASS: Web intermediary received the propagated commit"
+
+# Clean up hooks
+api_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
+web_hash=$(echo -n "$WEB_SOURCE" | md5sum | cut -c1-12)
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$api_hash"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$web_hash"
+
+echo ""
+
+echo "Test 39: Propagation works for temp-index path (branch-switched)"
+cd "$MONOREPO_PATH"
+git checkout "$BRANCH_NAME"
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+
+CLAUDE_CAGE_SESSION="test-tempidx-api"
+cfg_exclude=".env"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+CLAUDE_CAGE_SESSION="test-tempidx-web"
+WEB_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "services/web")
+WEB_SOURCE="$MONOREPO_PATH/services/web"
+create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
+
+# Simulate cage commit
+CLAUDE_CAGE_SESSION="test-tempidx-api"
+api_work=$(get_work_path "$SOURCE_API")
+echo "tempidx-api-change" > "$api_work/app.go"
+cd "$api_work"
+git add app.go && git commit -m "Cage commit for tempidx" --quiet 2>/dev/null
+git remote set-url origin "$INTERMEDIARY_DIR"
+git push origin "$BRANCH_NAME" --quiet 2>/dev/null
+
+pushed_commit=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")
+old_commit=$(git -C "$INTERMEDIARY_DIR" rev-parse "${BRANCH_NAME}~1")
+
+# Switch source to a different branch so sync_to_source takes temp-index path
+cd "$MONOREPO_PATH"
+git checkout -b temp-switched-branch --quiet 2>/dev/null
+
+# Run sync_to_source — should use temp-index path since current branch != target branch
+sync_to_source "$SOURCE_API" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$old_commit" >/dev/null 2>&1
+
+source_head=$(git rev-parse "$BRANCH_NAME")
+api_content=$(git show "${BRANCH_NAME}:services/api/app.go" 2>/dev/null)
+if [ "$api_content" != "tempidx-api-change" ]; then
+    echo "FAIL: Source branch should have cage commit, got '$api_content'"
+    exit 1
+fi
+echo "  PASS: Source received cage commit via temp-index path"
+
+# Verify web intermediary received propagation
+web_commit_map=$(get_commit_map_path "$WEB_IDIR")
+if ! grep -q " ${source_head}$" "$web_commit_map" 2>/dev/null; then
+    echo "FAIL: Web intermediary should have the propagated commit in map (temp-index)"
+    echo "  Web commit map:"
+    cat "$web_commit_map" 2>/dev/null | tail -5
+    exit 1
+fi
+echo "  PASS: Web intermediary received propagated commit (temp-index path)"
+
+# Switch back and clean up
+cd "$MONOREPO_PATH"
+git checkout "$BRANCH_NAME" --quiet 2>/dev/null
+git branch -D temp-switched-branch --quiet 2>/dev/null || true
+api_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
+web_hash=$(echo -n "$WEB_SOURCE" | md5sum | cut -c1-12)
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$api_hash"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$web_hash"
+
+echo ""
+
+echo "Test 40: Deferred child cleanup on session exit"
+cd "$MONOREPO_PATH"
+git checkout "$BRANCH_NAME"
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+
+# Create a scoped intermediary for services/api
+CLAUDE_CAGE_SESSION="test-deferred-api"
+cfg_exclude=".env"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+# Register a fake session for services/api
+session_dir=$(get_session_dir "$SOURCE_API")
+mkdir -p "$session_dir"
+# Use a fake PID that's definitely running (our own PID)
+echo "$CLAUDE_CAGE_SESSION" > "$session_dir/$$"
+
+# Create a broader root intermediary (triggers cleanup_child_intermediaries)
+CLAUDE_CAGE_SESSION="test-deferred-root"
+ROOT_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
+create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
+
+# Child should still exist (active session prevents cleanup)
+if [ ! -d "$INTERMEDIARY_DIR" ]; then
+    echo "FAIL: Scoped intermediary should still exist (active session)"
+    exit 1
+fi
+echo "  PASS: Scoped intermediary preserved while session active"
+
+# Unregister the fake session
+rm -f "$session_dir/$$"
+rmdir "$session_dir" 2>/dev/null || true
+
+# Now call deferred cleanup
+maybe_cleanup_superseded_intermediary "$SOURCE_API" "services/api"
+
+# Verify the scoped intermediary was cleaned up
+if [ -d "$INTERMEDIARY_DIR" ]; then
+    echo "FAIL: Scoped intermediary should have been cleaned up"
+    exit 1
+fi
+echo "  PASS: Scoped intermediary cleaned up after session exit"
+
+# Verify repos.list no longer has the child entry
+repos_file=$(get_repos_list_path "$SOURCE_API")
+if [ -f "$repos_file" ] && grep -qxF "services/api" "$repos_file" 2>/dev/null; then
+    echo "FAIL: repos.list should no longer have services/api entry"
+    exit 1
+fi
+echo "  PASS: repos.list updated correctly"
+
+# Verify root intermediary still exists
+if [ ! -d "$ROOT_IDIR" ]; then
+    echo "FAIL: Root intermediary should still exist"
+    exit 1
+fi
+echo "  PASS: Root intermediary unaffected"
+
+echo ""
 echo "=== All scoped tests passed! ==="

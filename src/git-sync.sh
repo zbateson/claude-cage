@@ -454,6 +454,46 @@ sync_to_source() {
             rm -f "$tmp_index"
         fi
     done
+
+    # Propagate to sibling intermediaries at other scope levels
+    propagate_to_sibling_intermediaries "$source_dir" "$intermediary_dir"
+}
+
+# Propagate source changes to all sibling intermediaries (different scope levels).
+# Called after sync_to_source applies cage commits to source, so siblings stay in sync.
+# Uses catchup_intermediary_branches which is idempotent (skips already-mapped commits).
+# Arguments:
+#   $1 - source_dir: The scoped source directory for the originating intermediary
+#   $2 - current_intermediary_dir: The originating intermediary (skipped)
+propagate_to_sibling_intermediaries() {
+    local source_dir="$1"
+    local current_intermediary_dir="$2"
+
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+    [ -f "$repos_file" ] || return 0
+
+    while IFS= read -r _scope; do
+        local sibling_idir
+        sibling_idir=$(get_scoped_intermediary_path "$git_root" "$_scope")
+
+        # Skip self
+        [ "$sibling_idir" = "$current_intermediary_dir" ] && continue
+
+        # Skip if intermediary doesn't exist
+        [ -d "$sibling_idir" ] && [ -f "$sibling_idir/HEAD" ] || continue
+
+        local sibling_source
+        if [ -n "$_scope" ]; then
+            sibling_source="$git_root/$_scope"
+        else
+            sibling_source="$git_root"
+        fi
+
+        catchup_intermediary_branches "$sibling_source" "$sibling_idir" 2>/dev/null || true
+    done < "$repos_file"
 }
 
 # Start the pipe listener in background

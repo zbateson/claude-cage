@@ -408,6 +408,42 @@ cleanup_child_intermediaries() {
     done
 }
 
+# Deferred cleanup: remove a scoped intermediary if a broader scope now exists.
+# Called on session exit when the narrower scope is no longer needed.
+# Arguments: $1 = source_dir, $2 = scope_path
+maybe_cleanup_superseded_intermediary() {
+    local source_dir="$1"
+    local scope_path="$2"
+    [ -n "$scope_path" ] || return 0
+
+    # Don't clean up if other sessions still use this scope
+    if has_any_sessions "$source_dir"; then
+        return 0
+    fi
+
+    # Check if a broader scope exists
+    if ! check_broader_intermediary_exists "$source_dir" "$scope_path"; then
+        return 0
+    fi
+
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local idir
+    idir=$(get_scoped_intermediary_path "$git_root" "$scope_path")
+    if [ -d "$idir" ]; then
+        rm -rf "$idir"
+        # Clean empty parent dirs up to scoped/ top-level
+        local parent
+        parent=$(dirname "$idir")
+        while [ "$parent" != "$CLAUDE_CAGE_CACHE/scoped" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
+            [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && rm -rf "$parent" || break
+            parent=$(dirname "$parent")
+        done
+        repos_list_remove "$source_dir" "$scope_path"
+        echo "Cleaned up scoped intermediary: $scope_path (broader scope covers it now)"
+    fi
+}
+
 # List all cached sessions for a source directory (newest first)
 # Discovers sessions across all scopes in the same git root via repos.list.
 # Output: one line per session: "<session_id> <branch> <source_dir> <scope>"
@@ -1135,12 +1171,21 @@ catchup_intermediary_branches() {
         echo "  Catching up branch $ib..."
         any_updated=true
         if [ "$dry_run" != true ]; then
+            # Look up source hash corresponding to intermediary HEAD via commit map
+            local mapped_source_base=""
+            if [ -f "$commit_map_path" ]; then
+                mapped_source_base=$(awk -v ih="$intermediary_head" '$1 == ih && $2 != "0" { print $2; exit }' "$commit_map_path")
+            fi
+            if [ -z "$mapped_source_base" ]; then
+                continue  # Can't determine range base
+            fi
+
             local catchup_tmp
             catchup_tmp=$(mktemp)
             git -C "$export_dir" fast-export \
                 --import-marks="$source_marks_path" \
                 --export-marks="$source_marks_path" \
-                "${intermediary_head}..${ib}" \
+                "${mapped_source_base}..${ib}" \
                 ${pathspec_args:+-- "${pathspec_args[@]}"} \
                 >"$catchup_tmp" 2>/dev/null
             [ -n "$scope_path" ] && strip_scope_prefix "$catchup_tmp" "$scope_path/" "$intermediary_dir"
@@ -1150,7 +1195,7 @@ catchup_intermediary_branches() {
                 --quiet <"$catchup_tmp" 2>/dev/null || true
             rm -f "$catchup_tmp"
 
-            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${intermediary_head}..${ib}"
+            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${mapped_source_base}..${ib}"
         fi
     done < <(git -C "$intermediary_dir" branch --list 2>/dev/null)
 

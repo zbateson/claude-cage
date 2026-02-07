@@ -713,6 +713,10 @@ cleanup_on_exit() {
     if [ "$direct_mount_mode" = false ]; then
         # Always unregister our session
         unregister_session "$cfg_source"
+        # Deferred cleanup: if this scoped intermediary is now superseded
+        if [ -n "${scope_path:-}" ]; then
+            maybe_cleanup_superseded_intermediary "$cfg_source" "$scope_path"
+        fi
         if [ -n "$PIPE_LISTENER_PID" ]; then
             stop_pipe_listener "$PIPE_LISTENER_PID"
             cleanup_pipe "$pipe_path"

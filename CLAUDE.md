@@ -765,9 +765,9 @@ bash tests/run-all.sh
 | test-docker.sh | docker.sh | 18 |
 | test-clean.sh | clean commands | 14 |
 | test-direct-mount.sh | direct mount mode | 8 |
-| test-scoped.sh | scoped intermediary | 37 |
+| test-scoped.sh | scoped intermediary | 40 |
 
-**Total: ~240 assertions across 14 files**
+**Total: ~243 assertions across 14 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

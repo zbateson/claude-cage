@@ -666,7 +666,8 @@ claude_cage {
 
 ```
 ~/.cache/claude-cage/
-├── intermediary/<project-path>/          # Shared bare repo (git origin for work)
+├── intermediary/<project-path>/          # Shared bare repo (unscoped, git origin for work)
+├── scoped/<git-root>/<scope-path>/.bare/ # Scoped bare repo (scope prefix stripped)
 │   ├── hooks/
 │   │   ├── post-receive                  # Triggers sync via named pipe
 │   │   └── pre-receive                   # Guards against branch name collisions
@@ -764,9 +765,9 @@ bash tests/run-all.sh
 | test-docker.sh | docker.sh | 18 |
 | test-clean.sh | clean commands | 14 |
 | test-direct-mount.sh | direct mount mode | 8 |
-| test-scoped.sh | scoped intermediary | 26 |
+| test-scoped.sh | scoped intermediary | 37 |
 
-**Total: ~229 assertions across 14 files**
+**Total: ~240 assertions across 14 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

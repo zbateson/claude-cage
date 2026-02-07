@@ -421,6 +421,13 @@ echo "=== Testing repos_list_clean_orphans ==="
 echo ""
 
 echo "Test 19: repos_list_clean_orphans removes entries for missing intermediaries"
+# Rebuild scoped intermediary (Test 17's root creation cleaned it up via child cleanup)
+CLAUDE_CAGE_SESSION="test-orphan-rebuild"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+rm -rf "$INTERMEDIARY_DIR"
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+repos_file=$(get_repos_list_path "$SOURCE_API")
+
 # Add a fake scope entry
 repos_list_add "$SOURCE_API" "nonexistent/scope"
 # Verify it's there
@@ -799,309 +806,122 @@ echo "  PASS: Cross-scope dirty session discovered from git root"
 repos_list_remove "$SOURCE_API" ""
 
 echo ""
-echo "=== Testing sparse checkout reuse ==="
+echo "=== Testing scoped intermediary coexistence ==="
 echo ""
 
-# Clean up work dirs for a fresh start
+echo "Test 29: Creating broader scope cleans up narrower scope's intermediary"
+# Clean up scoped directory for a fresh start
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
 rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
 
-# Make sure the root unscoped intermediary exists (from Test 17)
-UNSCOPED_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
-if [ ! -d "$UNSCOPED_IDIR" ]; then
-    CLAUDE_CAGE_SESSION="test-sparse-setup"
-    cfg_exclude=".env"
-    create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
-fi
-# Ensure repos.list has root entry
-repos_list_add "$MONOREPO_PATH" ""
-
-# Make sure the scoped intermediary exists (from Test 4)
-SCOPED_IDIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
-if [ ! -d "$SCOPED_IDIR" ]; then
-    CLAUDE_CAGE_SESSION="test-sparse-setup2"
-    cfg_exclude=".env"
-    create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
-fi
-repos_list_add "$SOURCE_API" "services/api"
-
-echo "Test 29: find_broader_intermediary detects root intermediary for scoped request"
-if ! find_broader_intermediary "$SOURCE_API" "services/api"; then
-    echo "FAIL: find_broader_intermediary should find root intermediary"
-    exit 1
-fi
-if [ "$BROADER_INTERMEDIARY_DIR" != "$UNSCOPED_IDIR" ]; then
-    echo "FAIL: BROADER_INTERMEDIARY_DIR should be '$UNSCOPED_IDIR', got '$BROADER_INTERMEDIARY_DIR'"
-    exit 1
-fi
-if [ -n "$BROADER_SCOPE_PATH" ]; then
-    echo "FAIL: BROADER_SCOPE_PATH should be empty (root), got '$BROADER_SCOPE_PATH'"
-    exit 1
-fi
-if [ "$BROADER_SOURCE_DIR" != "$MONOREPO_PATH" ]; then
-    echo "FAIL: BROADER_SOURCE_DIR should be '$MONOREPO_PATH', got '$BROADER_SOURCE_DIR'"
-    exit 1
-fi
-echo "  PASS: Root intermediary found as broader scope"
-
-echo "Test 30: find_broader_intermediary prefers narrowest parent"
-# Add a mid-level scope "services" to repos.list and create its intermediary
-SERVICES_SOURCE="$MONOREPO_PATH/services"
-mkdir -p "$SERVICES_SOURCE"
-CLAUDE_CAGE_SESSION="test-sparse-narrow"
-repos_list_add "$SOURCE_API" "services"
-SERVICES_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "services")
-# Create a minimal scoped intermediary for services/
+# Create narrower scope first: services/api
+CLAUDE_CAGE_SESSION="test-coexist-narrow"
 cfg_exclude=".env"
-# Temporarily create scoped intermediary — we need a real one for hash matching
-create_intermediary_clone "$SERVICES_SOURCE" "services" >/dev/null 2>&1
+NARROW_IDIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
 
-if ! find_broader_intermediary "$SOURCE_API" "services/api"; then
-    echo "FAIL: find_broader_intermediary should find services/ as parent"
+if [ ! -d "$NARROW_IDIR" ]; then
+    echo "FAIL: Setup: narrower intermediary should exist"
     exit 1
 fi
-if [ "$BROADER_SCOPE_PATH" != "services" ]; then
-    echo "FAIL: BROADER_SCOPE_PATH should be 'services' (narrowest parent), got '$BROADER_SCOPE_PATH'"
+
+# Verify repos.list has the narrower entry
+repos_file=$(get_repos_list_path "$SOURCE_API")
+if ! grep -qxF "services/api" "$repos_file" 2>/dev/null; then
+    echo "FAIL: Setup: repos.list should have 'services/api'"
     exit 1
 fi
-echo "  PASS: Narrowest parent 'services' preferred over root"
-# Clean up services intermediary (not needed after this test)
-rm -rf "$SERVICES_IDIR"
-repos_list_remove "$SOURCE_API" "services"
 
-echo "Test 31: find_broader_intermediary returns 1 when exclude hash mismatches"
-# Change cfg_exclude to cause hash mismatch
-old_exclude="$cfg_exclude"
-cfg_exclude=".env|*.log|different_pattern"
-if find_broader_intermediary "$SOURCE_API" "services/api"; then
-    echo "FAIL: find_broader_intermediary should fail with mismatched exclude hash"
+# Now create broader scope: root (parent of everything)
+CLAUDE_CAGE_SESSION="test-coexist-broad"
+BROAD_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
+create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
+
+if [ ! -d "$BROAD_IDIR" ]; then
+    echo "FAIL: Broader intermediary should exist"
     exit 1
 fi
-cfg_exclude="$old_exclude"
-echo "  PASS: Returns 1 on exclude hash mismatch"
 
-echo "Test 32: find_broader_intermediary returns 1 when no broader intermediary exists"
-# Remove root entry
+# The narrower intermediary should have been deleted
+if [ -d "$NARROW_IDIR" ]; then
+    echo "FAIL: Narrower intermediary should have been cleaned up by broader creation"
+    exit 1
+fi
+echo "  PASS: Narrower intermediary cleaned up"
+
+# repos.list should no longer have the child entry
+if grep -qxF "services/api" "$repos_file" 2>/dev/null; then
+    echo "FAIL: repos.list should no longer have 'services/api' after cleanup"
+    exit 1
+fi
+echo "  PASS: repos.list child entry removed"
+
+# Clean up
+rm -rf "$BROAD_IDIR"
 repos_list_remove "$SOURCE_API" ""
-if find_broader_intermediary "$SOURCE_API" "services/api"; then
-    echo "FAIL: find_broader_intermediary should fail with no broader scope"
+
+echo "Test 30: check_broader_intermediary_exists detects broader scope"
+# Create a root-level intermediary
+CLAUDE_CAGE_SESSION="test-broader-check"
+BROAD_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
+create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
+
+if ! check_broader_intermediary_exists "$SOURCE_API" "services/api"; then
+    echo "FAIL: Should detect root-level intermediary as broader than services/api"
     exit 1
 fi
-echo "  PASS: Returns 1 when no broader intermediary"
-# Restore root entry
-repos_list_add "$SOURCE_API" ""
+echo "  PASS: Root intermediary detected as broader scope"
 
-echo ""
-echo "Test 33: create_sparse_work_dir creates sparse checkout of broader intermediary"
-CLAUDE_CAGE_SESSION="test-sparse-work"
-export CLAUDE_CAGE_SESSION
+echo "Test 31: check_broader_intermediary_exists returns 1 when no broader exists"
+# Remove the root intermediary
+rm -rf "$BROAD_IDIR"
+repos_list_remove "$SOURCE_API" ""
+
+if check_broader_intermediary_exists "$SOURCE_API" "services/api"; then
+    echo "FAIL: Should return 1 when no broader intermediary exists"
+    exit 1
+fi
+echo "  PASS: Returns 1 when no broader exists"
+
+echo "Test 32: cleanup_child_intermediaries skips children with active sessions"
+# Create narrower scope
+CLAUDE_CAGE_SESSION="test-active-child"
 cfg_exclude=".env"
+NARROW_IDIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+rm -rf "$NARROW_IDIR"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
 
-# Get current branch
-BRANCH_NAME=$(git -C "$MONOREPO_PATH" branch --show-current)
+if [ ! -d "$NARROW_IDIR" ]; then
+    echo "FAIL: Setup: narrower intermediary should exist"
+    exit 1
+fi
 
-create_sparse_work_dir "$UNSCOPED_IDIR" "$MONOREPO_PATH" "services/api" "" >/dev/null 2>&1
+# Simulate active session for the narrower source_dir by creating a PID file
+path_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
+session_pid_dir="$CLAUDE_CAGE_RUNTIME/sessions/$path_hash"
+mkdir -p "$session_pid_dir"
+echo "test-active-child" > "$session_pid_dir/$$"
 
-SPARSE_WORK=$(get_work_path "$MONOREPO_PATH")
-if [ ! -d "$SPARSE_WORK/.git" ]; then
-    echo "FAIL: Sparse work dir should exist with .git"
-    exit 1
-fi
-echo "  PASS: Sparse work dir created"
+# Now create broader scope (root) — should skip the child due to active session
+CLAUDE_CAGE_SESSION="test-active-broad"
+BROAD_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
+create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
 
-echo "Test 34: create_sparse_work_dir computes relative scope correctly"
-# The sparse checkout cone should be services/api (relative to root)
-sparse_cone=$(git -C "$SPARSE_WORK" sparse-checkout list 2>/dev/null)
-if [ "$sparse_cone" != "services/api" ]; then
-    echo "FAIL: Sparse cone should be 'services/api', got '$sparse_cone'"
+# The narrower intermediary should still exist (skipped due to active session)
+if [ ! -d "$NARROW_IDIR" ]; then
+    echo "FAIL: Narrower intermediary should NOT be deleted when it has an active session"
     exit 1
 fi
-echo "  PASS: Sparse cone is 'services/api'"
+echo "  PASS: Child with active session preserved"
 
-echo "Test 35: create_sparse_work_dir writes metadata"
-if [ ! -f "$SPARSE_WORK/.git/claude-cage-sparse-reuse" ]; then
-    echo "FAIL: claude-cage-sparse-reuse flag not written"
-    exit 1
-fi
-sparse_flag=$(cat "$SPARSE_WORK/.git/claude-cage-sparse-reuse")
-if [ "$sparse_flag" != "1" ]; then
-    echo "FAIL: sparse-reuse flag should be '1', got '$sparse_flag'"
-    exit 1
-fi
-broader_meta=$(cat "$SPARSE_WORK/.git/claude-cage-broader-intermediary" 2>/dev/null)
-if [ "$broader_meta" != "$UNSCOPED_IDIR" ]; then
-    echo "FAIL: broader-intermediary metadata should be '$UNSCOPED_IDIR', got '$broader_meta'"
-    exit 1
-fi
-scope_meta=$(cat "$SPARSE_WORK/.git/claude-cage-scope-path" 2>/dev/null)
-if [ "$scope_meta" != "services/api" ]; then
-    echo "FAIL: scope-path metadata should be 'services/api', got '$scope_meta'"
-    exit 1
-fi
-echo "  PASS: All metadata written correctly"
-
-echo "Test 36: Sparse reuse work dir: in-scope files visible, out-of-scope NOT"
-if [ ! -f "$SPARSE_WORK/services/api/app.go" ]; then
-    echo "FAIL: services/api/app.go should be visible in sparse checkout"
-    ls -la "$SPARSE_WORK/services/" 2>/dev/null || echo "(services/ not found)"
-    exit 1
-fi
-if [ -f "$SPARSE_WORK/services/web/index.html" ]; then
-    echo "FAIL: services/web/index.html should NOT be visible (outside sparse cone)"
-    exit 1
-fi
-if [ -f "$SPARSE_WORK/shared/lib.go" ]; then
-    echo "FAIL: shared/lib.go should NOT be visible (outside sparse cone)"
-    exit 1
-fi
-echo "  PASS: Only in-scope files visible"
-
-echo "Test 37: create_sparse_work_dir with non-root broader scope computes relative path"
-# Create a services-scoped intermediary, then request services/api from it
-CLAUDE_CAGE_SESSION="test-sparse-relative"
-repos_list_add "$SOURCE_API" "services"
-SERVICES_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "services")
-cfg_exclude=".env"
-create_intermediary_clone "$SERVICES_SOURCE" "services" >/dev/null 2>&1
-
-create_sparse_work_dir "$SERVICES_IDIR" "$SERVICES_SOURCE" "services/api" "services" >/dev/null 2>&1
-
-RELATIVE_WORK=$(get_work_path "$SERVICES_SOURCE")
-if [ ! -d "$RELATIVE_WORK/.git" ]; then
-    echo "FAIL: Relative sparse work dir should exist"
-    exit 1
-fi
-relative_cone=$(git -C "$RELATIVE_WORK" sparse-checkout list 2>/dev/null)
-if [ "$relative_cone" != "api" ]; then
-    echo "FAIL: Relative sparse cone should be 'api' (services stripped), got '$relative_cone'"
-    exit 1
-fi
-echo "  PASS: Relative scope 'api' computed correctly (broader=services, request=services/api)"
-
-# Clean up services intermediary
-rm -rf "$SERVICES_IDIR"
-repos_list_remove "$SOURCE_API" "services"
-
-echo ""
-echo "Test 38: clean_session_cache with sparse-reuse skips intermediary deletion"
-# Clean the sparse-reuse session and verify intermediary survives
-CLAUDE_CAGE_SESSION="test-sparse-work"
-SPARSE_WORK=$(get_work_path "$MONOREPO_PATH")
-# Verify work dir exists before clean
-if [ ! -d "$SPARSE_WORK/.git" ]; then
-    echo "FAIL: Setup: sparse work dir should exist"
-    exit 1
-fi
-clean_session_cache "$MONOREPO_PATH" "test-sparse-work" >/dev/null 2>&1
-
-# Work dir should be gone
-if [ -d "$SPARSE_WORK" ]; then
-    echo "FAIL: Work dir should be removed after clean"
-    exit 1
-fi
-# Broader intermediary should still exist
-if [ ! -d "$UNSCOPED_IDIR" ]; then
-    echo "FAIL: Broader intermediary should NOT be deleted by sparse-reuse cleanup"
-    exit 1
-fi
-echo "  PASS: Sparse-reuse cleanup skips broader intermediary"
-
-echo ""
-echo "=== Testing scope promotion ==="
-echo ""
-
-# Set up: create a scoped intermediary for services/web with synced commits
-cd "$MONOREPO_PATH"
-CLAUDE_CAGE_SESSION="test-promote-setup"
-cfg_exclude=".env"
-WEB_SOURCE="$MONOREPO_PATH/services/web"
-repos_list_add "$WEB_SOURCE" "services/web"
-WEB_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "services/web")
-create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
-
-echo "Test 39: repos_list_children finds narrower scopes"
-# Ensure both scoped entries exist
-repos_list_add "$SOURCE_API" "services/api"
-children=$(repos_list_children "$MONOREPO_PATH" "")
-if ! echo "$children" | grep -q "services/api"; then
-    echo "FAIL: Root should see services/api as child"
-    echo "  Children: $children"
-    exit 1
-fi
-if ! echo "$children" | grep -q "services/web"; then
-    echo "FAIL: Root should see services/web as child"
-    echo "  Children: $children"
-    exit 1
-fi
-echo "  PASS: Root scope finds narrower children"
-
-echo "Test 40: repos_list_children returns nothing for leaf scope"
-leaf_children=$(repos_list_children "$MONOREPO_PATH" "services/api")
-if [ -n "$leaf_children" ]; then
-    echo "FAIL: Leaf scope 'services/api' should have no children, got: $leaf_children"
-    exit 1
-fi
-echo "  PASS: Leaf scope has no children"
-
-echo "Test 41: can_promote_scope returns 0 for synced child with no sessions"
-# services/web intermediary exists with synced commits, no active sessions
-if ! can_promote_scope "$MONOREPO_PATH" "services/web"; then
-    echo "FAIL: services/web should be promotable (synced, no sessions)"
-    exit 1
-fi
-echo "  PASS: Synced child with no sessions is promotable"
-
-echo "Test 42: can_promote_scope returns 1 when child has dirty work dir"
-# Create a dirty work dir for services/api
-CLAUDE_CAGE_SESSION="test-promote-dirty"
-SCOPED_IDIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
-if [ ! -d "$SCOPED_IDIR" ]; then
-    create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
-fi
-DIRTY_WORK=$(get_work_path "$SOURCE_API")
-if [ ! -d "$DIRTY_WORK" ]; then
-    git clone "$SCOPED_IDIR" "$DIRTY_WORK" --quiet 2>/dev/null
-fi
-echo "dirty" >> "$DIRTY_WORK/app.go"
-
-if can_promote_scope "$MONOREPO_PATH" "services/api"; then
-    echo "FAIL: services/api should NOT be promotable (dirty work dir)"
-    exit 1
-fi
-echo "  PASS: Dirty child work dir blocks promotion"
-
-# Clean up dirty work dir
-rm -rf "$DIRTY_WORK"
-# Clean empty parent dirs
-_pdir=$(dirname "$DIRTY_WORK")
-while [ "$_pdir" != "$CLAUDE_CAGE_CACHE/sessions/test-promote-dirty/work" ] && \
-      [ "$_pdir" != "$CLAUDE_CAGE_CACHE/sessions/test-promote-dirty" ]; do
-    [ -d "$_pdir" ] && [ -z "$(ls -A "$_pdir" 2>/dev/null)" ] && rm -rf "$_pdir" || break
-    _pdir=$(dirname "$_pdir")
-done
-
-echo "Test 43: promote_scope removes intermediary, work dirs, and repos_list entry"
-# Promote services/web (which is clean and synced)
-WEB_WORK="$CLAUDE_CAGE_CACHE/sessions/test-promote-setup/work$WEB_SOURCE"
-if [ ! -d "$WEB_IDIR" ]; then
-    echo "FAIL: Setup: services/web intermediary should exist before promotion"
-    exit 1
-fi
-promote_scope "$MONOREPO_PATH" "services/web" >/dev/null 2>&1
-
-if [ -d "$WEB_IDIR" ]; then
-    echo "FAIL: services/web intermediary should be removed after promotion"
-    exit 1
-fi
-repos_file=$(get_repos_list_path "$MONOREPO_PATH")
-if [ -f "$repos_file" ] && grep -qxF "services/web" "$repos_file" 2>/dev/null; then
-    echo "FAIL: services/web should be removed from repos.list"
-    exit 1
-fi
-if [ -d "$WEB_WORK" ]; then
-    echo "FAIL: services/web work dir should be removed after promotion"
-    exit 1
-fi
-echo "  PASS: Promotion removes intermediary, work dirs, and repos.list entry"
+# Clean up fake PID file
+rm -f "$session_pid_dir/$$"
+rm -rf "$BROAD_IDIR"
+repos_list_remove "$SOURCE_API" ""
 
 echo ""
 echo "=== Testing Bug 1: In-scope branches with no unique in-scope commits ==="
@@ -1113,7 +933,7 @@ cd "$MONOREPO_PATH"
 rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
 rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
 
-echo "Test 44: Branch with no unique in-scope commits gets ref in scoped intermediary"
+echo "Test 33: Branch with no unique in-scope commits gets ref in scoped intermediary"
 # Create a branch from master that only touches out-of-scope files
 git checkout -b testbranch2
 echo "web-only on branch" > services/web/index.html
@@ -1139,7 +959,7 @@ if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify testbranch2 >/dev/null 2>&1; 
 fi
 echo "  PASS: Branch with no in-scope changes has ref in intermediary"
 
-echo "Test 45: catchup_intermediary_branches adds branch with no unique in-scope commits"
+echo "Test 34: catchup_intermediary_branches adds branch with no unique in-scope commits"
 # Create another branch after intermediary exists
 git checkout -b testbranch5
 echo "web-only on branch5" > services/web/index.html
@@ -1163,7 +983,7 @@ echo ""
 echo "=== Testing Bug 2: Temp-index .git path for scoped sync ==="
 echo ""
 
-echo "Test 46: sync_to_source temp-index works for scoped intermediary"
+echo "Test 35: sync_to_source temp-index works for scoped intermediary"
 # Create a scoped intermediary for services/api
 rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
 rm -rf "$CLAUDE_CAGE_CACHE/sessions"
@@ -1230,7 +1050,7 @@ echo ""
 echo "=== Testing Bug 3: Post-commit hook creates branch not in intermediary ==="
 echo ""
 
-echo "Test 47: Post-commit hook creates branch and syncs when branch not in intermediary"
+echo "Test 36: Post-commit hook creates branch and syncs when branch not in intermediary"
 # Clean slate
 rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
 rm -rf "$CLAUDE_CAGE_CACHE/sessions"
@@ -1279,7 +1099,7 @@ echo ""
 echo "=== Testing Bug 4: Cross-scope commit propagation ==="
 echo ""
 
-echo "Test 48: Cross-scope commit propagates to narrower-scope intermediary"
+echo "Test 37: Cross-scope commit propagates to narrower-scope intermediary"
 # Create both services/api and services/web scoped intermediaries
 cd "$MONOREPO_PATH"
 git checkout "$BRANCH_NAME"
@@ -1352,73 +1172,6 @@ api_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
 web_hash=$(echo -n "$WEB_SOURCE" | md5sum | cut -c1-12)
 rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$api_hash"
 rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$web_hash"
-
-echo ""
-echo "=== Testing Bug 5: Sparse reuse round-trip sync ==="
-echo ""
-
-echo "Test 49: Sparse reuse work dir round-trip sync via sync_to_source"
-# Set up: root-level unscoped intermediary exists, services/api scoped does NOT
-rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
-rm -rf "$CLAUDE_CAGE_CACHE/sessions"
-rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
-rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
-cd "$MONOREPO_PATH"
-git checkout "$BRANCH_NAME"
-repos_file=$(get_repos_list_path "$SOURCE_API")
-rm -f "$repos_file"
-
-# Create unscoped (root) intermediary
-CLAUDE_CAGE_SESSION="test-bug5-root"
-cfg_exclude=".env"
-UNSCOPED_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
-create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
-
-# find_broader_intermediary should find the root intermediary
-if ! find_broader_intermediary "$SOURCE_API" "services/api"; then
-    echo "FAIL: find_broader_intermediary should find root intermediary"
-    exit 1
-fi
-
-# Create sparse work dir
-CLAUDE_CAGE_SESSION="test-bug5-sparse"
-create_sparse_work_dir "$BROADER_INTERMEDIARY_DIR" "$BROADER_SOURCE_DIR" "services/api" "$BROADER_SCOPE_PATH" >/dev/null 2>&1
-
-SPARSE_WORK=$(get_work_path "$MONOREPO_PATH")
-if [ ! -d "$SPARSE_WORK/.git" ]; then
-    echo "FAIL: Sparse work dir should exist"
-    exit 1
-fi
-
-# Fix remote URL for testing (create_sparse_work_dir sets /run<path> for sandbox)
-git -C "$SPARSE_WORK" remote set-url origin "$UNSCOPED_IDIR"
-
-# Push a commit from the sparse work dir
-cd "$SPARSE_WORK"
-git config user.email "test@test.com"
-git config user.name "Test"
-echo "sparse round-trip" > services/api/app.go
-git add services/api/app.go && git commit -m "Sparse round-trip commit" --quiet
-sparse_commit=$(git rev-parse HEAD)
-sparse_parent=$(git rev-parse HEAD^)
-
-# Push (disable hooks to avoid pipe blocking)
-rm -f "$UNSCOPED_IDIR/hooks/post-receive"
-git push origin "$BRANCH_NAME" --quiet 2>/dev/null
-
-# Sync back to source — the broader intermediary uses empty scope_path
-cd "$MONOREPO_PATH"
-sync_output=$(sync_to_source "$MONOREPO_PATH" "$UNSCOPED_IDIR" "refs/heads/$BRANCH_NAME" "$sparse_parent" 2>&1)
-
-# Verify the commit applied at the correct path
-source_content=$(cat "$MONOREPO_PATH/services/api/app.go" 2>/dev/null)
-if [ "$source_content" != "sparse round-trip" ]; then
-    echo "FAIL: Sparse round-trip commit should apply at services/api/app.go"
-    echo "  Content: '$source_content'"
-    echo "  sync_output: $sync_output"
-    exit 1
-fi
-echo "  PASS: Sparse reuse round-trip sync works correctly"
 
 echo ""
 echo "=== All scoped tests passed! ==="

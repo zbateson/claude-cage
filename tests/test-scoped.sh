@@ -598,10 +598,55 @@ fi
 echo "  PASS: Binary blob content is byte-for-byte identical (no corruption)"
 
 echo ""
+echo "=== Testing C-quoted path stripping ==="
+echo ""
+
+echo "Test 23: C-quoted paths (non-ASCII filenames) have scope prefix stripped"
+# Git C-quotes paths containing high-bit bytes (>= 0x80), backslashes, tabs, or
+# double quotes. The strip-prefix awk must handle both unquoted and quoted forms.
+cd "$MONOREPO_PATH"
+
+# Create a file with a non-ASCII character (é = 0xc3 0xa9 in UTF-8)
+# This triggers C-quoting in fast-export: "services/api/caf\303\251.txt"
+printf 'special content' > "services/api/caf$(printf '\xc3\xa9').txt"
+git add -A && git commit -m "File with non-ASCII name" --quiet
+
+# Rebuild the scoped intermediary from scratch
+rm -rf "$INTERMEDIARY_DIR"
+CLAUDE_CAGE_SESSION="test-quoted"
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+# Check intermediary tree for unstripped paths
+quoted_tree=$(git -C "$INTERMEDIARY_DIR" ls-tree -r --name-only HEAD)
+if echo "$quoted_tree" | grep -q "^services/"; then
+    echo "FAIL: C-quoted path still has services/ prefix"
+    echo "  Tree listing:"
+    echo "$quoted_tree"
+    exit 1
+fi
+echo "  PASS: No services/ prefix in C-quoted paths"
+
+# Verify the file exists with stripped path by cloning and checking
+QUOTED_CHECK=$(mktemp -d "$TEST_TMP/quoted-check.XXXXXX")
+git clone "$INTERMEDIARY_DIR" "$QUOTED_CHECK" --quiet 2>/dev/null
+expected_file="$QUOTED_CHECK/caf$(printf '\xc3\xa9').txt"
+if [ ! -f "$expected_file" ]; then
+    echo "FAIL: C-quoted file should exist with stripped path"
+    ls -la "$QUOTED_CHECK/"
+    exit 1
+fi
+quoted_content=$(cat "$expected_file")
+if [ "$quoted_content" != "special content" ]; then
+    echo "FAIL: C-quoted file content wrong: '$quoted_content'"
+    exit 1
+fi
+echo "  PASS: C-quoted file has correct stripped path and content"
+
+echo ""
 echo "=== Testing cross-scope session discovery ==="
 echo ""
 
-echo "Test 23: list_cached_sessions from git root shows scoped session"
+echo "Test 24: list_cached_sessions from git root shows scoped session"
 # The scoped session (test-scoped) created earlier should be visible from git root
 CLAUDE_CAGE_SESSION="test-scoped"
 # Ensure repos.list has the services/api entry
@@ -627,7 +672,7 @@ if ! echo "$sessions" | grep -q "services/api"; then
 fi
 echo "  PASS: Scoped session visible from git root"
 
-echo "Test 24: list_cached_sessions from scoped dir shows unscoped session"
+echo "Test 25: list_cached_sessions from scoped dir shows unscoped session"
 # The unscoped session (test-unscoped) created earlier should be visible from services/api
 repos_list_add "$SOURCE_API" ""  # Ensure root/unscoped is registered
 sessions_from_api=$(list_cached_sessions "$SOURCE_API")
@@ -639,7 +684,7 @@ if ! echo "$sessions_from_api" | grep -q "test-unscoped"; then
 fi
 echo "  PASS: Unscoped session visible from scoped dir"
 
-echo "Test 25: list_cached_sessions output includes source_dir and scope fields"
+echo "Test 26: list_cached_sessions output includes source_dir and scope fields"
 # Check format: session_id branch source_dir scope
 line=$(echo "$sessions_from_api" | head -1)
 field_count=$(echo "$line" | wc -w)
@@ -650,7 +695,7 @@ if [ "$field_count" -lt 3 ]; then
 fi
 echo "  PASS: Session output has expected field count"
 
-echo "Test 26: find_reusable_session discovers cross-scope dirty sessions"
+echo "Test 27: find_reusable_session discovers cross-scope dirty sessions"
 # Make the scoped session dirty
 SCOPED_WORK="$CLAUDE_CAGE_CACHE/sessions/test-scoped/work$SOURCE_API"
 if [ -d "$SCOPED_WORK" ]; then

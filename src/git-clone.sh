@@ -785,14 +785,28 @@ BEGIN { OFS = " "; dr = 0; plen = length(prefix) }
     # "data N" starts a data section — pass through, enter byte-counting mode
     if (/^data [0-9]+$/) { dr = substr($0, 6) + 0; print; next }
 
-    # Strip prefix from M/D/R/C path fields
-    if ($1 == "M" && NF >= 4 && substr($4, 1, plen) == prefix)
-        $4 = substr($4, plen + 1)
-    else if ($1 == "D" && NF >= 2 && substr($2, 1, plen) == prefix)
-        $2 = substr($2, plen + 1)
+    # Strip prefix from M/D/R/C path fields.
+    # Paths may be C-quoted ("path") when they contain high-bit bytes, tabs,
+    # backslashes, or double-quotes. Check for both unquoted and quoted forms.
+    if ($1 == "M" && NF >= 4) {
+        if (substr($4, 1, plen) == prefix)
+            $4 = substr($4, plen + 1)
+        else if (substr($4, 1, 1) == "\"" && substr($4, 2, plen) == prefix)
+            $4 = "\"" substr($4, plen + 2)
+    }
+    else if ($1 == "D" && NF >= 2) {
+        if (substr($2, 1, plen) == prefix)
+            $2 = substr($2, plen + 1)
+        else if (substr($2, 1, 1) == "\"" && substr($2, 2, plen) == prefix)
+            $2 = "\"" substr($2, plen + 2)
+    }
     else if (($1 == "R" || $1 == "C") && NF >= 3) {
         if (substr($2, 1, plen) == prefix) $2 = substr($2, plen + 1)
+        else if (substr($2, 1, 1) == "\"" && substr($2, 2, plen) == prefix)
+            $2 = "\"" substr($2, plen + 2)
         if (substr($3, 1, plen) == prefix) $3 = substr($3, plen + 1)
+        else if (substr($3, 1, 1) == "\"" && substr($3, 2, plen) == prefix)
+            $3 = "\"" substr($3, plen + 2)
     }
     print
 }

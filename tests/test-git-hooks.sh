@@ -368,7 +368,7 @@ else
     exit 1
 fi
 
-echo "Test 13: Post-commit hook skips out-of-scope branch"
+echo "Test 13: Post-commit hook creates new branch and syncs"
 # Create a branch that does NOT exist in intermediary and commit
 git -C "$SOURCE_PATH" checkout -b out-of-scope-branch --quiet
 echo "out of scope" > "$SOURCE_PATH/outofscope.txt"
@@ -376,14 +376,21 @@ git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Out of scope" -
 
 out_of_scope_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
 if grep -q " ${out_of_scope_head}$" "$local_commit_map" 2>/dev/null; then
-    echo "FAIL: Out-of-scope branch commit should NOT have been synced"
+    echo "  PASS: New branch commit synced to intermediary"
+else
+    echo "FAIL: New branch commit was NOT synced to intermediary"
+    echo "  out_of_scope HEAD: $out_of_scope_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
     exit 1
 fi
-echo "  PASS: Out-of-scope branch commit correctly skipped"
 
-# Verify sync.log has the skip message
-if grep -q "not in intermediary" "$INTERMEDIARY_DIR/sync.log" 2>/dev/null; then
-    echo "  (sync.log confirms: 'not in intermediary' skip logged)"
+# Verify the branch was created in intermediary
+if git -C "$INTERMEDIARY_DIR" rev-parse --verify out-of-scope-branch >/dev/null 2>&1; then
+    echo "  PASS: Branch created in intermediary"
+else
+    echo "FAIL: Branch not created in intermediary"
+    exit 1
 fi
 
 # Go back to master for remaining tests

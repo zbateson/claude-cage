@@ -192,6 +192,17 @@ apply_source_to_intermediary() {
         local _current_branch _int_head
         _current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)
         _int_head=$(git -C "$intermediary_dir" rev-parse "$_current_branch" 2>/dev/null) || true
+        # Branch may not exist in intermediary yet — create from default branch
+        if [ -z "$_int_head" ]; then
+            local _default_branch _default_head
+            _default_branch=$(git -C "$intermediary_dir" symbolic-ref --short HEAD 2>/dev/null)
+            _default_head=$(git -C "$intermediary_dir" rev-parse "$_default_branch" 2>/dev/null) || true
+            if [ -n "$_default_head" ]; then
+                git -C "$intermediary_dir" branch "$_current_branch" "$_default_head" 2>/dev/null || true
+                _int_head="$_default_head"
+                sync_log "$log_file" "$source_short" ">>intermediary" "created branch $_current_branch from $_default_branch"
+            fi
+        fi
         if [ -n "$_int_head" ]; then
             sync_log "$log_file" "$source_short" ">>intermediary" "marks gap: injecting parent ${_int_head:0:8}"
             awk -v parent="$_int_head" '/^deleteall$/ && !done { print "from " parent; done=1 } { print }' \
@@ -386,7 +397,9 @@ sync_to_source() {
             # User switched branches - apply via temp index
             echo "  You switched branches, applyin' to $branch_name without disturbin' your work..."
 
-            local tmp_index="$source_dir/.git/claude-cage-tmp-index"
+            local git_root
+            git_root=$(git -C "$source_dir" rev-parse --show-toplevel)
+            local tmp_index="$git_root/.git/claude-cage-tmp-index"
 
             local author_name author_email author_date
             author_name=$(echo "$patch" | grep "^From:" | head -1 | sed 's/^From: //' | sed 's/ <.*//')
@@ -395,7 +408,7 @@ sync_to_source() {
 
             (
                 export GIT_INDEX_FILE="$tmp_index"
-                cd "$source_dir"
+                cd "$git_root"
 
                 git read-tree "$branch_name"
 

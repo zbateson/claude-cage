@@ -1104,4 +1104,321 @@ fi
 echo "  PASS: Promotion removes intermediary, work dirs, and repos.list entry"
 
 echo ""
+echo "=== Testing Bug 1: In-scope branches with no unique in-scope commits ==="
+echo ""
+
+# Reset to a clean state for bug tests
+cd "$MONOREPO_PATH"
+# Clean up any leftover hooks
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+
+echo "Test 44: Branch with no unique in-scope commits gets ref in scoped intermediary"
+# Create a branch from master that only touches out-of-scope files
+git checkout -b testbranch2
+echo "web-only on branch" > services/web/index.html
+git add -A && git commit -m "Web-only change on testbranch2" --quiet
+git checkout "$BRANCH_NAME"
+
+# Rebuild scoped intermediary for services/api
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+CLAUDE_CAGE_SESSION="test-bug1"
+cfg_exclude=".env"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+# testbranch2 should have a ref in intermediary even with no in-scope changes
+if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify testbranch2 >/dev/null 2>&1; then
+    echo "FAIL: testbranch2 should exist in intermediary (no unique in-scope commits)"
+    echo "  Intermediary branches:"
+    git -C "$INTERMEDIARY_DIR" branch --list 2>/dev/null
+    exit 1
+fi
+echo "  PASS: Branch with no in-scope changes has ref in intermediary"
+
+echo "Test 45: catchup_intermediary_branches adds branch with no unique in-scope commits"
+# Create another branch after intermediary exists
+git checkout -b testbranch5
+echo "web-only on branch5" > services/web/index.html
+git add -A && git commit -m "Web-only on testbranch5" --quiet
+git checkout "$BRANCH_NAME"
+
+# catchup should add testbranch5 to intermediary
+catchup_intermediary_branches "$SOURCE_API" "$INTERMEDIARY_DIR" >/dev/null 2>&1 || true
+if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify testbranch5 >/dev/null 2>&1; then
+    echo "FAIL: testbranch5 should be added by catchup even with no in-scope commits"
+    echo "  Intermediary branches:"
+    git -C "$INTERMEDIARY_DIR" branch --list 2>/dev/null
+    exit 1
+fi
+echo "  PASS: catchup adds branch with no unique in-scope commits"
+
+# Clean up test branches
+git checkout "$BRANCH_NAME"
+
+echo ""
+echo "=== Testing Bug 2: Temp-index .git path for scoped sync ==="
+echo ""
+
+echo "Test 46: sync_to_source temp-index works for scoped intermediary"
+# Create a scoped intermediary for services/api
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+CLAUDE_CAGE_SESSION="test-bug2"
+cfg_exclude=".env"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+# Source needs to be on a DIFFERENT branch than the push target
+# Cage is on $BRANCH_NAME, switch source to testbranch2
+git checkout testbranch2
+
+# Create a commit in intermediary (simulating cage push)
+BUG2_WORK=$(mktemp -d "$TEST_TMP/bug2-work.XXXXXX")
+git clone "$INTERMEDIARY_DIR" "$BUG2_WORK" --quiet 2>/dev/null
+cd "$BUG2_WORK"
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "temp-index test" > app.go
+git add -A && git commit -m "Temp-index test commit" --quiet
+bug2_commit=$(git rev-parse HEAD)
+bug2_parent=$(git rev-parse HEAD^)
+
+# Push to intermediary (disable hooks to avoid pipe blocking)
+rm -f "$INTERMEDIARY_DIR/hooks/post-receive"
+git push origin "$BRANCH_NAME" --quiet 2>/dev/null
+
+# Now sync: source is on testbranch2, push was to $BRANCH_NAME -> temp-index path
+cd "$MONOREPO_PATH"
+# Call sync_to_source with the SCOPED source_dir (not git root)
+# This is the bug: source_dir is a subdir, and sync_to_source tries $source_dir/.git/
+sync_output=$(sync_to_source "$SOURCE_API" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$bug2_parent" 2>&1)
+sync_rc=$?
+
+# Should NOT fail with "No such file or directory" for .git path
+if echo "$sync_output" | grep -qi "no such file or directory"; then
+    echo "FAIL: sync_to_source failed with .git path error for scoped source_dir"
+    echo "  Output: $sync_output"
+    exit 1
+fi
+if echo "$sync_output" | grep -qi "unable to create.*tmp-index"; then
+    echo "FAIL: sync_to_source can't create tmp-index in scoped subdir"
+    echo "  Output: $sync_output"
+    exit 1
+fi
+
+# Verify the commit was applied to $BRANCH_NAME
+new_head=$(git -C "$MONOREPO_PATH" rev-parse "$BRANCH_NAME" 2>/dev/null)
+source_content=$(git -C "$MONOREPO_PATH" show "${BRANCH_NAME}:services/api/app.go" 2>/dev/null)
+if [ "$source_content" != "temp-index test" ]; then
+    echo "FAIL: Temp-index commit not applied to source $BRANCH_NAME"
+    echo "  Content: '$source_content'"
+    echo "  sync_output: $sync_output"
+    exit 1
+fi
+echo "  PASS: sync_to_source temp-index works for scoped intermediary"
+
+# Restore source to main branch
+git checkout "$BRANCH_NAME"
+
+echo ""
+echo "=== Testing Bug 3: Post-commit hook creates branch not in intermediary ==="
+echo ""
+
+echo "Test 47: Post-commit hook creates branch and syncs when branch not in intermediary"
+# Clean slate
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+cd "$MONOREPO_PATH"
+CLAUDE_CAGE_SESSION="test-bug3"
+cfg_exclude=".env"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+# Install source post-commit hook
+setup_source_post_commit "$SOURCE_API" "$cfg_exclude" "$INTERMEDIARY_DIR"
+
+# Create a new branch NOT in the intermediary and make an in-scope commit
+git checkout -b testbranch4
+echo "api on branch4" > services/api/app.go
+git add services/api/app.go
+hook_output=$(git commit -m "API change on testbranch4" 2>&1)
+
+# Should NOT say "skipped: branch testbranch4 not in intermediary"
+commit_map="$INTERMEDIARY_DIR/claude-cage-commit-map"
+api_head=$(git rev-parse HEAD)
+if ! grep -q " ${api_head}$" "$commit_map" 2>/dev/null; then
+    echo "FAIL: In-scope commit on new branch should sync to intermediary"
+    echo "  Hook output: $hook_output"
+    echo "  Sync log:"
+    cat "$INTERMEDIARY_DIR/sync.log" 2>/dev/null | tail -10
+    exit 1
+fi
+
+# testbranch4 should now exist in intermediary
+if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify testbranch4 >/dev/null 2>&1; then
+    echo "FAIL: testbranch4 should now exist in intermediary"
+    exit 1
+fi
+echo "  PASS: Hook creates branch and syncs in-scope commit"
+
+# Clean up hooks
+path_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$path_hash"
+
+echo ""
+echo "=== Testing Bug 4: Cross-scope commit propagation ==="
+echo ""
+
+echo "Test 48: Cross-scope commit propagates to narrower-scope intermediary"
+# Create both services/api and services/web scoped intermediaries
+cd "$MONOREPO_PATH"
+git checkout "$BRANCH_NAME"
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+
+# Recreate both intermediaries
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+
+CLAUDE_CAGE_SESSION="test-bug4-api"
+cfg_exclude=".env"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+CLAUDE_CAGE_SESSION="test-bug4-web"
+WEB_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "services/web")
+WEB_SOURCE="$MONOREPO_PATH/services/web"
+create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
+
+# Install hooks for both
+setup_source_post_commit "$SOURCE_API" "$cfg_exclude" "$INTERMEDIARY_DIR"
+setup_source_post_commit "$WEB_SOURCE" "$cfg_exclude" "$WEB_IDIR"
+
+# Record intermediary HEADs before commit
+api_int_head_before=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+web_int_head_before=$(git -C "$WEB_IDIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+
+# Source commit that touches BOTH scopes
+echo "cross-scope api" > services/api/app.go
+echo "cross-scope web" > services/web/index.html
+git add -A && git commit -m "Cross-scope commit" --quiet
+
+source_head=$(git rev-parse HEAD)
+api_commit_map=$(get_commit_map_path "$INTERMEDIARY_DIR")
+web_commit_map=$(get_commit_map_path "$WEB_IDIR")
+
+# Both intermediaries should receive the update
+if ! grep -q " ${source_head}$" "$api_commit_map" 2>/dev/null; then
+    echo "FAIL: Cross-scope commit not synced to API intermediary"
+    echo "  API sync log:"
+    cat "$INTERMEDIARY_DIR/sync.log" 2>/dev/null | tail -5
+    exit 1
+fi
+if ! grep -q " ${source_head}$" "$web_commit_map" 2>/dev/null; then
+    echo "FAIL: Cross-scope commit not synced to Web intermediary"
+    echo "  Web sync log:"
+    cat "$WEB_IDIR/sync.log" 2>/dev/null | tail -5
+    exit 1
+fi
+echo "  PASS: Cross-scope commit propagated to both intermediaries"
+
+# Verify content in both intermediaries
+api_content=$(git -C "$INTERMEDIARY_DIR" show "${BRANCH_NAME}:app.go" 2>/dev/null)
+web_content=$(git -C "$WEB_IDIR" show "${BRANCH_NAME}:index.html" 2>/dev/null)
+if [ "$api_content" != "cross-scope api" ]; then
+    echo "FAIL: API intermediary should have 'cross-scope api', got '$api_content'"
+    exit 1
+fi
+if [ "$web_content" != "cross-scope web" ]; then
+    echo "FAIL: Web intermediary should have 'cross-scope web', got '$web_content'"
+    exit 1
+fi
+echo "  PASS: Both intermediaries have correct content"
+
+# Clean up hooks
+api_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
+web_hash=$(echo -n "$WEB_SOURCE" | md5sum | cut -c1-12)
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$api_hash"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit.d/claude-cage-$web_hash"
+
+echo ""
+echo "=== Testing Bug 5: Sparse reuse round-trip sync ==="
+echo ""
+
+echo "Test 49: Sparse reuse work dir round-trip sync via sync_to_source"
+# Set up: root-level unscoped intermediary exists, services/api scoped does NOT
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+cd "$MONOREPO_PATH"
+git checkout "$BRANCH_NAME"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+
+# Create unscoped (root) intermediary
+CLAUDE_CAGE_SESSION="test-bug5-root"
+cfg_exclude=".env"
+UNSCOPED_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
+create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
+
+# find_broader_intermediary should find the root intermediary
+if ! find_broader_intermediary "$SOURCE_API" "services/api"; then
+    echo "FAIL: find_broader_intermediary should find root intermediary"
+    exit 1
+fi
+
+# Create sparse work dir
+CLAUDE_CAGE_SESSION="test-bug5-sparse"
+create_sparse_work_dir "$BROADER_INTERMEDIARY_DIR" "$BROADER_SOURCE_DIR" "services/api" "$BROADER_SCOPE_PATH" >/dev/null 2>&1
+
+SPARSE_WORK=$(get_work_path "$MONOREPO_PATH")
+if [ ! -d "$SPARSE_WORK/.git" ]; then
+    echo "FAIL: Sparse work dir should exist"
+    exit 1
+fi
+
+# Fix remote URL for testing (create_sparse_work_dir sets /run<path> for sandbox)
+git -C "$SPARSE_WORK" remote set-url origin "$UNSCOPED_IDIR"
+
+# Push a commit from the sparse work dir
+cd "$SPARSE_WORK"
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "sparse round-trip" > services/api/app.go
+git add services/api/app.go && git commit -m "Sparse round-trip commit" --quiet
+sparse_commit=$(git rev-parse HEAD)
+sparse_parent=$(git rev-parse HEAD^)
+
+# Push (disable hooks to avoid pipe blocking)
+rm -f "$UNSCOPED_IDIR/hooks/post-receive"
+git push origin "$BRANCH_NAME" --quiet 2>/dev/null
+
+# Sync back to source — the broader intermediary uses empty scope_path
+cd "$MONOREPO_PATH"
+sync_output=$(sync_to_source "$MONOREPO_PATH" "$UNSCOPED_IDIR" "refs/heads/$BRANCH_NAME" "$sparse_parent" 2>&1)
+
+# Verify the commit applied at the correct path
+source_content=$(cat "$MONOREPO_PATH/services/api/app.go" 2>/dev/null)
+if [ "$source_content" != "sparse round-trip" ]; then
+    echo "FAIL: Sparse round-trip commit should apply at services/api/app.go"
+    echo "  Content: '$source_content'"
+    echo "  sync_output: $sync_output"
+    exit 1
+fi
+echo "  PASS: Sparse reuse round-trip sync works correctly"
+
+echo ""
 echo "=== All scoped tests passed! ==="

@@ -373,11 +373,24 @@ fi
 COMMIT_SHORT=\$(git rev-parse --short=8 HEAD)
 COMMIT_HASH=\$(git rev-parse HEAD)
 
-# Only sync commits on branches that exist in the intermediary (in-scope)
+# Create branch in intermediary if it doesn't exist yet (e.g. new branch in source,
+# or scoped intermediary where the branch had no unique in-scope commits at creation)
 current_branch=\$(git branch --show-current)
 if ! git -C "\$INTERMEDIARY" rev-parse --verify "\$current_branch" >/dev/null 2>&1; then
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: branch \$current_branch not in intermediary"
-    exit 0
+    DEFAULT_BRANCH=\$(git -C "\$INTERMEDIARY" symbolic-ref --short HEAD 2>/dev/null)
+    if [ -n "\$DEFAULT_BRANCH" ]; then
+        DEFAULT_HEAD=\$(git -C "\$INTERMEDIARY" rev-parse "\$DEFAULT_BRANCH" 2>/dev/null)
+        if [ -n "\$DEFAULT_HEAD" ]; then
+            git -C "\$INTERMEDIARY" branch "\$current_branch" "\$DEFAULT_HEAD" 2>/dev/null || true
+            _sync_log "\$COMMIT_SHORT" ">>intermediary" "created branch \$current_branch from \$DEFAULT_BRANCH"
+        else
+            _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: no default branch HEAD to create \$current_branch"
+            exit 0
+        fi
+    else
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: can't create branch \$current_branch (no default branch)"
+        exit 0
+    fi
 fi
 
 # Skip during sync_to_source (git-am triggers post-commit; marks handled by sync).

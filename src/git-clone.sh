@@ -1308,6 +1308,26 @@ catchup_intermediary_branches() {
             # Update commit map
             build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${source_range_base}..${branch_name}"
         fi
+
+        # If branch still not in intermediary (all unique commits out-of-scope),
+        # create ref from merge-base mapping
+        if ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+            local _mb_hash _int_hash=""
+            _mb_hash=$(git -C "$source_dir" merge-base "$(get_default_branch "$source_dir")" "$branch_name" 2>/dev/null) || true
+            if [ -n "$_mb_hash" ] && [ -f "$commit_map_path" ]; then
+                _int_hash=$(awk -v sh="$_mb_hash" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+                # Walk back if merge-base maps to 0 or isn't mapped
+                local _walker="$_mb_hash" _walk_max=50
+                while [ -z "$_int_hash" ] && [ "$_walk_max" -gt 0 ]; do
+                    _walker=$(git -C "$source_dir" rev-parse "${_walker}^" 2>/dev/null) || break
+                    _int_hash=$(awk -v sh="$_walker" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+                    _walk_max=$((_walk_max - 1))
+                done
+            fi
+            if [ -n "$_int_hash" ]; then
+                git -C "$intermediary_dir" branch "$branch_name" "$_int_hash" 2>/dev/null || true
+            fi
+        fi
     fi
 
     # Catch up all intermediary branches to source
@@ -1359,6 +1379,56 @@ catchup_intermediary_branches() {
             build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${intermediary_head}..${ib}"
         fi
     done < <(git -C "$intermediary_dir" branch --list 2>/dev/null)
+
+    # Discover source branches not yet in intermediary and create refs
+    local _default_branch
+    _default_branch=$(get_default_branch "$source_dir")
+    local _sb
+    while IFS= read -r _sb; do
+        [ "$_sb" = "$branch_name" ] && continue  # Already handled above
+        if git -C "$intermediary_dir" rev-parse --verify "$_sb" >/dev/null 2>&1; then
+            continue  # Already in intermediary
+        fi
+        # Check if branch's merge-base is mapped in the commit map
+        local _mb_hash _int_hash=""
+        _mb_hash=$(git -C "$source_dir" merge-base "$_default_branch" "$_sb" 2>/dev/null) || continue
+        if [ -f "$commit_map_path" ]; then
+            _int_hash=$(awk -v sh="$_mb_hash" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+            local _walker="$_mb_hash" _walk_max=50
+            while [ -z "$_int_hash" ] && [ "$_walk_max" -gt 0 ]; do
+                _walker=$(git -C "$source_dir" rev-parse "${_walker}^" 2>/dev/null) || break
+                _int_hash=$(awk -v sh="$_walker" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+                _walk_max=$((_walk_max - 1))
+            done
+        fi
+        if [ -n "$_int_hash" ]; then
+            # Try fast-export first; if all commits are out-of-scope, create ref from mapping
+            if [ "$dry_run" != true ]; then
+                local catchup_tmp
+                catchup_tmp=$(mktemp)
+                git -C "$export_dir" fast-export \
+                    --import-marks="$source_marks_path" \
+                    --export-marks="$source_marks_path" \
+                    "${_mb_hash}..${_sb}" \
+                    ${pathspec_args:+-- "${pathspec_args[@]}"} \
+                    >"$catchup_tmp" 2>/dev/null || true
+                if [ -s "$catchup_tmp" ]; then
+                    [ -n "$scope_path" ] && strip_scope_prefix "$catchup_tmp" "$scope_path/" "$intermediary_dir"
+                    git -C "$intermediary_dir" fast-import \
+                        --import-marks="$import_marks_path" \
+                        --export-marks="$import_marks_path" \
+                        --quiet <"$catchup_tmp" 2>/dev/null || true
+                    build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${_mb_hash}..${_sb}"
+                fi
+                rm -f "$catchup_tmp"
+            fi
+            # If branch still not created (all commits out-of-scope), create from mapping
+            if ! git -C "$intermediary_dir" rev-parse --verify "$_sb" >/dev/null 2>&1; then
+                git -C "$intermediary_dir" branch "$_sb" "$_int_hash" 2>/dev/null || true
+            fi
+            any_updated=true
+        fi
+    done < <(git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/)
 
     # Update source branches file
     local source_branches_path

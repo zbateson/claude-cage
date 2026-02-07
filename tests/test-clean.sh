@@ -286,4 +286,86 @@ fi
 echo "  PASS: clean-all shows dirty warning"
 
 echo ""
+echo "=== Testing scoped session cleanup ==="
+echo ""
+
+# Clean up any remaining sessions first
+rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_CACHE/intermediary" "$CLAUDE_CAGE_CACHE/scoped"
+
+# Re-source to get fresh function definitions
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+unset CLAUDE_CAGE_SOURCING
+dry_run=false
+verbose=false
+
+echo "Test 12: Scoped session shows scope in list_cached_sessions output"
+# Create a monorepo structure
+mkdir -p "$TEST_TMP/monorepo/services/api"
+cd "$TEST_TMP/monorepo"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "root" > README.md
+echo "api" > services/api/app.go
+git add -A && git commit -q -m "Initial"
+
+MONOREPO_PATH="$TEST_TMP/monorepo"
+API_PATH="$MONOREPO_PATH/services/api"
+
+# Create a scoped intermediary and session
+CLAUDE_CAGE_SESSION="scoped-test-session"
+export CLAUDE_CAGE_SESSION
+cfg_exclude=""
+cfg_git_historyDepth=50
+cfg_git_defaultBranch="auto"
+
+SCOPED_IDIR=$(get_scoped_intermediary_path "$API_PATH" "services/api")
+create_intermediary_clone "$API_PATH" "services/api" >/dev/null 2>&1
+
+# Write scope metadata into work dir
+SCOPED_WORK=$(get_work_path "$API_PATH")
+
+# Verify session listing from monorepo root
+sessions=$(list_cached_sessions "$MONOREPO_PATH")
+if ! echo "$sessions" | grep -q "services/api"; then
+    echo "FAIL: list_cached_sessions should show scope for scoped session"
+    echo "  Sessions:"
+    echo "$sessions"
+    exit 1
+fi
+echo "  PASS: Scoped session shows scope in listing"
+
+echo "Test 13: Cross-scope session visible from git root"
+if ! echo "$sessions" | grep -q "scoped-test-session"; then
+    echo "FAIL: Scoped session not found when listing from git root"
+    echo "  Sessions:"
+    echo "$sessions"
+    exit 1
+fi
+echo "  PASS: Cross-scope session visible from git root"
+
+echo "Test 14: clean_session_cache for scoped session removes scoped/ when empty"
+# Clean the scoped session
+clean_session_cache "$API_PATH" "scoped-test-session"
+
+if [ -d "$SCOPED_IDIR" ]; then
+    echo "FAIL: Scoped intermediary should be removed after clean"
+    exit 1
+fi
+
+# The scoped/ top-level dir should be removed when empty
+if [ -d "$CLAUDE_CAGE_CACHE/scoped" ]; then
+    if [ -n "$(ls -A "$CLAUDE_CAGE_CACHE/scoped" 2>/dev/null)" ]; then
+        echo "FAIL: scoped/ dir should be empty or removed"
+        ls -R "$CLAUDE_CAGE_CACHE/scoped"
+        exit 1
+    fi
+    # It's empty but still exists — this is acceptable but we want it removed
+    echo "FAIL: Empty scoped/ dir should be removed"
+    exit 1
+fi
+echo "  PASS: scoped/ top-level dir cleaned up"
+
+echo ""
 echo "=== All clean tests passed! ==="

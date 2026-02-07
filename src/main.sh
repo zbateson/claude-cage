@@ -169,12 +169,14 @@ if [ "$clean_all_mode" = true ]; then
     fi
 
     echo "Sessions to be removed:"
-    while IFS=' ' read -r sid sbranch; do
-        work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$cfg_source"
+    while IFS=' ' read -r sid sbranch ssource sscope; do
+        work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
+        scope_label=""
+        [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
         if is_work_dirty "$work_dir"; then
-            echo -e "  $sid  branch: $sbranch ${_yellow}(has uncommitted changes!)${_reset}"
+            echo -e "  $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
         else
-            echo "  $sid  branch: $sbranch"
+            echo -e "  $sid  branch: $sbranch${scope_label}"
         fi
     done <<< "$cached_sessions"
     echo ""
@@ -184,10 +186,10 @@ if [ "$clean_all_mode" = true ]; then
         exit 0
     fi
 
-    while IFS=' ' read -r sid sbranch; do
+    while IFS=' ' read -r sid sbranch ssource sscope; do
         echo ""
         echo "Cleaning session: $sid"
-        clean_session_cache "$cfg_source" "$sid"
+        clean_session_cache "$ssource" "$sid"
     done <<< "$cached_sessions"
 
     echo ""
@@ -209,8 +211,10 @@ if [ "$clean_mode" = true ]; then
             echo "Session '$clean_session' not found in cache."
             echo ""
             echo "Available sessions:"
-            while IFS=' ' read -r sid sbranch; do
-                echo "  $sid  branch: $sbranch"
+            while IFS=' ' read -r sid sbranch ssource sscope; do
+                scope_label=""
+                [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+                echo -e "  $sid  branch: $sbranch${scope_label}"
             done <<< "$cached_sessions"
             exit 1
         fi
@@ -219,14 +223,18 @@ if [ "$clean_mode" = true ]; then
         echo "Which session cache do you want to remove?"
         echo ""
         session_array=()
+        session_sources=()
         idx=1
-        while IFS=' ' read -r sid sbranch; do
+        while IFS=' ' read -r sid sbranch ssource sscope; do
             session_array+=("$sid")
-            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$cfg_source"
+            session_sources+=("$ssource")
+            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
+            scope_label=""
+            [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
             if is_work_dirty "$work_dir"; then
-                echo -e "  $idx) $sid  branch: $sbranch ${_yellow}(has uncommitted changes!)${_reset}"
+                echo -e "  $idx) $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
             else
-                echo "  $idx) $sid  branch: $sbranch"
+                echo -e "  $idx) $sid  branch: $sbranch${scope_label}"
             fi
             ((idx++))
         done <<< "$cached_sessions"
@@ -248,7 +256,24 @@ if [ "$clean_mode" = true ]; then
         done
     fi
 
-    work_dir="$CLAUDE_CAGE_CACHE/sessions/$clean_session/work$cfg_source"
+    # Determine the source_dir for the selected session
+    clean_source="$cfg_source"
+    if [ ${#session_sources[@]} -gt 0 ]; then
+        # Find the source for the selected session from the arrays
+        for _ci in "${!session_array[@]}"; do
+            if [ "${session_array[$_ci]}" = "$clean_session" ]; then
+                clean_source="${session_sources[$_ci]}"
+                break
+            fi
+        done
+    else
+        # --session flag: extract source_dir from cached_sessions
+        local _cs_source
+        _cs_source=$(echo "$cached_sessions" | awk -v sid="$clean_session" '$1 == sid { print $3; exit }')
+        [ -n "$_cs_source" ] && clean_source="$_cs_source"
+    fi
+
+    work_dir="$CLAUDE_CAGE_CACHE/sessions/$clean_session/work$clean_source"
 
     echo ""
     echo "This will remove the cache for session: $clean_session"
@@ -263,7 +288,7 @@ if [ "$clean_mode" = true ]; then
         exit 0
     fi
 
-    clean_session_cache "$cfg_source" "$clean_session"
+    clean_session_cache "$clean_source" "$clean_session"
     echo ""
     echo "Done. Session '$clean_session' cleaned up."
     exit 0
@@ -422,17 +447,21 @@ else
                 echo "No active sessions found to attach to."
                 exit 1
             elif [ "$active_count" -eq 1 ]; then
-                read -r asid abranch <<< "$REUSE_ACTIVE_SESSIONS"
+                read -r asid abranch asource ascope <<< "$REUSE_ACTIVE_SESSIONS"
                 CLAUDE_CAGE_SESSION="$asid"
-                echo "Attachin' to session $asid on branch '$abranch'."
+                scope_label=""
+                [ -n "$ascope" ] && scope_label=" (scoped: $ascope)"
+                echo "Attachin' to session $asid on branch '$abranch'${scope_label}."
             else
                 echo "Multiple active sessions found:"
                 echo ""
                 attach_ids=()
                 aidx=1
-                while IFS=' ' read -r asid abranch; do
+                while IFS=' ' read -r asid abranch asource ascope; do
                     attach_ids+=("$asid")
-                    echo "  $aidx) $asid  branch: $abranch"
+                    scope_label=""
+                    [ -n "$ascope" ] && scope_label=" ${_cyan}(scoped: $ascope)${_reset}"
+                    echo -e "  $aidx) $asid  branch: $abranch${scope_label}"
                     ((aidx++))
                 done <<< "$REUSE_ACTIVE_SESSIONS"
                 echo ""
@@ -457,9 +486,8 @@ else
                 reuse_or_create_session "$cfg_source"
                 ;;
             "clean")
-                # Inactive clean session - reuse it
-                CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"
-                echo "Pickin' up clean session $REUSE_SESSION_ID on branch '$REUSE_SESSION_BRANCH'."
+                # Inactive clean session - reuse same-source only (handled by reuse_or_create_session)
+                reuse_or_create_session "$cfg_source"
                 ;;
             "dirty")
                 # Inactive dirty session(s) - prompt
@@ -476,7 +504,9 @@ else
                         unpushed) dirty_desc="unpushed commits" ;;
                         uncommitted+unpushed) dirty_desc="uncommitted changes and unpushed commits" ;;
                     esac
-                    echo "Found an existing cage ($REUSE_SESSION_ID) on branch '$REUSE_SESSION_BRANCH'."
+                    scope_label=""
+                    [ -n "$REUSE_SESSION_SCOPE" ] && scope_label=" (scoped: $REUSE_SESSION_SCOPE)"
+                    echo "Found an existing cage ($REUSE_SESSION_ID) on branch '$REUSE_SESSION_BRANCH'${scope_label}."
                     echo "  It's got $dirty_desc."
                     echo ""
                     echo "What do you wanna do?"
@@ -490,7 +520,16 @@ else
                         printf "Choice: "
                         read -r choice
                         case "$choice" in
-                            1) CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"; break ;;
+                            1)
+                                CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"
+                                # Cross-scope override
+                                if [ "$REUSE_SESSION_SOURCE" != "$cfg_source" ]; then
+                                    cfg_source="$REUSE_SESSION_SOURCE"
+                                    scope_path="${REUSE_SESSION_SCOPE:-}"
+                                    intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
+                                fi
+                                break
+                                ;;
                             2)
                                 reuse_or_create_session "$cfg_source"
                                 break
@@ -503,16 +542,20 @@ else
                     # Multiple dirty sessions - show all
                     echo "Found $dirty_count existing cages with uncommitted work:"
                     echo ""
+                    dirty_entries=()
                     dirty_ids=()
                     didx=1
-                    while IFS=' ' read -r dsid dbranch dtype; do
+                    while IFS=' ' read -r dsid dbranch dtype dsource dscope; do
+                        dirty_entries+=("$dsid $dbranch $dtype $dsource $dscope")
                         dirty_ids+=("$dsid")
                         dirty_label="uncommitted changes"
                         case "$dtype" in
                             unpushed) dirty_label="unpushed commits" ;;
                             uncommitted+unpushed) dirty_label="uncommitted changes + unpushed commits" ;;
                         esac
-                        printf "  %d) %s  branch: %-20s (%s)\n" "$didx" "$dsid" "$dbranch" "$dirty_label"
+                        scope_label=""
+                        [ -n "$dscope" ] && scope_label=" ${_cyan}(scoped: $dscope)${_reset}"
+                        printf "  %d) %s  branch: %-20s (%s)%b\n" "$didx" "$dsid" "$dbranch" "$dirty_label" "$scope_label"
                         ((didx++))
                     done <<< "$REUSE_DIRTY_SESSIONS"
                     echo ""
@@ -535,6 +578,15 @@ else
                             *)
                                 if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#dirty_ids[@]} ]; then
                                     CLAUDE_CAGE_SESSION="${dirty_ids[$((choice-1))]}"
+                                    # Cross-scope override from the selected entry
+                                    local _sel_sid _sel_branch _sel_dtype _sel_source _sel_scope
+                                    read -r _sel_sid _sel_branch _sel_dtype _sel_source _sel_scope \
+                                        <<< "${dirty_entries[$((choice-1))]}"
+                                    if [ "$_sel_source" != "$cfg_source" ]; then
+                                        cfg_source="$_sel_source"
+                                        scope_path="${_sel_scope:-}"
+                                        intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
+                                    fi
                                     break
                                 fi
                                 echo "Pick a number, n, or q."

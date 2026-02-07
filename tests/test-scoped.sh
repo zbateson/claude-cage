@@ -598,4 +598,80 @@ fi
 echo "  PASS: Binary blob content is byte-for-byte identical (no corruption)"
 
 echo ""
+echo "=== Testing cross-scope session discovery ==="
+echo ""
+
+echo "Test 23: list_cached_sessions from git root shows scoped session"
+# The scoped session (test-scoped) created earlier should be visible from git root
+CLAUDE_CAGE_SESSION="test-scoped"
+# Ensure repos.list has the services/api entry
+repos_list_add "$SOURCE_API" "services/api"
+
+sessions=$(list_cached_sessions "$MONOREPO_PATH")
+if [ -z "$sessions" ]; then
+    echo "FAIL: list_cached_sessions from git root returned nothing"
+    exit 1
+fi
+# Should find the scoped session with source_dir=$SOURCE_API and scope=services/api
+if ! echo "$sessions" | grep -q "$SOURCE_API"; then
+    echo "FAIL: Scoped session should be visible from git root"
+    echo "  Sessions:"
+    echo "$sessions"
+    exit 1
+fi
+if ! echo "$sessions" | grep -q "services/api"; then
+    echo "FAIL: Session listing should include scope 'services/api'"
+    echo "  Sessions:"
+    echo "$sessions"
+    exit 1
+fi
+echo "  PASS: Scoped session visible from git root"
+
+echo "Test 24: list_cached_sessions from scoped dir shows unscoped session"
+# The unscoped session (test-unscoped) created earlier should be visible from services/api
+repos_list_add "$SOURCE_API" ""  # Ensure root/unscoped is registered
+sessions_from_api=$(list_cached_sessions "$SOURCE_API")
+if ! echo "$sessions_from_api" | grep -q "test-unscoped"; then
+    echo "FAIL: Unscoped session should be visible from services/api"
+    echo "  Sessions:"
+    echo "$sessions_from_api"
+    exit 1
+fi
+echo "  PASS: Unscoped session visible from scoped dir"
+
+echo "Test 25: list_cached_sessions output includes source_dir and scope fields"
+# Check format: session_id branch source_dir scope
+line=$(echo "$sessions_from_api" | head -1)
+field_count=$(echo "$line" | wc -w)
+if [ "$field_count" -lt 3 ]; then
+    echo "FAIL: Session line should have at least 3 fields (sid branch source_dir), got $field_count"
+    echo "  Line: '$line'"
+    exit 1
+fi
+echo "  PASS: Session output has expected field count"
+
+echo "Test 26: find_reusable_session discovers cross-scope dirty sessions"
+# Make the scoped session dirty
+SCOPED_WORK="$CLAUDE_CAGE_CACHE/sessions/test-scoped/work$SOURCE_API"
+if [ -d "$SCOPED_WORK" ]; then
+    echo "dirty" >> "$SCOPED_WORK/app.go"
+fi
+# Run find_reusable_session from the git root
+find_reusable_session "$MONOREPO_PATH"
+if [ -z "$REUSE_DIRTY_SESSIONS" ]; then
+    echo "FAIL: Should find dirty cross-scope session from git root"
+    echo "  state: $REUSE_SESSION_STATE"
+    exit 1
+fi
+if ! echo "$REUSE_DIRTY_SESSIONS" | grep -q "$SOURCE_API"; then
+    echo "FAIL: Dirty session listing should contain scoped source_dir"
+    echo "  Dirty sessions:"
+    echo "$REUSE_DIRTY_SESSIONS"
+    exit 1
+fi
+echo "  PASS: Cross-scope dirty session discovered from git root"
+# Clean up repos.list root entry
+repos_list_remove "$SOURCE_API" ""
+
+echo ""
 echo "=== All scoped tests passed! ==="

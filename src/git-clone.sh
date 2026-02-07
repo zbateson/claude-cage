@@ -322,24 +322,55 @@ repos_list_clean_orphans() {
 }
 
 # List all cached sessions for a source directory (newest first)
-# Output: one line per session: "<session_id> <branch>"
+# Discovers sessions across all scopes in the same git root via repos.list.
+# Output: one line per session: "<session_id> <branch> <source_dir> <scope>"
+# (scope is empty for unscoped sessions — naturally handled by read -r)
 list_cached_sessions() {
     local source_dir="$1"
+    local -a source_dirs=("$source_dir")
 
-    # Check each session directory in cache (work dirs are per-session)
+    # Discover cross-scope source dirs via repos.list
+    local git_root
+    git_root=$(get_git_root "$source_dir" 2>/dev/null) || true
+    if [ -n "$git_root" ]; then
+        local repos_file
+        repos_file=$(get_repos_list_path "$source_dir")
+        if [ -f "$repos_file" ]; then
+            while IFS= read -r scope; do
+                local sd
+                if [ -z "$scope" ]; then
+                    sd="$git_root"
+                else
+                    sd="$git_root/$scope"
+                fi
+                # Avoid duplicating the primary source_dir
+                local already=false
+                local existing
+                for existing in "${source_dirs[@]}"; do
+                    [ "$existing" = "$sd" ] && already=true && break
+                done
+                [ "$already" = false ] && source_dirs+=("$sd")
+            done < "$repos_file"
+        fi
+    fi
+
+    # Scan sessions for all discovered source dirs
     if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
-        # List sessions newest first (reverse sort on timestamp dirs)
-        local session_id
+        local session_id sd
         for session_dir in $(ls -1dr "$CLAUDE_CAGE_CACHE/sessions"/* 2>/dev/null); do
             [ -d "$session_dir" ] || continue
             session_id=$(basename "$session_dir")
-            # Check if this session has a work directory for our source
-            local work="$session_dir/work$source_dir"
-            if [ -d "$work" ]; then
-                local branch
-                branch=$(get_work_branch "$work")
-                echo "$session_id $branch"
-            fi
+            for sd in "${source_dirs[@]}"; do
+                local work="$session_dir/work$sd"
+                # Must have .git to be a real work dir (not just a parent of a scoped work dir)
+                if [ -d "$work/.git" ]; then
+                    local branch scope=""
+                    branch=$(get_work_branch "$work")
+                    [ -f "$work/.git/claude-cage-scope-path" ] && \
+                        scope=$(cat "$work/.git/claude-cage-scope-path")
+                    echo "$session_id $branch $sd $scope"
+                fi
+            done
         done
     fi
 }
@@ -385,18 +416,24 @@ get_work_branch() {
 }
 
 # Find a reusable session for a source directory
+# Discovers sessions across all scopes in the same git root via repos.list.
 # Sets globals:
 #   REUSE_SESSION_ID      - session ID (or empty)
 #   REUSE_SESSION_STATE   - "active" | "clean" | "dirty" | "none"
 #   REUSE_SESSION_BRANCH  - branch name of the session's work dir
-#   REUSE_ACTIVE_SESSIONS - newline-separated list of "session_id branch" for active sessions
-#   REUSE_CLEAN_SESSIONS  - newline-separated list of "session_id branch" for inactive clean sessions
+#   REUSE_SESSION_SOURCE  - source_dir of the top-priority session
+#   REUSE_SESSION_SCOPE   - scope of the top-priority session
+#   REUSE_ACTIVE_SESSIONS - newline-separated list of "session_id branch source_dir scope" for active sessions
+#   REUSE_CLEAN_SESSIONS  - newline-separated list of "session_id branch source_dir scope" for inactive clean sessions
+#   REUSE_DIRTY_SESSIONS  - newline-separated list of "session_id branch dirty_type source_dir scope" for inactive dirty sessions
 find_reusable_session() {
     local source_dir="$1"
 
     REUSE_SESSION_ID=""
     REUSE_SESSION_STATE="none"
     REUSE_SESSION_BRANCH=""
+    REUSE_SESSION_SOURCE=""
+    REUSE_SESSION_SCOPE=""
     REUSE_ACTIVE_SESSIONS=""
     REUSE_DIRTY_SESSIONS=""
     REUSE_CLEAN_SESSIONS=""
@@ -405,40 +442,70 @@ find_reusable_session() {
         return
     fi
 
+    # Build list of source_dirs to scan (cross-scope discovery)
+    local -a source_dirs=("$source_dir")
+    local git_root
+    git_root=$(get_git_root "$source_dir" 2>/dev/null) || true
+    if [ -n "$git_root" ]; then
+        local repos_file
+        repos_file=$(get_repos_list_path "$source_dir")
+        if [ -f "$repos_file" ]; then
+            while IFS= read -r _scope; do
+                local _sd
+                if [ -z "$_scope" ]; then
+                    _sd="$git_root"
+                else
+                    _sd="$git_root/$_scope"
+                fi
+                local _already=false _existing
+                for _existing in "${source_dirs[@]}"; do
+                    [ "$_existing" = "$_sd" ] && _already=true && break
+                done
+                [ "$_already" = false ] && source_dirs+=("$_sd")
+            done < "$repos_file"
+        fi
+    fi
+
     local -a active_sessions=()
     local -a inactive_clean=()
     local -a inactive_dirty=()
 
-    # Scan sessions newest first
-    local session_id session_dir work branch
+    # Scan sessions newest first, across all source_dirs
+    local session_id session_dir sd work branch scope
     for session_dir in $(ls -1dr "$CLAUDE_CAGE_CACHE/sessions"/* 2>/dev/null); do
         [ -d "$session_dir" ] || continue
         session_id=$(basename "$session_dir")
-        work="$session_dir/work$source_dir"
-        [ -d "$work" ] || continue
+        for sd in "${source_dirs[@]}"; do
+            work="$session_dir/work$sd"
+            # Must have .git to be a real work dir (not just a parent of a scoped work dir)
+            [ -d "$work/.git" ] || continue
 
-        branch=$(get_work_branch "$work")
+            branch=$(get_work_branch "$work")
+            scope=""
+            [ -f "$work/.git/claude-cage-scope-path" ] && \
+                scope=$(cat "$work/.git/claude-cage-scope-path")
 
-        # Check if session has a live PID
-        if session_is_active "$source_dir" "$session_id"; then
-            active_sessions+=("$session_id $branch")
-        else
-            local has_uncommitted=false has_unpushed=false dirty_type=""
-            is_work_dirty "$work" && has_uncommitted=true
-            work_has_unpushed "$work" && has_unpushed=true
-            if [ "$has_uncommitted" = true ] && [ "$has_unpushed" = true ]; then
-                dirty_type="uncommitted+unpushed"
-            elif [ "$has_uncommitted" = true ]; then
-                dirty_type="uncommitted"
-            elif [ "$has_unpushed" = true ]; then
-                dirty_type="unpushed"
-            fi
-            if [ -n "$dirty_type" ]; then
-                inactive_dirty+=("$session_id $branch $dirty_type")
+            # Check if session has a live PID (using correct source_dir for this work dir)
+            if session_is_active "$sd" "$session_id"; then
+                active_sessions+=("$session_id $branch $sd $scope")
             else
-                inactive_clean+=("$session_id $branch")
+                local has_uncommitted=false has_unpushed=false dirty_type=""
+                is_work_dirty "$work" && has_uncommitted=true
+                work_has_unpushed "$work" && has_unpushed=true
+                if [ "$has_uncommitted" = true ] && [ "$has_unpushed" = true ]; then
+                    dirty_type="uncommitted+unpushed"
+                elif [ "$has_uncommitted" = true ]; then
+                    dirty_type="uncommitted"
+                elif [ "$has_unpushed" = true ]; then
+                    dirty_type="unpushed"
+                fi
+                if [ -n "$dirty_type" ]; then
+                    inactive_dirty+=("$session_id $branch $dirty_type $sd $scope")
+                else
+                    inactive_clean+=("$session_id $branch $sd $scope")
+                fi
             fi
-        fi
+        done
     done
 
     # Build active sessions list
@@ -458,39 +525,49 @@ find_reusable_session() {
 
     # Priority: active > inactive dirty > inactive clean
     if [ ${#active_sessions[@]} -gt 0 ]; then
-        REUSE_SESSION_ID="${active_sessions[0]%% *}"
-        REUSE_SESSION_BRANCH="${active_sessions[0]#* }"
+        read -r REUSE_SESSION_ID REUSE_SESSION_BRANCH REUSE_SESSION_SOURCE REUSE_SESSION_SCOPE \
+            <<< "${active_sessions[0]}"
         REUSE_SESSION_STATE="active"
     elif [ ${#inactive_dirty[@]} -gt 0 ]; then
-        REUSE_SESSION_ID="${inactive_dirty[0]%% *}"
-        REUSE_SESSION_BRANCH="${inactive_dirty[0]#* }"
+        local _dtype
+        read -r REUSE_SESSION_ID REUSE_SESSION_BRANCH _dtype REUSE_SESSION_SOURCE REUSE_SESSION_SCOPE \
+            <<< "${inactive_dirty[0]}"
         REUSE_SESSION_STATE="dirty"
     elif [ ${#inactive_clean[@]} -gt 0 ]; then
-        REUSE_SESSION_ID="${inactive_clean[0]%% *}"
-        REUSE_SESSION_BRANCH="${inactive_clean[0]#* }"
+        read -r REUSE_SESSION_ID REUSE_SESSION_BRANCH REUSE_SESSION_SOURCE REUSE_SESSION_SCOPE \
+            <<< "${inactive_clean[0]}"
         REUSE_SESSION_STATE="clean"
     fi
 }
 
 # Reuse an inactive clean session or create a new one
+# Only reuses sessions matching the current source_dir (same-scope only).
 # Arguments: $1 = source_dir
 # Uses globals: REUSE_CLEAN_SESSIONS, CLAUDE_CAGE_CACHE
 # Sets: CLAUDE_CAGE_SESSION
 reuse_or_create_session() {
     local source_dir="$1"
     if [ -n "${REUSE_CLEAN_SESSIONS:-}" ]; then
-        CLAUDE_CAGE_SESSION=$(echo "$REUSE_CLEAN_SESSIONS" | head -1 | awk '{print $1}')
-        echo "Reusin' clean session $CLAUDE_CAGE_SESSION."
-    else
-        CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
-        if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$source_dir" ]; then
-            sleep 1
-            CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+        # Filter to same-source entries only (skip cross-scope clean sessions)
+        local same_source csid cbranch csource cscope
+        same_source=$(while IFS=' ' read -r csid cbranch csource cscope; do
+            [ "$csource" = "$source_dir" ] && echo "$csid $cbranch $csource $cscope"
+        done <<< "$REUSE_CLEAN_SESSIONS")
+        if [ -n "$same_source" ]; then
+            CLAUDE_CAGE_SESSION=$(echo "$same_source" | head -1 | awk '{print $1}')
+            echo "Reusin' clean session $CLAUDE_CAGE_SESSION."
+            return
         fi
+    fi
+    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$source_dir" ]; then
+        sleep 1
+        CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
     fi
 }
 
 # Clean up inactive clean sessions we're not using
+# Only cleans sessions matching the current source_dir (same-scope only).
 # Removes work dirs and empty parent/session dirs for all inactive clean
 # sessions except the one currently selected (CLAUDE_CAGE_SESSION).
 # Arguments: $1 = source_dir
@@ -501,10 +578,11 @@ cleanup_stale_sessions() {
     [ "${dry_run:-}" = true ] && return
 
     local count=0
-    local csid cbranch
-    while IFS=' ' read -r csid cbranch; do
+    local csid cbranch csource cscope
+    while IFS=' ' read -r csid cbranch csource cscope; do
         [ -z "$csid" ] && continue
         [ "$csid" = "$CLAUDE_CAGE_SESSION" ] && continue
+        [ "$csource" != "$source_dir" ] && continue  # Skip cross-scope
 
         local session_cache="$CLAUDE_CAGE_CACHE/sessions/$csid"
         local work_dir="$session_cache/work$source_dir"
@@ -630,7 +708,7 @@ clean_session_cache() {
     if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
         for sd in "$CLAUDE_CAGE_CACHE/sessions"/*; do
             [ -d "$sd" ] || continue
-            if [ -d "$sd/work$source_dir" ]; then
+            if [ -d "$sd/work$source_dir/.git" ]; then
                 other_sessions_exist=true
                 break
             fi
@@ -660,6 +738,14 @@ clean_session_cache() {
             parent=$(dirname "$parent")
         done
     fi
+
+    # Remove empty top-level cache dirs (scoped/ and intermediary/)
+    local _top_dir
+    for _top_dir in "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"; do
+        if [ -d "$_top_dir" ] && [ -z "$(ls -A "$_top_dir" 2>/dev/null)" ]; then
+            run rm -rf "$_top_dir"
+        fi
+    done
 
     # Clean up empty .caged directory
     local caged_dir="$source_dir/.caged"

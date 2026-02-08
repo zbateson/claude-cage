@@ -672,6 +672,7 @@ else
     if [ "$cfg_autoMerge" = "true" ]; then
         setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
         setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
+        setup_source_post_merge "$cfg_source" "$cfg_exclude" "$intermediary_dir"
     fi
 
     # Set up work repo pre-commit hook:

@@ -314,16 +314,16 @@ if ! grep -q '^SCOPE_PATH="services/api"' "$post_commit_hook"; then
 fi
 echo "  PASS: Hook has SCOPE_PATH=\"services/api\""
 
-echo "Test 14: Scoped hook reads exclude pathspecs from file"
+echo "Test 14: Scoped hook passes exclude pathspecs to sync-commit helper"
 if ! grep -q 'EXCLUDE_PATHSPECS_FILE=' "$post_commit_hook"; then
     echo "FAIL: Hook should reference EXCLUDE_PATHSPECS_FILE"
     exit 1
 fi
-if ! grep -q 'PATHSPEC_ARGS' "$post_commit_hook"; then
-    echo "FAIL: Hook should build PATHSPEC_ARGS"
+if ! grep -q 'claude-cage-sync-commit' "$post_commit_hook"; then
+    echo "FAIL: Hook should call claude-cage-sync-commit helper"
     exit 1
 fi
-echo "  PASS: Hook reads pathspecs from metadata file"
+echo "  PASS: Hook passes pathspecs file to sync-commit helper"
 
 echo "Test 15: Scoped hook syncs in-scope commit with stripped paths"
 # Make a commit touching services/api (in-scope)

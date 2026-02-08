@@ -178,13 +178,16 @@ When `autoMerge = true`:
 
 When you commit to source:
 
-1. `post-commit` hook on source fires
+1. `post-commit` hook on source fires (or `post-merge` for merge commits)
 2. Checks commit mapping — skips if source HEAD is already mapped (loop prevention)
-3. Runs `git fast-export -1 HEAD` with `:(exclude,glob)` pathspec args to a temp file
-4. Checks for excluded-only commit: if output has no `commit` line or no `from` line, records `0 <source-hash>` in mapping and skips fast-import (see note below)
-5. If valid: pipes temp file into `git fast-import` on the bare intermediary
-6. Updates marks files and commit mapping
-7. Claude runs `git pull` when ready to get changes
+3. Calls `claude-cage-sync-commit` helper for each unmapped commit, which:
+   - Runs `git fast-export -1 <hash>` with `:(exclude,glob)` pathspec args to a temp file
+   - Checks for excluded-only commit: if output has no `commit` line or no `from` line, records `0 <source-hash>` in mapping and skips fast-import (see note below)
+   - If valid: pipes temp file into `git fast-import` on the bare intermediary
+   - Updates marks files and commit mapping
+4. Claude runs `git pull` when ready to get changes
+
+**Note on merges:** `git merge` does NOT trigger `post-commit` — it triggers `post-merge` instead (for both fast-forward and non-fast-forward merges). Squash merges trigger `post-merge` first (with `$1=1`), then `post-commit` when the user commits. The `post-merge` hook walks `ORIG_HEAD..HEAD` and syncs each unmapped commit. Squash merges are skipped by the post-merge hook since post-commit handles the eventual commit.
 
 **Note on excluded-only detection:** `git fast-export --export-marks` only writes commit marks (blob marks are ignored per git docs). In incremental mode, this means source-marks lacks blob references. For excluded-only commits on repos with many files, fast-export emits an orphan root commit (no `from` line) instead of a proper child commit, because it can't reference parent blobs. The temp-file approach detects this by checking for both `^commit ` and `^from ` in the output before feeding it to fast-import.
 
@@ -198,8 +201,8 @@ Multiple claude-cage sessions can run concurrently on the same project. Session 
 
 1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<path-hash>/` early at startup (before any destructive operations), regardless of autoMerge setting
 2. **Rebuild protection** - If another session is active for the same project, the cage is never rebuilt (even if source has moved ahead). New sessions get their own work directory.
-3. **Hook dispatcher** - Source `post-commit` hook uses a dispatcher pattern (`.git/hooks/post-commit` runs all scripts in `post-commit.d/`)
-4. **Project-scoped hooks** - Each project gets one hook file: `post-commit.d/claude-cage-<path-hash>`
+3. **Hook dispatcher** - Source `post-commit` and `post-merge` hooks use a dispatcher pattern (`.git/hooks/<hook>` runs all scripts in `<hook>.d/`)
+4. **Project-scoped hooks** - Each project gets hook files: `post-commit.d/claude-cage-<path-hash>` and `post-merge.d/claude-cage-<path-hash>`
 5. **Safe cleanup** - Sessions are unregistered on exit. Hooks are only removed when no other sessions need them.
 6. **Session reuse** - On startup, inactive clean sessions are automatically reused. Inactive dirty sessions prompt the user to pick up or start fresh.
 7. **`--attach-session`** - Share an existing active session's work directory (separate sandbox, same workspace).
@@ -534,6 +537,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] `apply_source_to_intermediary()` using fast-export + pathspec excludes
 - [x] Pipe listener background process
 - [x] `post-commit` hook on source (syncs source -> intermediary via fast-export)
+- [x] `post-merge` hook on source (syncs merges -> intermediary, ff and non-ff)
 - [x] `manual_git_merge()` for manual sync
 - [x] Cleanup on exit
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
@@ -698,8 +702,11 @@ project/
 │           └── work → ~/.cache/.../sessions/<timestamp>/work/<project-path>/
 └── .git/hooks/
     ├── post-commit                     # Dispatcher (runs all in post-commit.d/)
-    └── post-commit.d/
-        └── claude-cage-<path-hash>     # Project-scoped hook (fast-export to intermediary)
+    ├── post-commit.d/
+    │   └── claude-cage-<path-hash>     # Project-scoped hook (fast-export to intermediary)
+    ├── post-merge                      # Dispatcher (runs all in post-merge.d/)
+    └── post-merge.d/
+        └── claude-cage-<path-hash>     # Syncs merge commits to intermediary
 ```
 
 ### Sandbox Mount Structure
@@ -757,7 +764,7 @@ bash tests/run-all.sh
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 14 |
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
-| test-git-hooks.sh | git-hooks.sh | 14 |
+| test-git-hooks.sh | git-hooks.sh | 19 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 19 |
 | test-network.sh | network.sh | 31 |
@@ -767,7 +774,7 @@ bash tests/run-all.sh
 | test-direct-mount.sh | direct mount mode | 8 |
 | test-scoped.sh | scoped intermediary | 41 |
 
-**Total: ~244 assertions across 14 files**
+**Total: ~249 assertions across 14 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

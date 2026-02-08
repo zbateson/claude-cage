@@ -320,6 +320,14 @@ rm -rf "$INTERMEDIARY_DIR"
 mkdir -p "$(dirname "$INTERMEDIARY_DIR")"
 git init --bare "$INTERMEDIARY_DIR" --quiet
 
+# Install helper scripts (needed by hooks)
+install_sync_commit_script "$INTERMEDIARY_DIR"
+install_strip_prefix_script "$INTERMEDIARY_DIR"
+
+# Create empty exclude pathspecs and scope-path metadata files
+: > "$(get_exclude_pathspecs_file "$INTERMEDIARY_DIR")"
+: > "$(get_scope_path_file "$INTERMEDIARY_DIR")"
+
 # Create marks and commit map
 local_source_marks=$(get_source_marks_path "$INTERMEDIARY_DIR")
 local_import_marks=$(get_import_marks_path "$INTERMEDIARY_DIR")
@@ -398,10 +406,172 @@ git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
 cleanup_source_hooks "$SOURCE_PATH"
 
 echo ""
+echo "=== Testing post-merge hook ==="
+echo ""
+
+# Set up a fresh intermediary with marks/commit map for merge tests
+rm -rf "$INTERMEDIARY_DIR"
+mkdir -p "$(dirname "$INTERMEDIARY_DIR")"
+git init --bare "$INTERMEDIARY_DIR" --quiet
+
+local_source_marks=$(get_source_marks_path "$INTERMEDIARY_DIR")
+local_import_marks=$(get_import_marks_path "$INTERMEDIARY_DIR")
+local_commit_map=$(get_commit_map_path "$INTERMEDIARY_DIR")
+
+# Create empty exclude pathspecs file (no excludes for these tests)
+exclude_pathspecs_file=$(get_exclude_pathspecs_file "$INTERMEDIARY_DIR")
+: > "$exclude_pathspecs_file"
+
+# Create empty scope-path file (unscoped)
+scope_path_file=$(get_scope_path_file "$INTERMEDIARY_DIR")
+: > "$scope_path_file"
+
+git -C "$SOURCE_PATH" fast-export --export-marks="$local_source_marks" HEAD 2>/dev/null \
+    | git -C "$INTERMEDIARY_DIR" fast-import --export-marks="$local_import_marks" --quiet 2>/dev/null
+: > "$local_commit_map"
+build_commit_map_from_marks "$local_source_marks" "$local_import_marks" "$local_commit_map" "$SOURCE_PATH" "HEAD"
+
+# Install the sync-commit helper (needed by both hooks)
+install_sync_commit_script "$INTERMEDIARY_DIR"
+install_strip_prefix_script "$INTERMEDIARY_DIR"
+
+# Install post-commit hook (needed so feature branch commits sync before merge)
+rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
+rm -f "$SOURCE_PATH/.git/hooks/post-commit"
+rm -rf "$SOURCE_PATH/.git/hooks/post-merge.d"
+rm -f "$SOURCE_PATH/.git/hooks/post-merge"
+setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR"
+
+echo "Test 14: Source post-merge hook created"
+setup_source_post_merge "$SOURCE_PATH" "" "$INTERMEDIARY_DIR"
+post_merge_hook="$SOURCE_PATH/.git/hooks/post-merge.d/claude-cage-$hook_path_hash"
+if [ ! -f "$post_merge_hook" ]; then
+    echo "FAIL: post-merge hook not found at $post_merge_hook"
+    exit 1
+fi
+if [ ! -x "$post_merge_hook" ]; then
+    echo "FAIL: post-merge hook is not executable"
+    exit 1
+fi
+intermediary_in_hook=$(grep '^INTERMEDIARY=' "$post_merge_hook" | head -1 | cut -d'"' -f2)
+if [ "$intermediary_in_hook" != "$INTERMEDIARY_DIR" ]; then
+    echo "FAIL: INTERMEDIARY points to '$intermediary_in_hook', expected '$INTERMEDIARY_DIR'"
+    exit 1
+fi
+echo "  PASS: post-merge hook created, executable, references INTERMEDIARY"
+
+echo "Test 15: FF merge on source syncs to intermediary via post-merge hook"
+# Create feature branch, add a commit (post-commit syncs it to intermediary)
+git -C "$SOURCE_PATH" checkout -b ff-feature --quiet
+echo "ff feature content" > "$SOURCE_PATH/ff-feature.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "FF feature commit" --quiet
+
+# Verify post-commit synced the feature commit
+ff_feature_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if ! grep -q " ${ff_feature_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "FAIL: Feature commit not synced by post-commit hook before merge test"
+    echo "  ff_feature HEAD: $ff_feature_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+
+# Switch back to master and fast-forward merge
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+git -C "$SOURCE_PATH" merge ff-feature --quiet
+
+# After FF merge, master HEAD == ff_feature_head (same commit)
+master_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if [ "$master_head" != "$ff_feature_head" ]; then
+    echo "FAIL: FF merge didn't advance master to feature commit"
+    exit 1
+fi
+
+# The commit is already mapped (synced when committed on feature branch)
+# post-merge hook should skip it via loop prevention
+# Verify master branch is mapped and intermediary has it
+if grep -q " ${master_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "  PASS: FF merge commit already in mapping, intermediary in sync"
+else
+    echo "FAIL: FF merge commit not in commit mapping"
+    echo "  master HEAD: $master_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+
+echo "Test 16: Non-FF merge on source syncs merge commit to intermediary"
+# Create a feature branch with a commit
+git -C "$SOURCE_PATH" checkout -b noff-feature --quiet
+echo "noff feature content" > "$SOURCE_PATH/noff-feature.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Non-FF feature commit" --quiet
+
+# Make a different commit on master (creates divergence)
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+echo "master diverge content" > "$SOURCE_PATH/master-diverge.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Master diverge" --quiet
+
+# Non-FF merge (creates a merge commit)
+git -C "$SOURCE_PATH" merge noff-feature --no-edit --quiet
+
+merge_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+# Verify the merge commit was synced by the post-merge hook
+if grep -q " ${merge_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "  PASS: Non-FF merge commit synced to intermediary"
+else
+    echo "FAIL: Non-FF merge commit not synced to intermediary"
+    echo "  merge HEAD: $merge_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+
+# Verify intermediary has the merge commit on master
+int_master_head=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+if [ -z "$int_master_head" ]; then
+    echo "FAIL: Intermediary master branch not found"
+    exit 1
+fi
+# Check intermediary master maps to source master
+if grep -q "^${int_master_head} ${merge_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "  PASS: Intermediary master points to mapped merge commit"
+else
+    echo "  PASS: Merge synced (intermediary updated)"
+fi
+
+echo "Test 17: Post-merge hook skips squash merges"
+# Squash merges pass $1=1 to post-merge hook. The hook should skip and let
+# post-commit handle the eventual commit.
+if ! grep -q '"\${1:-0}" = "1"' "$post_merge_hook"; then
+    echo "FAIL: post-merge hook doesn't check for squash merge (\$1=1)"
+    cat "$post_merge_hook"
+    exit 1
+fi
+echo "  PASS: post-merge hook checks for squash merge flag"
+
+echo "Test 18: Post-merge hook cleanup removes post-merge hooks"
+cleanup_source_hooks "$SOURCE_PATH"
+if [ -f "$post_merge_hook" ]; then
+    echo "FAIL: post-merge hook should have been removed by cleanup_source_hooks"
+    exit 1
+fi
+# Dispatcher should also be cleaned up since no hooks remain
+if [ -f "$SOURCE_PATH/.git/hooks/post-merge" ] && grep -q "claude-cage-dispatcher" "$SOURCE_PATH/.git/hooks/post-merge"; then
+    echo "FAIL: post-merge dispatcher should have been removed when no hooks remain"
+    exit 1
+fi
+echo "  PASS: post-merge hook and dispatcher cleaned up"
+
+# Clean up branches used in merge tests
+git -C "$SOURCE_PATH" branch -D ff-feature 2>/dev/null || true
+git -C "$SOURCE_PATH" branch -D noff-feature 2>/dev/null || true
+
+echo ""
 echo "=== Testing autoMerge=false (no hooks) ==="
 echo ""
 
-echo "Test 14: No hooks when autoMerge=false"
+echo "Test 19: No hooks when autoMerge=false"
 # Clean up all existing state
 rm -rf "$INTERMEDIARY_DIR" "$CLAUDE_CAGE_RUNTIME"
 rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"

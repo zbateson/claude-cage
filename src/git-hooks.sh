@@ -138,6 +138,25 @@ cleanup_orphaned_hooks() {
         maybe_remove_dispatcher "$git_root" "post-commit"
     fi
 
+    # Check post-merge hooks
+    if [ -d "$git_root/.git/hooks/post-merge.d" ]; then
+        for hook in "$git_root/.git/hooks/post-merge.d"/claude-cage-*; do
+            [ -f "$hook" ] || continue
+
+            local intermediary_dir
+            intermediary_dir=$(grep '^INTERMEDIARY=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
+
+            if [ -n "$intermediary_dir" ] && [ ! -d "$intermediary_dir" ]; then
+                if [ "$verbose" = true ]; then
+                    echo "Removing orphaned hook: $hook"
+                fi
+                rm -f "$hook"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+        maybe_remove_dispatcher "$git_root" "post-merge"
+    fi
+
     # Also clean up any leftover pre-commit hooks from old architecture
     if [ -d "$git_root/.git/hooks/pre-commit.d" ]; then
         for hook in "$git_root/.git/hooks/pre-commit.d"/claude-cage-*; do
@@ -296,6 +315,7 @@ cleanup_source_hooks() {
     local path_hash
     path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
     local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$path_hash"
+    local post_merge_hook="$git_root/.git/hooks/post-merge.d/claude-cage-$path_hash"
 
     if [ -f "$post_commit_hook" ]; then
         run rm -f "$post_commit_hook"
@@ -303,6 +323,14 @@ cleanup_source_hooks() {
             echo "  Removed hook: $post_commit_hook"
         fi
         maybe_remove_dispatcher "$git_root" "post-commit"
+    fi
+
+    if [ -f "$post_merge_hook" ]; then
+        run rm -f "$post_merge_hook"
+        if [ "$verbose" = true ]; then
+            echo "  Removed hook: $post_merge_hook"
+        fi
+        maybe_remove_dispatcher "$git_root" "post-merge"
     fi
 }
 
@@ -406,117 +434,125 @@ if [ -f "\$COMMIT_MAP" ] && grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP"; then
     exit 0
 fi
 
-SUBJECT=\$(git log -1 --format=%s | head -c 50)
-_sync_log "\$COMMIT_SHORT" ">>intermediary" "applying: \$SUBJECT"
-
-# Build combined pathspec: scope include + exclude (read from metadata file at runtime)
-PATHSPEC_ARGS=()
-[ -n "\$SCOPE_PATH" ] && PATHSPEC_ARGS+=("\$SCOPE_PATH/")
-if [ -f "\$EXCLUDE_PATHSPECS_FILE" ]; then
-    while IFS= read -r _ps; do
-        [ -n "\$_ps" ] && PATHSPEC_ARGS+=("\$_ps")
-    done < "\$EXCLUDE_PATHSPECS_FILE"
-fi
-
-EXPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.\$\$")
-EXPORT_OUT=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.\$\$")
-
-# Export to temp file first so we can detect excluded-only commits before fast-import.
-# git fast-export --export-marks only writes commit marks (blobs are ignored per docs).
-# This means incremental exports lose blob marks from source-marks. For excluded-only
-# commits, fast-export can't reference parent blobs → emits an orphan root commit
-# instead of a proper child. Piping that to fast-import would fail with
-# "new tip does not contain old tip". Detecting and skipping avoids this.
-git fast-export --import-marks="\$SOURCE_MARKS" --export-marks="\$SOURCE_MARKS" -1 HEAD \\
-    \${PATHSPEC_ARGS:+-- "\${PATHSPEC_ARGS[@]}"} \\
-    >"\$EXPORT_OUT" 2>"\$EXPORT_ERR"
-EXPORT_RC=\$?
-
-if [ "\$EXPORT_RC" -ne 0 ]; then
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-export FAILED rc=\$EXPORT_RC"
-    [ -s "\$EXPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "export stderr: \$(cat "\$EXPORT_ERR")"
-    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT\$SCOPE_LABEL (export=\$EXPORT_RC)"
-    rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
-    exit 0
-fi
-
-# Strip scope prefix from fast-export paths (scoped intermediaries only).
-# Uses the shared strip-prefix script installed in the intermediary.
-if [ -n "\$SCOPE_PATH" ]; then
-    "\$INTERMEDIARY/claude-cage-strip-prefix" "\${SCOPE_PATH}/" "\$EXPORT_OUT"
-fi
-
-# Excluded-only detection: no commit line means fast-export dropped it entirely (small repos).
-if ! grep -q '^commit ' "\$EXPORT_OUT"; then
-    echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit (no commit line), mapped to 0"
-    echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope\$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
-    rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
-    exit 0
-fi
-
-# No from line: either excluded-only (parent in marks, all changes filtered out)
-# or marks gap (parent not in marks, e.g. from sync_to_source/git-am or prior
-# excluded-only commit). Check parent to distinguish.
-if ! grep -q '^from ' "\$EXPORT_OUT"; then
-    _PARENT=\$(git rev-parse HEAD^ 2>/dev/null) || true
-    _PARENT_MARKED=false
-    if [ -n "\$_PARENT" ] && [ -f "\$SOURCE_MARKS" ] && grep -q " \${_PARENT}\$" "\$SOURCE_MARKS" 2>/dev/null; then
-        _PARENT_MARKED=true
+export INTERMEDIARY SOURCE_MARKS IMPORT_MARKS COMMIT_MAP SYNC_LOG SCOPE_PATH SCOPE_LABEL EXCLUDE_PATHSPECS_FILE
+"\$INTERMEDIARY/claude-cage-sync-commit" "\$COMMIT_HASH"
+EOF
+        chmod +x "$hook_path"
     fi
-    if [ "\$_PARENT_MARKED" = true ] || [ -z "\$_PARENT" ]; then
-        # Parent IS in marks (or root commit) but no from line → truly excluded-only
-        echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
-        _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
-        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope\$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
-        rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
-        exit 0
+
+    if [ "$verbose" = true ]; then
+        echo "  Created source hook: $hook_path"
     fi
-    # Parent NOT in marks — marks gap. Inject intermediary branch HEAD as parent.
-    # The deleteall + full-tree reconstruction produces the correct tree state.
-    _INT_HEAD=\$(git -C "\$INTERMEDIARY" rev-parse "\$current_branch" 2>/dev/null)
-    if [ -n "\$_INT_HEAD" ]; then
-        _sync_log "\$COMMIT_SHORT" ">>intermediary" "marks gap: injecting parent \${_INT_HEAD:0:8}"
-        awk -v parent="\$_INT_HEAD" '/^deleteall\$/ && !done { print "from " parent; done=1 } { print }' \\
-            "\$EXPORT_OUT" > "\$EXPORT_OUT.fix" && mv "\$EXPORT_OUT.fix" "\$EXPORT_OUT"
+}
+
+# Set up post-merge hook on source repo to sync merges to intermediary
+# git merge does NOT trigger post-commit — it triggers post-merge instead.
+# This hook walks ORIG_HEAD..HEAD and syncs each unmapped commit via the
+# shared claude-cage-sync-commit helper.
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - exclude_patterns: Pipe-delimited exclude patterns
+#   $3 - intermediary_dir: The bare intermediary directory
+setup_source_post_merge() {
+    local source_dir="$1"
+    local exclude_patterns="$2"
+    local intermediary_dir="$3"
+    local path_hash
+    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local hook_path="$git_root/.git/hooks/post-merge.d/claude-cage-$path_hash"
+
+    if [ "$dry_run" != true ]; then
+        ensure_hook_dispatcher "$git_root" "post-merge"
+    fi
+
+    # Read scope_path from intermediary metadata (empty for unscoped)
+    local scope_path=""
+    local scope_path_file
+    scope_path_file=$(get_scope_path_file "$intermediary_dir")
+    if [ -f "$scope_path_file" ]; then
+        scope_path=$(cat "$scope_path_file")
+    fi
+
+    # Get paths for marks, commit map, and exclude pathspecs metadata inside intermediary
+    local source_marks_path
+    source_marks_path=$(get_source_marks_path "$intermediary_dir")
+    local import_marks_path
+    import_marks_path=$(get_import_marks_path "$intermediary_dir")
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
+    local exclude_pathspecs_file
+    exclude_pathspecs_file=$(get_exclude_pathspecs_file "$intermediary_dir")
+
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] create $hook_path"
     else
-        echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
-        _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only (no intermediary HEAD for \$current_branch)"
-        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope\$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
-        rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
-        exit 0
-    fi
+        cat > "$hook_path" << EOF
+#!/bin/bash
+# claude-cage: sync merge commits to intermediary
+INTERMEDIARY="$intermediary_dir"
+SOURCE_DIR="$source_dir"
+SOURCE_MARKS="$source_marks_path"
+IMPORT_MARKS="$import_marks_path"
+COMMIT_MAP="$commit_map_path"
+SYNC_LOG="\$INTERMEDIARY/sync.log"
+SCOPE_PATH="$scope_path"
+SCOPE_LABEL=""
+[ -n "\$SCOPE_PATH" ] && SCOPE_LABEL=" (\$SCOPE_PATH)"
+EXCLUDE_PATHSPECS_FILE="$exclude_pathspecs_file"
+
+_sync_log() {
+    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\$1" "\$2" "\$3" >> "\$SYNC_LOG"
+}
+
+if [ ! -d "\$INTERMEDIARY" ]; then
+    exit 0  # cage not set up yet
 fi
 
-echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary\$SCOPE_LABEL, run 'git pull' from claude-cage"
-
-IMPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.\$\$")
-git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet \\
-    <"\$EXPORT_OUT" 2>"\$IMPORT_ERR"
-IMPORT_RC=\$?
-
-if [ "\$IMPORT_RC" -ne 0 ]; then
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=\$IMPORT_RC"
-    [ -s "\$IMPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "import stderr: \$(cat "\$IMPORT_ERR")"
-    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT\$SCOPE_LABEL (import=\$IMPORT_RC)"
-    rm -f "\$EXPORT_ERR" "\$IMPORT_ERR" "\$EXPORT_OUT"
+# Skip squash merges (\$1=1) — post-commit handles the eventual commit
+if [ "\${1:-0}" = "1" ]; then
     exit 0
 fi
-rm -f "\$EXPORT_ERR" "\$IMPORT_ERR" "\$EXPORT_OUT"
 
-# Update commit mapping from marks
-if [ -f "\$SOURCE_MARKS" ] && [ -f "\$IMPORT_MARKS" ]; then
-    awk 'NR==FNR { source[\$1]=\$2; next } { if (\$1 in source) print \$2, source[\$1] }' \\
-        "\$SOURCE_MARKS" "\$IMPORT_MARKS" >> "\$COMMIT_MAP"
-fi
+# Skip during sync_to_source (git-am triggers hooks; marks handled by sync).
+[ -n "\${CLAUDE_CAGE_SYNCING:-}" ] && exit 0
 
-# If commit still not in mapping after marks join, record as excluded-only
-if ! grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP" 2>/dev/null; then
-    echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
-else
-    _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import ok"
-fi
+# Get ORIG_HEAD (set by git merge to the pre-merge HEAD)
+ORIG_HEAD=\$(git rev-parse ORIG_HEAD 2>/dev/null) || exit 0
+
+# Walk commits from ORIG_HEAD to HEAD (the merge brought these in)
+for COMMIT_HASH in \$(git rev-list --reverse ORIG_HEAD..HEAD); do
+    COMMIT_SHORT=\${COMMIT_HASH:0:8}
+
+    # Skip if already in commit mapping (loop prevention)
+    if [ -f "\$COMMIT_MAP" ] && grep -q " \${COMMIT_HASH}\$" "\$COMMIT_MAP"; then
+        _sync_log "\$COMMIT_SHORT" ">>intermediary" "already mapped, skipping (loop prevention)"
+        continue
+    fi
+
+    # Create branch in intermediary if it doesn't exist yet
+    current_branch=\$(git branch --show-current)
+    if ! git -C "\$INTERMEDIARY" rev-parse --verify "\$current_branch" >/dev/null 2>&1; then
+        DEFAULT_BRANCH=\$(git -C "\$INTERMEDIARY" symbolic-ref --short HEAD 2>/dev/null)
+        if [ -n "\$DEFAULT_BRANCH" ]; then
+            DEFAULT_HEAD=\$(git -C "\$INTERMEDIARY" rev-parse "\$DEFAULT_BRANCH" 2>/dev/null)
+            if [ -n "\$DEFAULT_HEAD" ]; then
+                git -C "\$INTERMEDIARY" branch "\$current_branch" "\$DEFAULT_HEAD" 2>/dev/null || true
+                _sync_log "\$COMMIT_SHORT" ">>intermediary" "created branch \$current_branch from \$DEFAULT_BRANCH"
+            else
+                _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: no default branch HEAD to create \$current_branch"
+                continue
+            fi
+        else
+            _sync_log "\$COMMIT_SHORT" ">>intermediary" "skipped: can't create branch \$current_branch (no default branch)"
+            continue
+        fi
+    fi
+
+    export INTERMEDIARY SOURCE_MARKS IMPORT_MARKS COMMIT_MAP SYNC_LOG SCOPE_PATH SCOPE_LABEL EXCLUDE_PATHSPECS_FILE
+    "\$INTERMEDIARY/claude-cage-sync-commit" "\$COMMIT_HASH"
+done
 EOF
         chmod +x "$hook_path"
     fi

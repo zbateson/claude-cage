@@ -679,5 +679,83 @@ if [ "$new_branch_content" != "new branch content" ]; then
 fi
 echo "  PASS: New branch created on source via sync_to_source"
 
+# ============================================================================
+# Test 20: Merge commit sync (format-patch skips merges, we handle them)
+# ============================================================================
+echo ""
+echo "Test 20: Merge commits should sync to source via first-parent diff"
+
+setup_test_cage "source20"
+
+# Create a feature branch with a change
+git -C "$SOURCE_PATH" checkout -q -b feature20
+echo "feature content" > "$SOURCE_PATH/feature20.txt"
+git -C "$SOURCE_PATH" add . && git -C "$SOURCE_PATH" commit -q -m "Add feature20"
+git -C "$SOURCE_PATH" checkout -q master
+
+# Sync feature branch to intermediary
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$cfg_exclude" >/dev/null 2>&1
+
+# Make a conflicting change on master
+echo "master version" > "$SOURCE_PATH/shared.txt"
+git -C "$SOURCE_PATH" add . && git -C "$SOURCE_PATH" commit -q -m "Master adds shared"
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$cfg_exclude" >/dev/null 2>&1
+
+# In the work dir, simulate a merge commit: create feature branch, merge it
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" pull -q origin master 2>/dev/null || git -C "$WORK_DIR" reset -q --hard origin/master
+
+# Create a feature branch in work with a change + new file
+git -C "$WORK_DIR" checkout -q -b work-feature
+echo "feature version" > "$WORK_DIR/shared.txt"
+echo "extra" > "$WORK_DIR/extra.txt"
+git -C "$WORK_DIR" add . && git -C "$WORK_DIR" commit -q -m "Feature changes shared"
+
+# Make a conflicting change on work's master so merge will conflict
+git -C "$WORK_DIR" checkout -q master
+echo "work master version" > "$WORK_DIR/shared.txt"
+git -C "$WORK_DIR" add . && git -C "$WORK_DIR" commit -q -m "Work master changes shared"
+
+# Merge in work (will conflict on shared.txt — both sides changed it)
+git -C "$WORK_DIR" merge work-feature --no-edit 2>/dev/null || true
+
+# Resolve conflict
+echo "resolved content" > "$WORK_DIR/shared.txt"
+git -C "$WORK_DIR" add shared.txt
+git -C "$WORK_DIR" commit -q -m "Merge work-feature into master"
+
+# Record pre-push state (master~2 is before our two new commits + merge)
+local_master_before=$(git -C "$INTERMEDIARY_DIR" rev-parse master)
+local_master_after=$(git -C "$WORK_DIR" rev-parse master)
+
+# Push to intermediary
+git -C "$WORK_DIR" push -q origin master 2>/dev/null
+
+# Sync to source
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/master" "$local_master_before" >/dev/null 2>&1
+
+# Verify the merge resolution made it to source
+source_shared=$(cat "$SOURCE_PATH/shared.txt")
+if [ "$source_shared" != "resolved content" ]; then
+    echo "FAIL: Expected 'resolved content' on source, got: '$source_shared'"
+    exit 1
+fi
+echo "  PASS: Merge conflict resolution synced to source"
+
+# Verify the extra file from the merge also made it
+if [ ! -f "$SOURCE_PATH/extra.txt" ]; then
+    echo "FAIL: extra.txt should exist on source after merge sync"
+    exit 1
+fi
+echo "  PASS: Merge brought in all changes from feature branch"
+
+# Verify commit was mapped
+commit_map_path=$(get_commit_map_path "$INTERMEDIARY_DIR")
+if ! grep -q "$local_master_after" "$commit_map_path" 2>/dev/null; then
+    echo "FAIL: Merge commit should be in commit mapping"
+    exit 1
+fi
+echo "  PASS: Merge commit mapped correctly"
+
 echo ""
 echo "=== All git-sync tests passed! ==="

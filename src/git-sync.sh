@@ -310,9 +310,9 @@ sync_to_source() {
             sync_log "$log_file" "$newrev_short" ">>source" "skipped root commit on $branch_name"
             return 0
         fi
-        commits=$(git -C "$intermediary_dir" rev-list --topo-order --reverse "${first_parent}..${newrev}" 2>/dev/null)
+        commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "${first_parent}..${newrev}" 2>/dev/null)
     else
-        commits=$(git -C "$intermediary_dir" rev-list --topo-order --reverse "${oldrev}..${newrev}" 2>/dev/null)
+        commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "${oldrev}..${newrev}" 2>/dev/null)
     fi
 
     if [ -z "$commits" ]; then
@@ -347,9 +347,10 @@ sync_to_source() {
 
         echo "  ${commit_short}: ${commit_msg:0:50}"
 
-        # Generate patch
+        # Generate patch (git log --format=email handles both regular and merge
+        # commits; format-patch silently skips merges so we don't use it)
         local patch
-        patch=$(git -C "$intermediary_dir" format-patch -1 "$commit" --stdout 2>/dev/null)
+        patch=$(git -C "$intermediary_dir" log -1 -p --format=email --first-parent "$commit" 2>/dev/null)
 
         # Skip empty patches
         if ! echo "$patch" | grep -q "^diff --git"; then

@@ -559,7 +559,7 @@ if [ -f .git/MERGE_HEAD ]; then
     echo "Hold on. Merges ain't allowed in a scoped cage ($scope_path)."
     echo "The intermediary only has files from this scope — merges could go sideways."
     echo ""
-    echo "Instead, merge on your source repo and let the cage sync pick it up."
+    echo "Run 'git merge --abort' to undo, then merge on your source repo instead."
     exit 1
 fi
 EOF
@@ -604,7 +604,7 @@ HOOKEOF
 echo "Hold on. Merges ain't allowed in a scoped cage ($scope_path)."
 echo "The intermediary only has files from this scope — merges could go sideways."
 echo ""
-echo "Instead, merge on your source repo and let the cage sync pick it up."
+echo "Run 'git merge --abort' to undo, then merge on your source repo instead."
 exit 1
 EOF
         chmod +x "$merge_hook_path"

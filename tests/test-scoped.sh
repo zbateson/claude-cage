@@ -1437,6 +1437,13 @@ if ! echo "$merge_output" | grep -q "scoped cage"; then
 fi
 echo "  PASS: Error message mentions scoped cage"
 
+if ! echo "$merge_output" | grep -q "git merge --abort"; then
+    echo "FAIL: Error message should tell user to run 'git merge --abort'"
+    echo "  Output: $merge_output"
+    exit 1
+fi
+echo "  PASS: Error message includes abort instruction"
+
 # Clean up the blocked merge state
 git merge --abort 2>/dev/null || true
 

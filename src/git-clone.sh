@@ -170,7 +170,7 @@ get_git_root_hash() {
     local source_dir="$1"
     local git_root
     git_root=$(get_git_root "$source_dir")
-    echo -n "$git_root" | md5sum | cut -c1-12
+    path_hash "$git_root"
 }
 
 # Get the repos.list file path for a git root
@@ -390,13 +390,7 @@ cleanup_child_intermediaries() {
             if [ -d "$child_idir" ]; then
                 rm -rf "$child_idir"
                 echo "  Cleaned up narrower scope: $_existing_scope"
-                # Clean empty parent dirs up to scoped/ top-level
-                local parent
-                parent=$(dirname "$child_idir")
-                while [ "$parent" != "$CLAUDE_CAGE_CACHE/scoped" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
-                    [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && rm -rf "$parent" || break
-                    parent=$(dirname "$parent")
-                done
+                cleanup_empty_parents "$child_idir" "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE"
             fi
             children_to_remove+=("$_existing_scope")
         fi
@@ -432,16 +426,32 @@ maybe_cleanup_superseded_intermediary() {
     idir=$(get_scoped_intermediary_path "$git_root" "$scope_path")
     if [ -d "$idir" ]; then
         rm -rf "$idir"
-        # Clean empty parent dirs up to scoped/ top-level
-        local parent
-        parent=$(dirname "$idir")
-        while [ "$parent" != "$CLAUDE_CAGE_CACHE/scoped" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
-            [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && rm -rf "$parent" || break
-            parent=$(dirname "$parent")
-        done
+        cleanup_empty_parents "$idir" "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE"
         repos_list_remove "$source_dir" "$scope_path"
         echo "Cleaned up scoped intermediary: $scope_path (broader scope covers it now)"
     fi
+}
+
+# Build a list of source directories across all scopes for a git root.
+# Sets: _CROSS_SCOPE_SOURCE_DIRS array
+build_cross_scope_source_dirs() {
+    local source_dir="$1"
+    _CROSS_SCOPE_SOURCE_DIRS=("$source_dir")
+    local git_root
+    git_root=$(get_git_root "$source_dir" 2>/dev/null) || true
+    [ -z "$git_root" ] && return
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+    [ -f "$repos_file" ] || return
+    while IFS= read -r _scope; do
+        local _sd
+        if [ -z "$_scope" ]; then _sd="$git_root"; else _sd="$git_root/$_scope"; fi
+        local _dup=false _e
+        for _e in "${_CROSS_SCOPE_SOURCE_DIRS[@]}"; do
+            [ "$_e" = "$_sd" ] && _dup=true && break
+        done
+        [ "$_dup" = false ] && _CROSS_SCOPE_SOURCE_DIRS+=("$_sd")
+    done < "$repos_file"
 }
 
 # List all cached sessions for a source directory (newest first)
@@ -450,32 +460,8 @@ maybe_cleanup_superseded_intermediary() {
 # (scope is empty for unscoped sessions — naturally handled by read -r)
 list_cached_sessions() {
     local source_dir="$1"
-    local -a source_dirs=("$source_dir")
-
-    # Discover cross-scope source dirs via repos.list
-    local git_root
-    git_root=$(get_git_root "$source_dir" 2>/dev/null) || true
-    if [ -n "$git_root" ]; then
-        local repos_file
-        repos_file=$(get_repos_list_path "$source_dir")
-        if [ -f "$repos_file" ]; then
-            while IFS= read -r scope; do
-                local sd
-                if [ -z "$scope" ]; then
-                    sd="$git_root"
-                else
-                    sd="$git_root/$scope"
-                fi
-                # Avoid duplicating the primary source_dir
-                local already=false
-                local existing
-                for existing in "${source_dirs[@]}"; do
-                    [ "$existing" = "$sd" ] && already=true && break
-                done
-                [ "$already" = false ] && source_dirs+=("$sd")
-            done < "$repos_file"
-        fi
-    fi
+    build_cross_scope_source_dirs "$source_dir"
+    local -a source_dirs=("${_CROSS_SCOPE_SOURCE_DIRS[@]}")
 
     # Scan sessions for all discovered source dirs
     if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
@@ -566,28 +552,8 @@ find_reusable_session() {
     fi
 
     # Build list of source_dirs to scan (cross-scope discovery)
-    local -a source_dirs=("$source_dir")
-    local git_root
-    git_root=$(get_git_root "$source_dir" 2>/dev/null) || true
-    if [ -n "$git_root" ]; then
-        local repos_file
-        repos_file=$(get_repos_list_path "$source_dir")
-        if [ -f "$repos_file" ]; then
-            while IFS= read -r _scope; do
-                local _sd
-                if [ -z "$_scope" ]; then
-                    _sd="$git_root"
-                else
-                    _sd="$git_root/$_scope"
-                fi
-                local _already=false _existing
-                for _existing in "${source_dirs[@]}"; do
-                    [ "$_existing" = "$_sd" ] && _already=true && break
-                done
-                [ "$_already" = false ] && source_dirs+=("$_sd")
-            done < "$repos_file"
-        fi
-    fi
+    build_cross_scope_source_dirs "$source_dir"
+    local -a source_dirs=("${_CROSS_SCOPE_SOURCE_DIRS[@]}")
 
     local -a active_sessions=()
     local -a inactive_clean=()
@@ -718,13 +684,7 @@ cleanup_stale_sessions() {
         local caged_link="$source_dir/.caged/sessions/$csid"
         [ -d "$caged_link" ] && rm -rf "$caged_link"
 
-        # Clean empty parent dirs up to session_cache/work
-        local parent_dir
-        parent_dir=$(dirname "$work_dir")
-        while [ "$parent_dir" != "$session_cache/work" ] && [ "$parent_dir" != "$session_cache" ]; do
-            [ -d "$parent_dir" ] && [ -z "$(ls -A "$parent_dir" 2>/dev/null)" ] && rm -rf "$parent_dir" || break
-            parent_dir=$(dirname "$parent_dir")
-        done
+        cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
 
         # Clean empty session dir
         if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
@@ -745,9 +705,9 @@ cleanup_stale_sessions() {
 session_is_active() {
     local source_dir="$1"
     local session_id="$2"
-    local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-    local session_dir="$CLAUDE_CAGE_RUNTIME/sessions/$path_hash"
+    local _ph
+    _ph=$(path_hash "$source_dir")
+    local session_dir="$CLAUDE_CAGE_RUNTIME/sessions/$_ph"
 
     [ -d "$session_dir" ] || return 1
 
@@ -786,10 +746,10 @@ clean_session_cache() {
     local git_root
     git_root=$(get_git_root "$source_dir" 2>/dev/null)
     if [ -n "$git_root" ]; then
-        local path_hash
-        path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$path_hash"
-        local post_merge_hook="$git_root/.git/hooks/post-merge.d/claude-cage-$path_hash"
+        local _ph
+        _ph=$(path_hash "$source_dir")
+        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$_ph"
+        local post_merge_hook="$git_root/.git/hooks/post-merge.d/claude-cage-$_ph"
 
         if ! has_other_sessions "$source_dir"; then
             if [ -f "$post_commit_hook" ]; then
@@ -818,12 +778,7 @@ clean_session_cache() {
     fi
 
     # Clean up empty parent directories between work_dir and session_cache/work
-    local parent_dir
-    parent_dir=$(dirname "$work_dir")
-    while [ "$parent_dir" != "$session_cache/work" ] && [ "$parent_dir" != "$session_cache" ]; do
-        [ -d "$parent_dir" ] && [ -z "$(ls -A "$parent_dir" 2>/dev/null)" ] && run rm -rf "$parent_dir" || break
-        parent_dir=$(dirname "$parent_dir")
-    done
+    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
 
     # Clean up empty session directory if no other projects use it
     if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
@@ -863,12 +818,7 @@ clean_session_cache() {
         repos_list_remove "$source_dir" "$scope_path"
 
         # Clean up empty parent dirs
-        local parent
-        parent=$(dirname "$intermediary_dir")
-        while [ "$parent" != "$CLAUDE_CAGE_CACHE/intermediary" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE/scoped" ] && [ "$parent" != "$CLAUDE_CAGE_CACHE" ]; do
-            [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && run rm -rf "$parent" || break
-            parent=$(dirname "$parent")
-        done
+        cleanup_empty_parents "$intermediary_dir" "$CLAUDE_CAGE_CACHE/intermediary" "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE"
     fi
 
     # Remove empty top-level cache dirs (scoped/ and intermediary/)
@@ -1894,7 +1844,5 @@ setup_caged_symlinks() {
         ln -s "$work_target" "$work_symlink"
     fi
 
-    if [ "$verbose" = true ]; then
-        echo "  Created .caged/ symlinks (session: $session_id)"
-    fi
+    verbose_log "  Created .caged/ symlinks (session: $session_id)"
 }

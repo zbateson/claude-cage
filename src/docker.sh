@@ -11,6 +11,31 @@ check_docker() {
     fi
 }
 
+# Emit iptables commands for a set of IP/network specs with optional ports.
+# Arguments: $1=pipe-separated items, $2=action (ACCEPT/REJECT), $3=flag (-A/-I)
+_generate_iptables_rules_for_items() {
+    local items_str="$1" action="$2" flag="$3"
+    [ -z "$items_str" ] && return
+    local items; IFS='|' read -ra items <<< "$items_str"
+    for item in "${items[@]}"; do
+        local ip ports
+        if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
+            ip="${BASH_REMATCH[1]}"; ports="${BASH_REMATCH[2]}"
+        else
+            ip="$item"; ports=""
+        fi
+        if [ -z "$ports" ]; then
+            echo "iptables $flag OUTPUT -d $ip -j $action"
+        elif [[ "$ports" == *","* ]]; then
+            echo "iptables $flag OUTPUT -p tcp -d $ip -m multiport --dports $ports -j $action"
+            echo "iptables $flag OUTPUT -p udp -d $ip -m multiport --dports $ports -j $action"
+        else
+            echo "iptables $flag OUTPUT -p tcp -d $ip --dport $ports -j $action"
+            echo "iptables $flag OUTPUT -p udp -d $ip --dport $ports -j $action"
+        fi
+    done
+}
+
 # Generate iptables setup script for Docker container
 # This runs as root inside container before dropping privileges
 # Arguments:
@@ -106,154 +131,18 @@ IPTABLES_HEADER
 
     if [ "$mode" = "allowlist" ]; then
         # Allowlist: add ACCEPT rules for allowed destinations
-        if [ -n "$resolved_allow_ips" ]; then
-            IFS='|' read -ra items <<< "$resolved_allow_ips"
-            for item in "${items[@]}"; do
-                local ip ports
-                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
-                    ip="${BASH_REMATCH[1]}"
-                    ports="${BASH_REMATCH[2]}"
-                else
-                    ip="$item"
-                    ports=""
-                fi
-
-                if [ -z "$ports" ]; then
-                    echo "iptables -A OUTPUT -d $ip -j ACCEPT"
-                elif [[ "$ports" == *","* ]]; then
-                    echo "iptables -A OUTPUT -p tcp -d $ip -m multiport --dports $ports -j ACCEPT"
-                    echo "iptables -A OUTPUT -p udp -d $ip -m multiport --dports $ports -j ACCEPT"
-                else
-                    echo "iptables -A OUTPUT -p tcp -d $ip --dport $ports -j ACCEPT"
-                    echo "iptables -A OUTPUT -p udp -d $ip --dport $ports -j ACCEPT"
-                fi
-            done
-        fi
-
-        if [ -n "$allow_networks" ]; then
-            IFS='|' read -ra items <<< "$allow_networks"
-            for item in "${items[@]}"; do
-                local network ports
-                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
-                    network="${BASH_REMATCH[1]}"
-                    ports="${BASH_REMATCH[2]}"
-                else
-                    network="$item"
-                    ports=""
-                fi
-
-                if [ -z "$ports" ]; then
-                    echo "iptables -A OUTPUT -d $network -j ACCEPT"
-                elif [[ "$ports" == *","* ]]; then
-                    echo "iptables -A OUTPUT -p tcp -d $network -m multiport --dports $ports -j ACCEPT"
-                    echo "iptables -A OUTPUT -p udp -d $network -m multiport --dports $ports -j ACCEPT"
-                else
-                    echo "iptables -A OUTPUT -p tcp -d $network --dport $ports -j ACCEPT"
-                    echo "iptables -A OUTPUT -p udp -d $network --dport $ports -j ACCEPT"
-                fi
-            done
-        fi
+        _generate_iptables_rules_for_items "$resolved_allow_ips" "ACCEPT" "-A"
+        _generate_iptables_rules_for_items "$allow_networks" "ACCEPT" "-A"
         # Default DROP policy handles everything else
 
     elif [ "$mode" = "blocklist" ]; then
         # Blocklist: add REJECT rules for blocked destinations, then allow all
-
-        if [ -n "$resolved_block_ips" ]; then
-            IFS='|' read -ra items <<< "$resolved_block_ips"
-            for item in "${items[@]}"; do
-                local ip ports
-                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
-                    ip="${BASH_REMATCH[1]}"
-                    ports="${BASH_REMATCH[2]}"
-                else
-                    ip="$item"
-                    ports=""
-                fi
-
-                if [ -z "$ports" ]; then
-                    echo "iptables -A OUTPUT -d $ip -j REJECT"
-                elif [[ "$ports" == *","* ]]; then
-                    echo "iptables -A OUTPUT -p tcp -d $ip -m multiport --dports $ports -j REJECT"
-                    echo "iptables -A OUTPUT -p udp -d $ip -m multiport --dports $ports -j REJECT"
-                else
-                    echo "iptables -A OUTPUT -p tcp -d $ip --dport $ports -j REJECT"
-                    echo "iptables -A OUTPUT -p udp -d $ip --dport $ports -j REJECT"
-                fi
-            done
-        fi
-
-        if [ -n "$block_networks" ]; then
-            IFS='|' read -ra items <<< "$block_networks"
-            for item in "${items[@]}"; do
-                local network ports
-                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
-                    network="${BASH_REMATCH[1]}"
-                    ports="${BASH_REMATCH[2]}"
-                else
-                    network="$item"
-                    ports=""
-                fi
-
-                if [ -z "$ports" ]; then
-                    echo "iptables -A OUTPUT -d $network -j REJECT"
-                elif [[ "$ports" == *","* ]]; then
-                    echo "iptables -A OUTPUT -p tcp -d $network -m multiport --dports $ports -j REJECT"
-                    echo "iptables -A OUTPUT -p udp -d $network -m multiport --dports $ports -j REJECT"
-                else
-                    echo "iptables -A OUTPUT -p tcp -d $network --dport $ports -j REJECT"
-                    echo "iptables -A OUTPUT -p udp -d $network --dport $ports -j REJECT"
-                fi
-            done
-        fi
+        _generate_iptables_rules_for_items "$resolved_block_ips" "REJECT" "-A"
+        _generate_iptables_rules_for_items "$block_networks" "REJECT" "-A"
 
         # Allow rules (inserted at beginning to take precedence)
-        if [ -n "$resolved_allow_ips" ]; then
-            IFS='|' read -ra items <<< "$resolved_allow_ips"
-            for item in "${items[@]}"; do
-                local ip ports
-                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
-                    ip="${BASH_REMATCH[1]}"
-                    ports="${BASH_REMATCH[2]}"
-                else
-                    ip="$item"
-                    ports=""
-                fi
-
-                if [ -z "$ports" ]; then
-                    echo "iptables -I OUTPUT -d $ip -j ACCEPT"
-                elif [[ "$ports" == *","* ]]; then
-                    echo "iptables -I OUTPUT -p tcp -d $ip -m multiport --dports $ports -j ACCEPT"
-                    echo "iptables -I OUTPUT -p udp -d $ip -m multiport --dports $ports -j ACCEPT"
-                else
-                    echo "iptables -I OUTPUT -p tcp -d $ip --dport $ports -j ACCEPT"
-                    echo "iptables -I OUTPUT -p udp -d $ip --dport $ports -j ACCEPT"
-                fi
-            done
-        fi
-
-        if [ -n "$allow_networks" ]; then
-            IFS='|' read -ra items <<< "$allow_networks"
-            for item in "${items[@]}"; do
-                local network ports
-                if [[ "$item" =~ ^(.+):([0-9,]+)$ ]]; then
-                    network="${BASH_REMATCH[1]}"
-                    ports="${BASH_REMATCH[2]}"
-                else
-                    network="$item"
-                    ports=""
-                fi
-
-                if [ -z "$ports" ]; then
-                    echo "iptables -I OUTPUT -d $network -j ACCEPT"
-                elif [[ "$ports" == *","* ]]; then
-                    echo "iptables -I OUTPUT -p tcp -d $network -m multiport --dports $ports -j ACCEPT"
-                    echo "iptables -I OUTPUT -p udp -d $network -m multiport --dports $ports -j ACCEPT"
-                else
-                    echo "iptables -I OUTPUT -p tcp -d $network --dport $ports -j ACCEPT"
-                    echo "iptables -I OUTPUT -p udp -d $network --dport $ports -j ACCEPT"
-                fi
-            done
-        fi
+        _generate_iptables_rules_for_items "$resolved_allow_ips" "ACCEPT" "-I"
+        _generate_iptables_rules_for_items "$allow_networks" "ACCEPT" "-I"
 
         # Final catch-all: allow everything else
         echo "iptables -A OUTPUT -j ACCEPT"
@@ -283,7 +172,7 @@ resolve_domains_for_docker() {
         fi
 
         local ips
-        ips=$(getent ahosts "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
+        ips=$(resolve_domain "$domain")
 
         if [ -z "$ips" ]; then
             echo "Warning: Could not resolve domain '$domain', skipping..." >&2

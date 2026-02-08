@@ -42,6 +42,40 @@ run() {
     "$@"
 }
 
+# Compute a 12-char MD5 hash of a path string
+path_hash() {
+    echo -n "$1" | md5sum | cut -c1-12
+}
+
+# Remove empty parent directories up to (but not including) any of the boundary dirs.
+# Arguments: $1 = starting dir (already removed), remaining args = boundary dirs
+cleanup_empty_parents() {
+    local dir="$1"; shift
+    local parent
+    parent=$(dirname "$dir")
+    while true; do
+        local at_boundary=false
+        for boundary in "$@"; do
+            [ "$parent" = "$boundary" ] && at_boundary=true && break
+        done
+        [ "$at_boundary" = true ] && break
+        [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && rm -rf "$parent" || break
+        parent=$(dirname "$parent")
+    done
+}
+
+# Create a temp file, with fallback for systems where mktemp is unavailable
+make_temp_file() {
+    mktemp 2>/dev/null || echo "/tmp/claude-cage-${1:-tmp}.$$"
+}
+
+# Log a message to stderr if verbose mode is enabled
+verbose_log() {
+    if [ "$verbose" = true ]; then
+        echo "$@" >&2
+    fi
+}
+
 # Wrapper for commands that should be silent in normal mode
 # In verbose mode, prints the command before executing
 # In debug mode, shows command output instead of suppressing it

@@ -11,7 +11,7 @@
 get_session_dir() {
     local source_dir="$1"
     local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    path_hash=$(path_hash "$source_dir")
     echo "$CLAUDE_CAGE_RUNTIME/sessions/$path_hash"
 }
 
@@ -128,9 +128,7 @@ cleanup_orphaned_hooks() {
             intermediary_dir=$(grep '^INTERMEDIARY=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
 
             if [ -n "$intermediary_dir" ] && [ ! -d "$intermediary_dir" ]; then
-                if [ "$verbose" = true ]; then
-                    echo "Removing orphaned hook: $hook"
-                fi
+                verbose_log "Removing orphaned hook: $hook"
                 rm -f "$hook"
                 cleaned=$((cleaned + 1))
             fi
@@ -147,9 +145,7 @@ cleanup_orphaned_hooks() {
             intermediary_dir=$(grep '^INTERMEDIARY=' "$hook" 2>/dev/null | head -1 | cut -d'"' -f2)
 
             if [ -n "$intermediary_dir" ] && [ ! -d "$intermediary_dir" ]; then
-                if [ "$verbose" = true ]; then
-                    echo "Removing orphaned hook: $hook"
-                fi
+                verbose_log "Removing orphaned hook: $hook"
                 rm -f "$hook"
                 cleaned=$((cleaned + 1))
             fi
@@ -161,9 +157,7 @@ cleanup_orphaned_hooks() {
     if [ -d "$git_root/.git/hooks/pre-commit.d" ]; then
         for hook in "$git_root/.git/hooks/pre-commit.d"/claude-cage-*; do
             [ -f "$hook" ] || continue
-            if [ "$verbose" = true ]; then
-                echo "Removing legacy pre-commit hook: $hook"
-            fi
+            verbose_log "Removing legacy pre-commit hook: $hook"
             rm -f "$hook"
             cleaned=$((cleaned + 1))
         done
@@ -256,9 +250,7 @@ setup_pipe() {
     run rm -f "$pipe_path"
     run mkfifo -m 0600 "$pipe_path"
 
-    if [ "$verbose" = true ]; then
-        echo "  Created pipe: $pipe_path"
-    fi
+    verbose_log "  Created pipe: $pipe_path"
 }
 
 # Set up git hooks on intermediary (called by create_intermediary_clone)
@@ -276,9 +268,7 @@ setup_git_hooks() {
         install_intermediary_hooks "$intermediary_dir"
     fi
 
-    if [ "$verbose" = true ]; then
-        echo "  Set up hooks on intermediary"
-    fi
+    verbose_log "  Set up hooks on intermediary"
 }
 
 # Clean up the named pipe
@@ -301,9 +291,7 @@ cleanup_source_hooks() {
 
     # Check if other sessions still need the hooks
     if has_other_sessions "$source_dir"; then
-        if [ "$verbose" = true ]; then
-            echo "  Other sessions active, keepin' hooks for this project"
-        fi
+        verbose_log "  Other sessions active, keepin' hooks for this project"
         return 0
     fi
 
@@ -313,23 +301,19 @@ cleanup_source_hooks() {
 
     # No other sessions, safe to remove project-specific hooks
     local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    path_hash=$(path_hash "$source_dir")
     local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$path_hash"
     local post_merge_hook="$git_root/.git/hooks/post-merge.d/claude-cage-$path_hash"
 
     if [ -f "$post_commit_hook" ]; then
         run rm -f "$post_commit_hook"
-        if [ "$verbose" = true ]; then
-            echo "  Removed hook: $post_commit_hook"
-        fi
+        verbose_log "  Removed hook: $post_commit_hook"
         maybe_remove_dispatcher "$git_root" "post-commit"
     fi
 
     if [ -f "$post_merge_hook" ]; then
         run rm -f "$post_merge_hook"
-        if [ "$verbose" = true ]; then
-            echo "  Removed hook: $post_merge_hook"
-        fi
+        verbose_log "  Removed hook: $post_merge_hook"
         maybe_remove_dispatcher "$git_root" "post-merge"
     fi
 }
@@ -345,7 +329,7 @@ setup_source_post_commit() {
     local exclude_patterns="$2"
     local intermediary_dir="$3"
     local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    path_hash=$(path_hash "$source_dir")
     # Use git root for hook installation (supports running from subdirectories)
     local git_root
     git_root=$(get_git_root "$source_dir")
@@ -440,9 +424,7 @@ EOF
         chmod +x "$hook_path"
     fi
 
-    if [ "$verbose" = true ]; then
-        echo "  Created source hook: $hook_path"
-    fi
+    verbose_log "  Created source hook: $hook_path"
 }
 
 # Set up post-merge hook on source repo to sync merges to intermediary
@@ -458,7 +440,7 @@ setup_source_post_merge() {
     local exclude_patterns="$2"
     local intermediary_dir="$3"
     local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    path_hash=$(path_hash "$source_dir")
     local git_root
     git_root=$(get_git_root "$source_dir")
     local hook_path="$git_root/.git/hooks/post-merge.d/claude-cage-$path_hash"
@@ -557,9 +539,7 @@ EOF
         chmod +x "$hook_path"
     fi
 
-    if [ "$verbose" = true ]; then
-        echo "  Created source hook: $hook_path"
-    fi
+    verbose_log "  Created source hook: $hook_path"
 }
 
 # Set up pre-commit hook on work repo for cage safety checks:
@@ -646,7 +626,5 @@ EOF
         chmod +x "$merge_hook_path"
     fi
 
-    if [ "$verbose" = true ]; then
-        echo "  Created work hook: $hook_path (pre-commit checks)"
-    fi
+    verbose_log "  Created work hook: $hook_path (pre-commit checks)"
 }

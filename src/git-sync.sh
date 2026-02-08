@@ -146,8 +146,8 @@ apply_source_to_intermediary() {
     # Export to temp file first so we can detect excluded-only commits before
     # fast-import. See comment in post-commit hook for full explanation.
     local export_err export_out
-    export_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.$$")
-    export_out=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.$$")
+    export_err=$(make_temp_file "export-err")
+    export_out=$(make_temp_file "export-out")
 
     git -C "$export_dir" fast-export \
         --import-marks="$source_marks_path" \
@@ -216,7 +216,7 @@ apply_source_to_intermediary() {
     fi
 
     local import_err
-    import_err=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.$$")
+    import_err=$(make_temp_file "import-err")
     git -C "$intermediary_dir" fast-import \
         --import-marks="$import_marks_path" \
         --export-marks="$import_marks_path" \
@@ -243,6 +243,25 @@ apply_source_to_intermediary() {
     fi
 
     return 0
+}
+
+# Update commit map and marks files after syncing a commit to source.
+# Records the mapping and adds marks so the post-commit hook can reference
+# these commits as parents in subsequent fast-export calls.
+# Arguments: $1=source_hash, $2=intermediary_hash, $3=commit_map_path,
+#            $4=source_marks_path, $5=import_marks_path
+update_marks_after_sync() {
+    local source_hash="$1" intermediary_hash="$2"
+    local commit_map_path="$3" source_marks_path="$4" import_marks_path="$5"
+    echo "$intermediary_hash $source_hash" >> "$commit_map_path"
+    if [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
+        local _max_mark _new_mark
+        _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
+            "$source_marks_path" "$import_marks_path" 2>/dev/null)
+        _new_mark=$((_max_mark + 1))
+        echo ":$_new_mark $source_hash" >> "$source_marks_path"
+        echo ":$_new_mark $intermediary_hash" >> "$import_marks_path"
+    fi
 }
 
 # Apply changes from intermediary to source using format-patch/git-am
@@ -306,7 +325,7 @@ sync_to_source() {
 
     # Hash used to target CLAUDE_CAGE_SYNCING at this intermediary's hook only
     local _sync_hash
-    _sync_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
+    _sync_hash=$(path_hash "$source_dir")
 
     local commit
     for commit in $commits; do
@@ -374,17 +393,7 @@ sync_to_source() {
             if [ "$am_rc" -eq 0 ]; then
                 local new_source_hash
                 new_source_hash=$(git -C "$source_dir" rev-parse HEAD)
-                echo "$commit $new_source_hash" >> "$commit_map_path"
-                # Record marks so post-commit hook can reference this commit as a parent.
-                # git-am commits bypass fast-export, so source marks lack them.
-                if [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
-                    local _max_mark _new_mark
-                    _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
-                        "$source_marks_path" "$import_marks_path" 2>/dev/null)
-                    _new_mark=$((_max_mark + 1))
-                    echo ":$_new_mark $new_source_hash" >> "$source_marks_path"
-                    echo ":$_new_mark $commit" >> "$import_marks_path"
-                fi
+                update_marks_after_sync "$new_source_hash" "$commit" "$commit_map_path" "$source_marks_path" "$import_marks_path"
                 echo "  Got it. Changes are in."
                 sync_log "$log_file" "$commit_short" ">>source" "git-am ok (same branch) new=${new_source_hash:0:8}"
             else
@@ -432,16 +441,7 @@ sync_to_source() {
 
                     git update-ref "refs/heads/$branch_name" "$new_commit"
 
-                    echo "$commit $new_commit" >> "$commit_map_path"
-                    # Record marks (same as git-am case)
-                    if [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
-                        local _max_mark _new_mark
-                        _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
-                            "$source_marks_path" "$import_marks_path" 2>/dev/null)
-                        _new_mark=$((_max_mark + 1))
-                        echo ":$_new_mark $new_commit" >> "$source_marks_path"
-                        echo ":$_new_mark $commit" >> "$import_marks_path"
-                    fi
+                    update_marks_after_sync "$new_commit" "$commit" "$commit_map_path" "$source_marks_path" "$import_marks_path"
                     echo "  Got it. Changes are on $branch_name."
                     sync_log "$log_file" "$commit_short" ">>source" "applied via temp-index to $branch_name new_commit=${new_commit:0:8}"
                 else

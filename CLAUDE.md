@@ -451,8 +451,8 @@ project/.caged/
 
 # Clean up cached sessions
 ./claude-cage clean                                # Interactive selection
-./claude-cage clean --session 20250206143022       # Specific session
-./claude-cage clean-all                            # All sessions for this project
+./claude-cage clean 20250206143022                 # Specific session
+./claude-cage clean --all                          # All sessions for this project
 
 # Shell completions
 ./claude-cage completion bash          # Output bash completion script
@@ -547,7 +547,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
 - [x] Optional `.caged/` symlinks for easy cache access (`createCagedDir` option)
 - [x] Shell completions for bash and zsh (`completion` and `install-completions` commands)
-- [x] Cache cleanup commands (`clean`, `clean --session`, `clean-all`)
+- [x] Cache cleanup commands (`clean`, `clean <id>`, `clean --all`)
 - [x] Session-based work directories (timestamp-identified, with reuse and `--attach-session`)
 - [x] Direct mount mode for non-git directories or skipping git sync
 

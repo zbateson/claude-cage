@@ -39,8 +39,7 @@ fi
 test_mode=false
 git_merge_mode=false
 clean_mode=false
-clean_all_mode=false
-clean_session=""
+clean_all=false
 cli_direct_mount=false
 cli_scoped=false
 cli_attach_session=""
@@ -61,20 +60,7 @@ for i in "$@"; do
         --debug) ;; # handled by helpers.sh
         git-merge) git_merge_mode=true ;;
         clean) clean_mode=true ;;
-        clean-all) clean_all_mode=true ;;
-        --session)
-            # Next arg is the session ID
-            skip_next=true
-            found_next=false
-            for j in "$@"; do
-                if [ "$found_next" = true ]; then
-                    clean_session="$j"
-                    break
-                fi
-                [ "$j" = "--session" ] && found_next=true
-            done
-            ;;
-        --session=*) clean_session="${i#--session=}" ;;
+        --all) clean_all=true ;;
         --attach-session)
             cli_attach_session_mode=true
             # Check if next arg looks like a timestamp (not a flag)
@@ -95,6 +81,13 @@ for i in "$@"; do
         *) passthrough_args+=("$i") ;;
     esac
 done
+
+# If in clean mode, treat passthrough args as session IDs
+clean_sessions=()
+if [ "$clean_mode" = true ] && [ ${#passthrough_args[@]} -gt 0 ]; then
+    clean_sessions=("${passthrough_args[@]}")
+    passthrough_args=()
+fi
 
 # Initialize and parse config
 init_config "$@"
@@ -165,47 +158,7 @@ if [ "$git_merge_mode" = true ]; then
     exit 0
 fi
 
-# Handle clean-all mode
-if [ "$clean_all_mode" = true ]; then
-    echo "This will remove ALL cached sessions for: $cfg_source"
-    echo ""
-
-    cached_sessions=$(list_cached_sessions "$cfg_source")
-    if [ -z "$cached_sessions" ]; then
-        echo "No cached sessions found. Nothin' to clean."
-        exit 0
-    fi
-
-    echo "Sessions to be removed:"
-    while IFS=' ' read -r sid sbranch ssource sscope; do
-        work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
-        scope_label=""
-        [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
-        if is_work_dirty "$work_dir"; then
-            echo -e "  $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
-        else
-            echo -e "  $sid  branch: $sbranch${scope_label}"
-        fi
-    done <<< "$cached_sessions"
-    echo ""
-
-    if ! config_builder_prompt_yesno "Are you sure you want to delete all these?" "n"; then
-        echo "Alright, nothin' deleted."
-        exit 0
-    fi
-
-    while IFS=' ' read -r sid sbranch ssource sscope; do
-        echo ""
-        echo "Cleaning session: $sid"
-        clean_session_cache "$ssource" "$sid"
-    done <<< "$cached_sessions"
-
-    echo ""
-    echo "All clean."
-    exit 0
-fi
-
-# Handle clean mode (single session)
+# Handle clean mode
 if [ "$clean_mode" = true ]; then
     cached_sessions=$(list_cached_sessions "$cfg_source")
     if [ -z "$cached_sessions" ]; then
@@ -213,29 +166,146 @@ if [ "$clean_mode" = true ]; then
         exit 0
     fi
 
-    # If session specified, use it; otherwise prompt
-    if [ -n "$clean_session" ]; then
-        if ! echo "$cached_sessions" | grep -q "^$clean_session "; then
-            echo "Session '$clean_session' not found in cache."
-            echo ""
-            echo "Available sessions:"
-            while IFS=' ' read -r sid sbranch ssource sscope; do
-                scope_label=""
-                [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+    # Build session arrays from cached_sessions for lookups
+    session_array=()
+    session_sources=()
+    while IFS=' ' read -r sid sbranch ssource sscope; do
+        session_array+=("$sid")
+        session_sources+=("$ssource")
+    done <<< "$cached_sessions"
+
+    if [ "$clean_all" = true ]; then
+        # --all: remove all sessions
+        echo "This will remove ALL cached sessions for: $cfg_source"
+        echo ""
+        echo "Sessions to be removed:"
+        while IFS=' ' read -r sid sbranch ssource sscope; do
+            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
+            scope_label=""
+            [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+            if is_work_dirty "$work_dir"; then
+                echo -e "  $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
+            else
                 echo -e "  $sid  branch: $sbranch${scope_label}"
-            done <<< "$cached_sessions"
-            exit 1
+            fi
+        done <<< "$cached_sessions"
+        echo ""
+
+        if ! config_builder_prompt_yesno "Are you sure you want to delete all these?" "n"; then
+            echo "Alright, nothin' deleted."
+            exit 0
         fi
+
+        while IFS=' ' read -r sid sbranch ssource sscope; do
+            echo ""
+            echo "Cleaning session: $sid"
+            clean_session_cache "$ssource" "$sid"
+        done <<< "$cached_sessions"
+
+        echo ""
+        echo "All clean."
+        exit 0
+
+    elif [ ${#clean_sessions[@]} -gt 0 ]; then
+        # Session IDs specified as positional args
+        # Validate all IDs first
+        for csid in "${clean_sessions[@]}"; do
+            if ! echo "$cached_sessions" | grep -q "^$csid "; then
+                echo "Session '$csid' not found in cache."
+                echo ""
+                echo "Available sessions:"
+                while IFS=' ' read -r sid sbranch ssource sscope; do
+                    scope_label=""
+                    [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+                    echo -e "  $sid  branch: $sbranch${scope_label}"
+                done <<< "$cached_sessions"
+                exit 1
+            fi
+        done
+
+        if [ ${#clean_sessions[@]} -eq 1 ]; then
+            # Single session: show details and confirm
+            csid="${clean_sessions[0]}"
+            # Look up source for this session
+            clean_source="$cfg_source"
+            for _ci in "${!session_array[@]}"; do
+                if [ "${session_array[$_ci]}" = "$csid" ]; then
+                    clean_source="${session_sources[$_ci]}"
+                    break
+                fi
+            done
+
+            work_dir="$CLAUDE_CAGE_CACHE/sessions/$csid/work$clean_source"
+            echo ""
+            echo "This will remove the cache for session: $csid"
+            if is_work_dirty "$work_dir"; then
+                echo ""
+                echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
+            fi
+            echo ""
+
+            if ! config_builder_prompt_yesno "Are you sure?" "n"; then
+                echo "Alright, nothin' deleted."
+                exit 0
+            fi
+
+            clean_session_cache "$clean_source" "$csid"
+            echo ""
+            echo "Done. Session '$csid' cleaned up."
+        else
+            # Multiple sessions: show list and single confirm
+            echo ""
+            echo "Sessions to be removed:"
+            for csid in "${clean_sessions[@]}"; do
+                clean_source="$cfg_source"
+                for _ci in "${!session_array[@]}"; do
+                    if [ "${session_array[$_ci]}" = "$csid" ]; then
+                        clean_source="${session_sources[$_ci]}"
+                        break
+                    fi
+                done
+                work_dir="$CLAUDE_CAGE_CACHE/sessions/$csid/work$clean_source"
+                _sbranch=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $2; exit }')
+                _sscope=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $4; exit }')
+                scope_label=""
+                [ -n "$_sscope" ] && scope_label=" ${_cyan}(scoped: $_sscope)${_reset}"
+                if is_work_dirty "$work_dir"; then
+                    echo -e "  $csid  branch: $_sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
+                else
+                    echo -e "  $csid  branch: $_sbranch${scope_label}"
+                fi
+            done
+            echo ""
+
+            if ! config_builder_prompt_yesno "Are you sure you want to delete these?" "n"; then
+                echo "Alright, nothin' deleted."
+                exit 0
+            fi
+
+            for csid in "${clean_sessions[@]}"; do
+                clean_source="$cfg_source"
+                for _ci in "${!session_array[@]}"; do
+                    if [ "${session_array[$_ci]}" = "$csid" ]; then
+                        clean_source="${session_sources[$_ci]}"
+                        break
+                    fi
+                done
+                echo ""
+                echo "Cleaning session: $csid"
+                clean_session_cache "$clean_source" "$csid"
+            done
+
+            echo ""
+            echo "All clean."
+        fi
+        exit 0
+
     else
         # Interactive selection
         echo "Which session cache do you want to remove?"
         echo ""
-        session_array=()
-        session_sources=()
         idx=1
         while IFS=' ' read -r sid sbranch ssource sscope; do
-            session_array+=("$sid")
-            session_sources+=("$ssource")
             work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
             scope_label=""
             [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
@@ -244,8 +314,9 @@ if [ "$clean_mode" = true ]; then
             else
                 echo -e "  $idx) $sid  branch: $sbranch${scope_label}"
             fi
-            ((idx++))
+            idx=$((idx + 1))
         done <<< "$cached_sessions"
+        echo "  a) Remove all sessions"
         echo "  q) Cancel"
         echo ""
 
@@ -256,50 +327,48 @@ if [ "$clean_mode" = true ]; then
                 echo "Alright, nothin' deleted."
                 exit 0
             fi
+            if [ "$choice" = "a" ] || [ "$choice" = "A" ] || [ "$choice" = "all" ]; then
+                # Confirm and delete all
+                echo ""
+                if ! config_builder_prompt_yesno "Are you sure you want to delete all sessions?" "n"; then
+                    echo "Alright, nothin' deleted."
+                    exit 0
+                fi
+                while IFS=' ' read -r sid sbranch ssource sscope; do
+                    echo ""
+                    echo "Cleaning session: $sid"
+                    clean_session_cache "$ssource" "$sid"
+                done <<< "$cached_sessions"
+                echo ""
+                echo "All clean."
+                exit 0
+            fi
             if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#session_array[@]} ]; then
-                clean_session="${session_array[$((choice-1))]}"
-                break
+                selected_session="${session_array[$((choice-1))]}"
+                selected_source="${session_sources[$((choice-1))]}"
+                work_dir="$CLAUDE_CAGE_CACHE/sessions/$selected_session/work$selected_source"
+
+                echo ""
+                echo "This will remove the cache for session: $selected_session"
+                if is_work_dirty "$work_dir"; then
+                    echo ""
+                    echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
+                fi
+                echo ""
+
+                if ! config_builder_prompt_yesno "Are you sure?" "n"; then
+                    echo "Alright, nothin' deleted."
+                    exit 0
+                fi
+
+                clean_session_cache "$selected_source" "$selected_session"
+                echo ""
+                echo "Done. Session '$selected_session' cleaned up."
+                exit 0
             fi
-            echo "Pick a number or 'q' to quit."
+            echo "Pick a number, 'a' to remove all, or 'q' to quit."
         done
     fi
-
-    # Determine the source_dir for the selected session
-    clean_source="$cfg_source"
-    if [ ${#session_sources[@]} -gt 0 ]; then
-        # Find the source for the selected session from the arrays
-        for _ci in "${!session_array[@]}"; do
-            if [ "${session_array[$_ci]}" = "$clean_session" ]; then
-                clean_source="${session_sources[$_ci]}"
-                break
-            fi
-        done
-    else
-        # --session flag: extract source_dir from cached_sessions
-        local _cs_source
-        _cs_source=$(echo "$cached_sessions" | awk -v sid="$clean_session" '$1 == sid { print $3; exit }')
-        [ -n "$_cs_source" ] && clean_source="$_cs_source"
-    fi
-
-    work_dir="$CLAUDE_CAGE_CACHE/sessions/$clean_session/work$clean_source"
-
-    echo ""
-    echo "This will remove the cache for session: $clean_session"
-    if is_work_dirty "$work_dir"; then
-        echo ""
-        echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
-    fi
-    echo ""
-
-    if ! config_builder_prompt_yesno "Are you sure?" "n"; then
-        echo "Alright, nothin' deleted."
-        exit 0
-    fi
-
-    clean_session_cache "$clean_source" "$clean_session"
-    echo ""
-    echo "Done. Session '$clean_session' cleaned up."
-    exit 0
 fi
 
 # Check isolation tool is available

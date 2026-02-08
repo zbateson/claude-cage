@@ -103,12 +103,12 @@ fi
 echo "  PASS: Simulated orphaned post-commit hook created"
 
 echo ""
-echo "=== Testing clean with --session flag ==="
+echo "=== Testing clean with session ID ==="
 
-echo "Test 3: clean --session with nonexistent session should fail"
+echo "Test 3: clean with nonexistent session should fail"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && "$2" clean --session nonexistent 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
+    bash -c 'cd "$1" && "$2" clean nonexistent 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q "not found"; then
     echo "FAIL: Should report session not found"
@@ -118,11 +118,11 @@ if ! echo "$output" | grep -q "not found"; then
 fi
 echo "  PASS: Reports nonexistent session correctly"
 
-echo "Test 4: clean --session should remove specified session work dir"
+echo "Test 4: clean <id> should remove specified session work dir"
 # Answer 'y' to confirmation prompt
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "y" | "$2" clean --session "'"$SESSION_ID"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
+    bash -c 'cd "$1" && echo "y" | "$2" clean "'"$SESSION_ID"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ -d "$WORK_DIR" ]; then
     echo "FAIL: Work directory should be removed after clean"
@@ -165,7 +165,7 @@ fi
 # Clean main session - intermediary should survive because feature session's work dir still exists
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "y" | "$2" clean --session "'"$SESSION_ID"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
+    bash -c 'cd "$1" && echo "y" | "$2" clean "'"$SESSION_ID"'" >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ ! -d "$INTERMEDIARY_DIR" ]; then
     echo "FAIL: Shared intermediary should still exist when other sessions have work dirs"
@@ -193,9 +193,9 @@ fi
 echo "  PASS: Shared intermediary removed when all sessions cleaned"
 
 echo ""
-echo "=== Testing clean-all ==="
+echo "=== Testing clean --all ==="
 
-echo "Test 8: clean-all should remove all caches"
+echo "Test 8: clean --all should remove all caches"
 # Recreate cage
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
@@ -214,14 +214,14 @@ fi
 # Answer 'y' to confirmation
 env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "y" | "$2" clean-all >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
+    bash -c 'cd "$1" && echo "y" | "$2" clean --all >/dev/null 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage"
 
 if [ -d "$WORK_DIR" ]; then
-    echo "FAIL: Work directory should be removed after clean-all"
+    echo "FAIL: Work directory should be removed after clean --all"
     exit 1
 fi
 if [ -d "$INTERMEDIARY_DIR" ]; then
-    echo "FAIL: Shared intermediary should be removed after clean-all"
+    echo "FAIL: Shared intermediary should be removed after clean --all"
     exit 1
 fi
 echo "  PASS: All caches removed"
@@ -262,7 +262,7 @@ echo "dirty change" >> "$WORK_DIR/file.txt"
 # Don't actually clean, just check the output shows warning
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "n" | "$2" clean --session "'"$SESSION_ID"'" 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
+    bash -c 'cd "$1" && echo "n" | "$2" clean "'"$SESSION_ID"'" 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "uncommitted"; then
     echo "FAIL: Should warn about uncommitted changes"
@@ -272,10 +272,10 @@ if ! echo "$output" | grep -q -i "uncommitted"; then
 fi
 echo "  PASS: Shows uncommitted changes warning"
 
-echo "Test 11: clean-all should show warning for dirty session"
+echo "Test 11: clean --all should show warning for dirty session"
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && echo "n" | "$2" clean-all 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
+    bash -c 'cd "$1" && echo "n" | "$2" clean --all 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 if ! echo "$output" | grep -q -i "uncommitted"; then
     echo "FAIL: Should warn about uncommitted changes in branch list"
@@ -283,7 +283,7 @@ if ! echo "$output" | grep -q -i "uncommitted"; then
     echo "$output"
     exit 1
 fi
-echo "  PASS: clean-all shows dirty warning"
+echo "  PASS: clean --all shows dirty warning"
 
 echo ""
 echo "=== Testing scoped session cleanup ==="

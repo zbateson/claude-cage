@@ -57,12 +57,11 @@ claude_cage {
     -- =========================================================================
     -- GIT OPTIONS
     -- =========================================================================
-    -- Block commits containing force-added gitignored files (default: true).
-    -- Force-added ignored files break patch-based sync between cage and source.
-    -- Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
 
     -- git = {
-    --     blockForceAdd = true,
+    --     historyDepth = 50,       -- First-parent depth on default branch (default: 50)
+    --     defaultBranch = "auto",  -- Branch for history anchoring: "auto" or explicit name
+    --     blockForceAdd = true,    -- Block commits with force-added gitignored files
     -- },
 
     -- =========================================================================

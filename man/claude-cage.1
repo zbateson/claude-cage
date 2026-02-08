@@ -14,9 +14,11 @@ Key features:
 .IP \(bu 2
 No sudo required \- runs as current user
 .IP \(bu 2
-Git-based sync \- uses git archive + fresh init
+Git-based sync with real commit history via fast-export/fast-import
 .IP \(bu 2
-File exclusion at archive time (no history of excluded files)
+File exclusion via :(exclude,glob) pathspec (no excluded content in intermediary)
+.IP \(bu 2
+Configurable history depth (default: 50 commits)
 .IP \(bu 2
 Network filtering via iptables (optional)
 .SH SUBCOMMANDS
@@ -25,12 +27,13 @@ Network filtering via iptables (optional)
 Fetch refs from intermediary repository for manual merge. Use this when
 autoMerge is disabled and you want to bring Claude's changes back to source.
 .TP
-.B clean
-Remove cached branch data. With no arguments, presents interactive selection.
-Use \fB\-\-branch\fR to specify a branch directly.
+.B clean \fR[\fIID\fR...]
+Remove cached session(s). With no arguments, presents interactive selection
+with an option to remove all. With one or more session IDs, removes those
+specific sessions after confirmation.
 .TP
-.B clean-all
-Remove all cached branches for the current project. Prompts for confirmation.
+.B clean \-\-all
+Remove all cached sessions for the current project. Prompts for confirmation.
 .TP
 .B completion \fISHELL\fR
 Output shell completion script for the specified shell (bash or zsh).
@@ -50,9 +53,18 @@ configured command.
 Mount the source directory directly into the sandbox without git sync.
 Changes made inside the sandbox immediately affect source files.
 .TP
-.B \-\-branch \fINAME\fR
-Specify branch for the \fBclean\fR command. The branch name is automatically
-sanitized for filesystem compatibility.
+.B \-\-scoped
+Scope the intermediary to the current subdirectory only. Creates a
+separate intermediary containing only files under the current path.
+Useful for large monorepos.
+.TP
+.B \-\-attach-session \fR[\fITIMESTAMP\fR]
+Attach to an existing active session. If a timestamp is given, attaches
+to that specific session. Otherwise, auto-selects or prompts if multiple
+active sessions exist.
+.TP
+.B \-\-all
+Remove all sessions. Only valid with the \fBclean\fR subcommand.
 .TP
 .B \-\-dry-run
 Show commands without executing them. Useful for understanding what
@@ -77,8 +89,8 @@ arrays merge):
 .nf
 /etc/claude-cage.conf              System-wide
 ~/.config/claude-cage/config       User
-<ancestors>/.claude-cage           Ancestor directories
-.claude-cage                       Project (current directory)
+includeIf matches                  Directory-scoped (set in system/user)
+.claude-cage                       Project (at git root)
 .fi
 .RE
 .PP
@@ -94,6 +106,10 @@ claude_cage {
     networkMode = "allowlist",
     allow = {
         domains = { "github.com:443" }
+    },
+    git = {
+        historyDepth = 50,
+        blockForceAdd = true
     }
 }
 .fi
@@ -110,7 +126,7 @@ Sandbox mode: "bwrap" or "docker" (default: "bwrap")
 Enable real-time sync via named pipe (default: false)
 .TP
 .B exclude
-Array of patterns to exclude from archive
+Array of patterns to exclude via :(exclude,glob) pathspec
 .TP
 .B directMount
 Mount source directly without git sync (default: false)
@@ -119,7 +135,7 @@ Mount source directly without git sync (default: false)
 Allow running in non-git directories (default: unset, prompts)
 .TP
 .B isolated
-Only mount single project instead of all same-branch projects (default: false)
+Only mount single project instead of all same-session projects (default: false)
 .TP
 .B showBanner
 Show ASCII banner on startup (default: true)
@@ -128,7 +144,7 @@ Show ASCII banner on startup (default: true)
 Skip the startup confirmation prompt (default: false)
 .TP
 .B createCagedDir
-Create .caged/ symlinks to branch caches (default: false)
+Create .caged/ symlinks to session caches (default: false)
 .TP
 .B additionalMounts
 Extra mounts for sandbox
@@ -141,6 +157,22 @@ Allowed destinations when networkMode is "allowlist"
 .TP
 .B block
 Blocked destinations when networkMode is "blocklist"
+.SS Git Options
+.TP
+.B git.historyDepth
+First-parent depth on default branch (default: 50). Actual commit count may
+be higher due to merge history, feature branches, and in-scope branch discovery.
+.TP
+.B git.defaultBranch
+Default branch for history anchoring: "auto" or explicit name (default: "auto")
+.TP
+.B git.scoped
+Always create scoped intermediary for subdirectories (default: false).
+Same as using the \fB\-\-scoped\fR flag.
+.TP
+.B git.blockForceAdd
+Block commits containing force-added gitignored files (default: true).
+Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
 .SH ENVIRONMENT
 .TP
 .B CLAUDE_CAGE_CACHE
@@ -149,23 +181,23 @@ Override cache directory (default: ~/.cache/claude-cage)
 .B CLAUDE_CAGE_RUNTIME
 Override runtime directory (default: $XDG_RUNTIME_DIR/claude-cage)
 .TP
-.B CLAUDE_CAGE_BRANCH
-Override branch name for path construction (auto-detected from source)
+.B CLAUDE_CAGE_SESSION
+Override session ID for path construction (auto-generated as YYYYMMDDHHMMSS timestamp)
 .SH FILES
 .TP
-.I ~/.cache/claude-cage/branches/<branch>/work/
-Clone of intermediary where Claude works
+.I ~/.cache/claude-cage/intermediary/<project-path>/
+Shared bare repo with real commit history (git origin for work directories)
 .TP
-.I ~/.cache/claude-cage/branches/<branch>/intermediary/
-Sanitized repo (git origin for work)
+.I ~/.cache/claude-cage/scoped/<git-root>/<scope>/.bare/
+Scoped bare repo for subdirectory-only intermediaries
 .TP
-.I ~/.cache/claude-cage/branches/<branch>/state-*
-Last processed source commit ID
+.I ~/.cache/claude-cage/sessions/<timestamp>/work/<project-path>/
+Per-session working directory where Claude operates
 .TP
-.I $XDG_RUNTIME_DIR/claude-cage/pipes/
-Named pipes for communication
+.I $XDG_RUNTIME_DIR/claude-cage/pipes/<timestamp>/<project-path>
+Named pipes for hook communication
 .TP
-.I $XDG_RUNTIME_DIR/claude-cage/sessions/
+.I $XDG_RUNTIME_DIR/claude-cage/sessions/<path-hash>/
 Session tracking (PID files)
 .SH EXAMPLES
 Start sandbox with configured launch command:
@@ -192,11 +224,37 @@ claude-cage --resume
 .fi
 .RE
 .PP
-Clean up cache for a specific branch:
+Run in scoped mode from a subdirectory:
 .PP
 .RS 4
 .nf
-claude-cage clean --branch main
+cd ~/monorepo/services/api
+claude-cage --scoped
+.fi
+.RE
+.PP
+Attach to an active session:
+.PP
+.RS 4
+.nf
+claude-cage --attach-session
+claude-cage --attach-session 20250206143022
+.fi
+.RE
+.PP
+Clean up a specific session:
+.PP
+.RS 4
+.nf
+claude-cage clean 20250206143022
+.fi
+.RE
+.PP
+Clean all sessions for this project:
+.PP
+.RS 4
+.nf
+claude-cage clean --all
 .fi
 .RE
 .PP

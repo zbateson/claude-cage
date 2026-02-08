@@ -419,4 +419,46 @@ fi
 echo "  PASS: Default docker.packages"
 
 echo ""
+echo "=== Testing git.scoped config ==="
+
+echo "Test 16: Should parse git.scoped = true"
+setup_git_repo "$TEST_TMP/scoped-test"
+cat > "$TEST_TMP/scoped-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    git = {
+        scoped = true
+    }
+}
+EOF
+
+cd "$TEST_TMP/scoped-test"
+parse_config "scoped-test" "$TEST_TMP/scoped-test" "$TEST_TMP/scoped-test/.claude-cage"
+
+if [ "$cfg_git_scoped" != "true" ]; then
+    echo "FAIL: git.scoped should be 'true', got '$cfg_git_scoped'"
+    exit 1
+fi
+echo "  PASS: Parsed git.scoped = true"
+
+echo "Test 17: Should default git.scoped to false"
+setup_git_repo "$TEST_TMP/scoped-default-test"
+cat > "$TEST_TMP/scoped-default-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+cd "$TEST_TMP/scoped-default-test"
+parse_config "scoped-default-test" "$TEST_TMP/scoped-default-test" "$TEST_TMP/scoped-default-test/.claude-cage"
+
+if [ "$cfg_git_scoped" != "false" ]; then
+    echo "FAIL: git.scoped should default to 'false', got '$cfg_git_scoped'"
+    exit 1
+fi
+echo "  PASS: Default git.scoped is false"
+
+echo ""
 echo "=== All config tests passed! ==="

@@ -42,6 +42,40 @@ run() {
     "$@"
 }
 
+# Compute a 12-char MD5 hash of a path string
+path_hash() {
+    echo -n "$1" | md5sum | cut -c1-12
+}
+
+# Remove empty parent directories up to (but not including) any of the boundary dirs.
+# Arguments: $1 = starting dir (already removed), remaining args = boundary dirs
+cleanup_empty_parents() {
+    local dir="$1"; shift
+    local parent
+    parent=$(dirname "$dir")
+    while true; do
+        local at_boundary=false
+        for boundary in "$@"; do
+            [ "$parent" = "$boundary" ] && at_boundary=true && break
+        done
+        [ "$at_boundary" = true ] && break
+        [ -d "$parent" ] && [ -z "$(ls -A "$parent" 2>/dev/null)" ] && rm -rf "$parent" || break
+        parent=$(dirname "$parent")
+    done
+}
+
+# Create a temp file, with fallback for systems where mktemp is unavailable
+make_temp_file() {
+    mktemp 2>/dev/null || echo "/tmp/claude-cage-${1:-tmp}.$$"
+}
+
+# Log a message to stderr if verbose mode is enabled
+verbose_log() {
+    if [ "$verbose" = true ]; then
+        echo "$@" >&2
+    fi
+}
+
 # Wrapper for commands that should be silent in normal mode
 # In verbose mode, prints the command before executing
 # In debug mode, shows command output instead of suppressing it
@@ -68,21 +102,23 @@ claude-cage - A sandboxed git workflow for Claude Code
 Usage: claude-cage [options] [subcommand] [-- args...]
 
 Subcommands:
-  git-merge           Fetch refs from intermediary for manual merge
-  clean               Remove cached branch (interactive selection)
-  clean-all           Remove all cached branches for this project
-  completion SHELL    Output shell completion script (bash or zsh)
-  install-completions Install shell completions for current shell
+  git-merge               Fetch refs from intermediary for manual merge
+  clean [ID...]           Remove cached session(s) (interactive if no ID given)
+  clean --all             Remove all cached sessions for this project
+  completion SHELL        Output shell completion script (bash or zsh)
+  install-completions     Install shell completions for current shell
 
 Options:
-  --test          Drop into a shell for testing instead of launching
-  --direct-mount  Mount source directly without git sync
-  --branch NAME   Specify branch for clean command
-  --dry-run       Show commands without executing
-  --verbose, -v   Show commands as they execute
-  --debug         Show command output (implies --verbose)
-  --help, -h      Show this help message
-  --version       Show version number
+  --test                  Drop into a shell for testing instead of launching
+  --direct-mount          Mount source directly without git sync
+  --scoped                Scope intermediary to CWD subdirectory only
+  --attach-session [TS]   Attach to an active session (optionally by timestamp)
+  --all                   Remove all sessions (with clean subcommand)
+  --dry-run               Show commands without executing
+  --verbose, -v           Show commands as they execute
+  --debug                 Show command output (implies --verbose)
+  --help, -h              Show this help message
+  --version               Show version number
 
 Arguments after -- are passed through to the launch command.
 
@@ -93,12 +129,14 @@ Config files (loaded in order, later values override):
   .claude-cage                       Project config (at git root)
 
 Examples:
-  claude-cage                    Start sandbox with configured launch command
-  claude-cage --test             Drop into a shell for testing
-  claude-cage --resume           Pass --resume to the launch command
-  claude-cage clean              Interactively select branch cache to remove
-  claude-cage clean --branch main  Remove cache for 'main' branch
-  claude-cage git-merge          Fetch intermediary refs for manual merge
+  claude-cage                        Start sandbox with configured launch command
+  claude-cage --test                 Drop into a shell for testing
+  claude-cage --resume               Pass --resume to the launch command
+  claude-cage --attach-session       Attach to an active session
+  claude-cage clean                  Interactively select session cache(s) to remove
+  claude-cage clean 20250206143022   Remove cache for specific session
+  claude-cage clean --all            Remove all cached sessions for this project
+  claude-cage git-merge              Fetch intermediary refs for manual merge
 
 For more info, see: https://github.com/zbateson/claude-cage
 EOF
@@ -112,14 +150,20 @@ _claude_cage() {
     local cur prev words cword
     _init_completion 2>/dev/null || return
 
-    local subcommands="git-merge clean clean-all completion install-completions"
-    local flags="--test --direct-mount --branch --dry-run --verbose -v --debug --help -h --version"
+    local subcommands="git-merge clean completion install-completions"
+    local flags="--test --direct-mount --scoped --attach-session --all --dry-run --verbose -v --debug --help -h --version"
+
+    # Check if 'clean' subcommand is present in the command line
+    local has_clean=false
+    for word in "${words[@]}"; do
+        [ "$word" = "clean" ] && has_clean=true
+    done
 
     case "$prev" in
-        --branch)
+        --attach-session)
             local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
-            if [ -d "$cache_dir/branches" ]; then
-                COMPREPLY=($(compgen -W "$(ls -1 "$cache_dir/branches" 2>/dev/null)" -- "$cur"))
+            if [ -d "$cache_dir/sessions" ]; then
+                COMPREPLY=($(compgen -W "$(ls -1 "$cache_dir/sessions" 2>/dev/null)" -- "$cur"))
             fi
             return
             ;;
@@ -128,6 +172,15 @@ _claude_cage() {
             return
             ;;
     esac
+
+    # After 'clean', complete session IDs and --all
+    if [ "$has_clean" = true ]; then
+        local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+        local sessions=""
+        [ -d "$cache_dir/sessions" ] && sessions=$(ls -1 "$cache_dir/sessions" 2>/dev/null)
+        COMPREPLY=($(compgen -W "$sessions --all" -- "$cur"))
+        return
+    fi
 
     if [[ "$cur" == -* ]]; then
         COMPREPLY=($(compgen -W "$flags" -- "$cur"))
@@ -148,8 +201,7 @@ _claude_cage() {
 
     subcommands=(
         'git-merge:Fetch refs from intermediary for manual merge'
-        'clean:Remove cached branch (interactive selection)'
-        'clean-all:Remove all cached branches for this project'
+        'clean:Remove cached session(s) (interactive if no ID given)'
         'completion:Output shell completion script'
         'install-completions:Install shell completions for current shell'
     )
@@ -157,7 +209,9 @@ _claude_cage() {
     flags=(
         '--test[Drop into a shell for testing]'
         '--direct-mount[Mount source directly without git sync]'
-        '--branch[Specify branch for clean command]:branch:_claude_cage_branches'
+        '--scoped[Scope intermediary to CWD subdirectory only]'
+        '--attach-session[Attach to an active session]:session:_claude_cage_sessions'
+        '--all[Remove all sessions (with clean subcommand)]'
         '--dry-run[Show commands without executing]'
         '(-v --verbose)'{-v,--verbose}'[Show commands as they execute]'
         '--debug[Show command output (implies --verbose)]'
@@ -171,15 +225,16 @@ _claude_cage() {
         command) _describe -t subcommands 'subcommand' subcommands ;;
         args)
             case "${words[1]}" in
+                clean) _claude_cage_sessions ;;
                 completion) _values 'shell' bash zsh ;;
             esac
             ;;
     esac
 }
 
-_claude_cage_branches() {
+_claude_cage_sessions() {
     local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
-    [ -d "$cache_dir/branches" ] && _describe -t branches 'branch' $(ls -1 "$cache_dir/branches" 2>/dev/null)
+    [ -d "$cache_dir/sessions" ] && _describe -t sessions 'session' $(ls -1 "$cache_dir/sessions" 2>/dev/null)
 }
 
 _claude_cage "$@"

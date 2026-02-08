@@ -45,8 +45,9 @@ EOF
 # Compute expected paths using the new structure (includes branch name)
 SOURCE_PATH="$TEST_TMP/source"
 BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
-INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/intermediary$SOURCE_PATH"
-WORK_DIR="$CLAUDE_CAGE_CACHE/branches/$BRANCH_NAME/work$SOURCE_PATH"
+# Intermediary is shared across branches (not per-branch)
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
+WORK_DIR="" # Will be populated after cage runs
 
 echo "=== Testing --dry-run mode ==="
 

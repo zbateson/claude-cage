@@ -39,9 +39,11 @@ fi
 test_mode=false
 git_merge_mode=false
 clean_mode=false
-clean_all_mode=false
-clean_branch=""
+clean_all=false
 cli_direct_mount=false
+cli_scoped=false
+cli_attach_session=""
+cli_attach_session_mode=false
 passthrough_args=()
 skip_next=false
 for i in "$@"; do
@@ -52,29 +54,40 @@ for i in "$@"; do
     case "$i" in
         --test) test_mode=true ;;
         --direct-mount) cli_direct_mount=true ;;
+        --scoped) cli_scoped=true ;;
         --dry-run) ;; # handled by helpers.sh
         --verbose|-v) ;; # handled by helpers.sh
         --debug) ;; # handled by helpers.sh
         git-merge) git_merge_mode=true ;;
         clean) clean_mode=true ;;
-        clean-all) clean_all_mode=true ;;
-        --branch)
-            # Next arg is the branch name
-            skip_next=true
-            # Find the next argument
+        --all) clean_all=true ;;
+        --attach-session)
+            cli_attach_session_mode=true
+            # Check if next arg looks like a timestamp (not a flag)
+            skip_next=false
             found_next=false
             for j in "$@"; do
                 if [ "$found_next" = true ]; then
-                    clean_branch="$j"
+                    if [[ "$j" =~ ^[0-9]{14}$ ]]; then
+                        cli_attach_session="$j"
+                        skip_next=true
+                    fi
                     break
                 fi
-                [ "$j" = "--branch" ] && found_next=true
+                [ "$j" = "--attach-session" ] && found_next=true
             done
             ;;
-        --branch=*) clean_branch="${i#--branch=}" ;;
+        --attach-session=*) cli_attach_session_mode=true; cli_attach_session="${i#--attach-session=}" ;;
         *) passthrough_args+=("$i") ;;
     esac
 done
+
+# If in clean mode, treat passthrough args as session IDs
+clean_sessions=()
+if [ "$clean_mode" = true ] && [ ${#passthrough_args[@]} -gt 0 ]; then
+    clean_sessions=("${passthrough_args[@]}")
+    passthrough_args=()
+fi
 
 # Initialize and parse config
 init_config "$@"
@@ -121,92 +134,189 @@ elif ! is_git_repo "$cfg_source"; then
     esac
 fi
 
+# Compute scope_path early for commands that need it before main orchestration
+scope_path=""
+if [ "$cli_scoped" = true ] || [ "$cfg_git_scoped" = "true" ]; then
+    scope_path=$(get_scope_path "$cfg_source")
+fi
+
+# Block --scoped when a broader intermediary already covers this scope
+if [ -n "$scope_path" ] && check_broader_intermediary_exists "$cfg_source" "$scope_path"; then
+    echo "Hold on. There's already a cage set up that covers this directory."
+    echo "No need for --scoped — just run claude-cage from here without it."
+    echo "Claude'll start focused in this directory automatically."
+    exit 1
+fi
+
 # Handle --git-merge early (doesn't need sandbox)
 if [ "$git_merge_mode" = true ]; then
     if [ "$direct_mount_mode" = true ]; then
         echo "Can't do git-merge in direct mount mode. Nothin' to merge."
         exit 1
     fi
-    manual_git_merge "$cfg_source"
+    manual_git_merge "$cfg_source" "$scope_path"
     exit 0
 fi
 
-# Handle clean-all mode
-if [ "$clean_all_mode" = true ]; then
-    echo "This will remove ALL cached branches for: $cfg_source"
-    echo ""
-
-    cached_branches=$(list_cached_branches "$cfg_source")
-    if [ -z "$cached_branches" ]; then
-        echo "No cached branches found. Nothin' to clean."
-        exit 0
-    fi
-
-    echo "Branches to be removed:"
-    while IFS= read -r branch; do
-        work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
-        if is_work_dirty "$work_dir"; then
-            echo -e "  $branch ${_yellow}(has uncommitted changes!)${_reset}"
-        else
-            echo "  $branch"
-        fi
-    done <<< "$cached_branches"
-    echo ""
-
-    if ! config_builder_prompt_yesno "Are you sure you want to delete all these?" "n"; then
-        echo "Alright, nothin' deleted."
-        exit 0
-    fi
-
-    while IFS= read -r branch; do
-        echo ""
-        echo "Cleaning branch: $branch"
-        clean_branch_cache "$cfg_source" "$branch"
-    done <<< "$cached_branches"
-
-    # Clean up any stale state files
-    clean_stale_state_files "$cfg_source"
-
-    echo ""
-    echo "All clean."
-    exit 0
-fi
-
-# Handle clean mode (single branch)
+# Handle clean mode
 if [ "$clean_mode" = true ]; then
-    cached_branches=$(list_cached_branches "$cfg_source")
-    if [ -z "$cached_branches" ]; then
-        echo "No cached branches found. Nothin' to clean."
+    cached_sessions=$(list_cached_sessions "$cfg_source")
+    if [ -z "$cached_sessions" ]; then
+        echo "No cached sessions found. Nothin' to clean."
         exit 0
     fi
 
-    # If branch specified, use it; otherwise prompt
-    if [ -n "$clean_branch" ]; then
-        # Sanitize the provided branch name
-        clean_branch=$(sanitize_branch_name "$clean_branch")
-        if ! echo "$cached_branches" | grep -qx "$clean_branch"; then
-            echo "Branch '$clean_branch' not found in cache."
-            echo ""
-            echo "Available branches:"
-            echo "$cached_branches" | sed 's/^/  /'
-            exit 1
+    # Build session arrays from cached_sessions for lookups
+    session_array=()
+    session_sources=()
+    while IFS=' ' read -r sid sbranch ssource sscope; do
+        session_array+=("$sid")
+        session_sources+=("$ssource")
+    done <<< "$cached_sessions"
+
+    if [ "$clean_all" = true ]; then
+        # --all: remove all sessions
+        echo "This will remove ALL cached sessions for: $cfg_source"
+        echo ""
+        echo "Sessions to be removed:"
+        while IFS=' ' read -r sid sbranch ssource sscope; do
+            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
+            scope_label=""
+            [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+            if is_work_dirty "$work_dir"; then
+                echo -e "  $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
+            else
+                echo -e "  $sid  branch: $sbranch${scope_label}"
+            fi
+        done <<< "$cached_sessions"
+        echo ""
+
+        if ! config_builder_prompt_yesno "Are you sure you want to delete all these?" "n"; then
+            echo "Alright, nothin' deleted."
+            exit 0
         fi
+
+        while IFS=' ' read -r sid sbranch ssource sscope; do
+            echo ""
+            echo "Cleaning session: $sid"
+            clean_session_cache "$ssource" "$sid"
+        done <<< "$cached_sessions"
+
+        echo ""
+        echo "All clean."
+        exit 0
+
+    elif [ ${#clean_sessions[@]} -gt 0 ]; then
+        # Session IDs specified as positional args
+        # Validate all IDs first
+        for csid in "${clean_sessions[@]}"; do
+            if ! echo "$cached_sessions" | grep -q "^$csid "; then
+                echo "Session '$csid' not found in cache."
+                echo ""
+                echo "Available sessions:"
+                while IFS=' ' read -r sid sbranch ssource sscope; do
+                    scope_label=""
+                    [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+                    echo -e "  $sid  branch: $sbranch${scope_label}"
+                done <<< "$cached_sessions"
+                exit 1
+            fi
+        done
+
+        if [ ${#clean_sessions[@]} -eq 1 ]; then
+            # Single session: show details and confirm
+            csid="${clean_sessions[0]}"
+            # Look up source for this session
+            clean_source="$cfg_source"
+            for _ci in "${!session_array[@]}"; do
+                if [ "${session_array[$_ci]}" = "$csid" ]; then
+                    clean_source="${session_sources[$_ci]}"
+                    break
+                fi
+            done
+
+            work_dir="$CLAUDE_CAGE_CACHE/sessions/$csid/work$clean_source"
+            echo ""
+            echo "This will remove the cache for session: $csid"
+            if is_work_dirty "$work_dir"; then
+                echo ""
+                echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
+            fi
+            echo ""
+
+            if ! config_builder_prompt_yesno "Are you sure?" "n"; then
+                echo "Alright, nothin' deleted."
+                exit 0
+            fi
+
+            clean_session_cache "$clean_source" "$csid"
+            echo ""
+            echo "Done. Session '$csid' cleaned up."
+        else
+            # Multiple sessions: show list and single confirm
+            echo ""
+            echo "Sessions to be removed:"
+            for csid in "${clean_sessions[@]}"; do
+                clean_source="$cfg_source"
+                for _ci in "${!session_array[@]}"; do
+                    if [ "${session_array[$_ci]}" = "$csid" ]; then
+                        clean_source="${session_sources[$_ci]}"
+                        break
+                    fi
+                done
+                work_dir="$CLAUDE_CAGE_CACHE/sessions/$csid/work$clean_source"
+                _sbranch=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $2; exit }')
+                _sscope=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $4; exit }')
+                scope_label=""
+                [ -n "$_sscope" ] && scope_label=" ${_cyan}(scoped: $_sscope)${_reset}"
+                if is_work_dirty "$work_dir"; then
+                    echo -e "  $csid  branch: $_sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
+                else
+                    echo -e "  $csid  branch: $_sbranch${scope_label}"
+                fi
+            done
+            echo ""
+
+            if ! config_builder_prompt_yesno "Are you sure you want to delete these?" "n"; then
+                echo "Alright, nothin' deleted."
+                exit 0
+            fi
+
+            for csid in "${clean_sessions[@]}"; do
+                clean_source="$cfg_source"
+                for _ci in "${!session_array[@]}"; do
+                    if [ "${session_array[$_ci]}" = "$csid" ]; then
+                        clean_source="${session_sources[$_ci]}"
+                        break
+                    fi
+                done
+                echo ""
+                echo "Cleaning session: $csid"
+                clean_session_cache "$clean_source" "$csid"
+            done
+
+            echo ""
+            echo "All clean."
+        fi
+        exit 0
+
     else
         # Interactive selection
-        echo "Which branch cache do you want to remove?"
+        echo "Which session cache do you want to remove?"
         echo ""
-        branch_array=()
         idx=1
-        while IFS= read -r branch; do
-            branch_array+=("$branch")
-            work_dir="$CLAUDE_CAGE_CACHE/branches/$branch/work$cfg_source"
+        while IFS=' ' read -r sid sbranch ssource sscope; do
+            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
+            scope_label=""
+            [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
             if is_work_dirty "$work_dir"; then
-                echo -e "  $idx) $branch ${_yellow}(has uncommitted changes!)${_reset}"
+                echo -e "  $idx) $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
             else
-                echo "  $idx) $branch"
+                echo -e "  $idx) $sid  branch: $sbranch${scope_label}"
             fi
-            ((idx++))
-        done <<< "$cached_branches"
+            idx=$((idx + 1))
+        done <<< "$cached_sessions"
+        echo "  a) Remove all sessions"
         echo "  q) Cancel"
         echo ""
 
@@ -217,33 +327,48 @@ if [ "$clean_mode" = true ]; then
                 echo "Alright, nothin' deleted."
                 exit 0
             fi
-            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#branch_array[@]} ]; then
-                clean_branch="${branch_array[$((choice-1))]}"
-                break
+            if [ "$choice" = "a" ] || [ "$choice" = "A" ] || [ "$choice" = "all" ]; then
+                # Confirm and delete all
+                echo ""
+                if ! config_builder_prompt_yesno "Are you sure you want to delete all sessions?" "n"; then
+                    echo "Alright, nothin' deleted."
+                    exit 0
+                fi
+                while IFS=' ' read -r sid sbranch ssource sscope; do
+                    echo ""
+                    echo "Cleaning session: $sid"
+                    clean_session_cache "$ssource" "$sid"
+                done <<< "$cached_sessions"
+                echo ""
+                echo "All clean."
+                exit 0
             fi
-            echo "Pick a number or 'q' to quit."
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#session_array[@]} ]; then
+                selected_session="${session_array[$((choice-1))]}"
+                selected_source="${session_sources[$((choice-1))]}"
+                work_dir="$CLAUDE_CAGE_CACHE/sessions/$selected_session/work$selected_source"
+
+                echo ""
+                echo "This will remove the cache for session: $selected_session"
+                if is_work_dirty "$work_dir"; then
+                    echo ""
+                    echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
+                fi
+                echo ""
+
+                if ! config_builder_prompt_yesno "Are you sure?" "n"; then
+                    echo "Alright, nothin' deleted."
+                    exit 0
+                fi
+
+                clean_session_cache "$selected_source" "$selected_session"
+                echo ""
+                echo "Done. Session '$selected_session' cleaned up."
+                exit 0
+            fi
+            echo "Pick a number, 'a' to remove all, or 'q' to quit."
         done
     fi
-
-    work_dir="$CLAUDE_CAGE_CACHE/branches/$clean_branch/work$cfg_source"
-
-    echo ""
-    echo "This will remove the cache for branch: $clean_branch"
-    if is_work_dirty "$work_dir"; then
-        echo ""
-        echo -e "${_yellow}⚠️  WARNING: This branch has uncommitted changes that will be lost!${_reset}"
-    fi
-    echo ""
-
-    if ! config_builder_prompt_yesno "Are you sure?" "n"; then
-        echo "Alright, nothin' deleted."
-        exit 0
-    fi
-
-    clean_branch_cache "$cfg_source" "$clean_branch"
-    echo ""
-    echo "Done. Branch '$clean_branch' cleaned up."
-    exit 0
 fi
 
 # Check isolation tool is available
@@ -262,6 +387,7 @@ fi
 # Clean up any orphaned hooks from crashed sessions (git mode only)
 if [ "$direct_mount_mode" = false ] && is_git_repo "$cfg_source"; then
     cleanup_orphaned_hooks "$cfg_source"
+    repos_list_clean_orphans "$cfg_source" 2>/dev/null || true
 fi
 
 # Show banner if enabled
@@ -298,6 +424,9 @@ fi
 if [ "$direct_mount_mode" = false ]; then
     echo "  Auto-merge:    $cfg_autoMerge"
     echo "  Isolated:      $cfg_isolated"
+    if [ -n "$scope_path" ]; then
+        echo "  Scoped to:     $scope_path"
+    fi
 fi
 echo "  Network mode:  $cfg_networkMode"
 
@@ -330,10 +459,9 @@ source_branch=""
 PIPE_LISTENER_PID=""
 intermediary_dir=""
 work_dir=""
-branch_work_root=""
-branch_intermediary_root=""
+session_work_root=""
+intermediary_root=""
 pipe_path=""
-state_path=""
 project_path="$cfg_source"
 
 if [ "$direct_mount_mode" = true ]; then
@@ -343,7 +471,7 @@ if [ "$direct_mount_mode" = true ]; then
 
     # Use source path directly - no intermediary or work dir needed
     work_dir="$cfg_source"
-    branch_work_root=$(dirname "$cfg_source")
+    session_work_root=$(dirname "$cfg_source")
 
 else
     # Git mode: full cage setup with intermediary and work directories
@@ -359,10 +487,6 @@ else
         fi
     fi
 
-    # Set branch for path construction
-    CLAUDE_CAGE_BRANCH="$source_branch"
-    export CLAUDE_CAGE_BRANCH
-
     # Check for pending patches from previous runs (interactive)
     pending_branches=$(list_pending_patch_branches "$cfg_source")
     if [ -n "$pending_branches" ]; then
@@ -373,77 +497,258 @@ else
         fi
     fi
 
-    # Paths for bwrap/docker
-    intermediary_dir=$(get_cage_path "$cfg_source" "intermediary")
-    work_dir=$(get_cage_path "$cfg_source" "work")
-    branch_work_root=$(get_branch_work_root)
-    branch_intermediary_root=$(get_branch_intermediary_root)
+    intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
+    intermediary_root=$(get_intermediary_root)
+
+    # Session selection flow: find reusable sessions, handle --attach-session
+    find_reusable_session "$cfg_source"
+
+    if [ "$cli_attach_session_mode" = true ]; then
+        # --attach-session mode
+        if [ -n "$cli_attach_session" ]; then
+            # --attach-session <ts>: target specific session, must be active
+            if ! session_is_active "$cfg_source" "$cli_attach_session"; then
+                echo "Session $cli_attach_session ain't active. Use without a timestamp to pick up an inactive session."
+                exit 1
+            fi
+            CLAUDE_CAGE_SESSION="$cli_attach_session"
+            echo "Attachin' to session $cli_attach_session."
+        else
+            # --attach-session (no arg): auto-select or prompt
+            active_count=0
+            if [ -n "$REUSE_ACTIVE_SESSIONS" ]; then
+                active_count=$(echo "$REUSE_ACTIVE_SESSIONS" | wc -l)
+            fi
+
+            if [ "$active_count" -eq 0 ]; then
+                echo "No active sessions found to attach to."
+                exit 1
+            elif [ "$active_count" -eq 1 ]; then
+                read -r asid abranch asource ascope <<< "$REUSE_ACTIVE_SESSIONS"
+                CLAUDE_CAGE_SESSION="$asid"
+                scope_label=""
+                [ -n "$ascope" ] && scope_label=" (scoped: $ascope)"
+                echo "Attachin' to session $asid on branch '$abranch'${scope_label}."
+            else
+                echo "Multiple active sessions found:"
+                echo ""
+                attach_ids=()
+                aidx=1
+                while IFS=' ' read -r asid abranch asource ascope; do
+                    attach_ids+=("$asid")
+                    scope_label=""
+                    [ -n "$ascope" ] && scope_label=" ${_cyan}(scoped: $ascope)${_reset}"
+                    echo -e "  $aidx) $asid  branch: $abranch${scope_label}"
+                    ((aidx++))
+                done <<< "$REUSE_ACTIVE_SESSIONS"
+                echo ""
+
+                while true; do
+                    printf "Which session do you wanna attach to? "
+                    read -r choice
+                    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#attach_ids[@]} ]; then
+                        CLAUDE_CAGE_SESSION="${attach_ids[$((choice-1))]}"
+                        break
+                    fi
+                    echo "Pick a number."
+                done
+            fi
+        fi
+    else
+        # Default mode (no --attach-session)
+        case "$REUSE_SESSION_STATE" in
+            "active")
+                # Another session is running - create a fresh one alongside it
+                echo "Another session's runnin' ($REUSE_SESSION_ID). Firin' up a fresh one alongside it."
+                reuse_or_create_session "$cfg_source"
+                ;;
+            "clean")
+                # Inactive clean session - reuse same-source only (handled by reuse_or_create_session)
+                reuse_or_create_session "$cfg_source"
+                ;;
+            "dirty")
+                # Inactive dirty session(s) - prompt
+                dirty_count=0
+                if [ -n "$REUSE_DIRTY_SESSIONS" ]; then
+                    dirty_count=$(echo "$REUSE_DIRTY_SESSIONS" | wc -l)
+                fi
+
+                if [ "$dirty_count" -le 1 ]; then
+                    # Single dirty session
+                    dtype=$(echo "$REUSE_DIRTY_SESSIONS" | head -1 | awk '{print $3}')
+                    dirty_desc="uncommitted changes"
+                    case "$dtype" in
+                        unpushed) dirty_desc="unpushed commits" ;;
+                        uncommitted+unpushed) dirty_desc="uncommitted changes and unpushed commits" ;;
+                    esac
+                    scope_label=""
+                    [ -n "$REUSE_SESSION_SCOPE" ] && scope_label=" (scoped: $REUSE_SESSION_SCOPE)"
+                    echo "Found an existing cage ($REUSE_SESSION_ID) on branch '$REUSE_SESSION_BRANCH'${scope_label}."
+                    echo "  It's got $dirty_desc."
+                    echo ""
+                    echo "What do you wanna do?"
+                    echo "  1) Pick it up (cage stays on branch '$REUSE_SESSION_BRANCH')"
+                    echo "  2) Start fresh (new session)"
+                    echo "  q) Quit"
+                    echo ""
+                    echo "  Tip: run 'claude-cage clean' to clean up dirty sessions."
+                    echo ""
+                    while true; do
+                        printf "Choice: "
+                        read -r choice
+                        case "$choice" in
+                            1)
+                                CLAUDE_CAGE_SESSION="$REUSE_SESSION_ID"
+                                # Cross-scope override
+                                if [ "$REUSE_SESSION_SOURCE" != "$cfg_source" ]; then
+                                    cfg_source="$REUSE_SESSION_SOURCE"
+                                    scope_path="${REUSE_SESSION_SCOPE:-}"
+                                    intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
+                                fi
+                                break
+                                ;;
+                            2)
+                                reuse_or_create_session "$cfg_source"
+                                break
+                                ;;
+                            q|Q) echo "Catch you later."; exit 0 ;;
+                            *) echo "Pick 1, 2, or q." ;;
+                        esac
+                    done
+                else
+                    # Multiple dirty sessions - show all
+                    echo "Found $dirty_count existing cages with uncommitted work:"
+                    echo ""
+                    dirty_entries=()
+                    dirty_ids=()
+                    didx=1
+                    while IFS=' ' read -r dsid dbranch dtype dsource dscope; do
+                        dirty_entries+=("$dsid $dbranch $dtype $dsource $dscope")
+                        dirty_ids+=("$dsid")
+                        dirty_label="uncommitted changes"
+                        case "$dtype" in
+                            unpushed) dirty_label="unpushed commits" ;;
+                            uncommitted+unpushed) dirty_label="uncommitted changes + unpushed commits" ;;
+                        esac
+                        scope_label=""
+                        [ -n "$dscope" ] && scope_label=" ${_cyan}(scoped: $dscope)${_reset}"
+                        printf "  %d) %s  branch: %-20s (%s)%b\n" "$didx" "$dsid" "$dbranch" "$dirty_label" "$scope_label"
+                        ((didx++))
+                    done <<< "$REUSE_DIRTY_SESSIONS"
+                    echo ""
+                    echo "What do you wanna do?"
+                    echo "  Pick a number to continue that session, or:"
+                    echo "  n) Start fresh (new session)"
+                    echo "  q) Quit"
+                    echo ""
+                    echo "  Tip: run 'claude-cage clean' to clean up dirty sessions."
+                    echo ""
+                    while true; do
+                        printf "Choice: "
+                        read -r choice
+                        case "$choice" in
+                            n|N)
+                                reuse_or_create_session "$cfg_source"
+                                break
+                                ;;
+                            q|Q) echo "Catch you later."; exit 0 ;;
+                            *)
+                                if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#dirty_ids[@]} ]; then
+                                    CLAUDE_CAGE_SESSION="${dirty_ids[$((choice-1))]}"
+                                    # Cross-scope override from the selected entry
+                                    local _sel_sid _sel_branch _sel_dtype _sel_source _sel_scope
+                                    read -r _sel_sid _sel_branch _sel_dtype _sel_source _sel_scope \
+                                        <<< "${dirty_entries[$((choice-1))]}"
+                                    if [ "$_sel_source" != "$cfg_source" ]; then
+                                        cfg_source="$_sel_source"
+                                        scope_path="${_sel_scope:-}"
+                                        intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
+                                    fi
+                                    break
+                                fi
+                                echo "Pick a number, n, or q."
+                                ;;
+                        esac
+                    done
+                fi
+                ;;
+            "none"|*)
+                # No existing session - create fresh
+                reuse_or_create_session "$cfg_source"
+                ;;
+        esac
+    fi
+
+    export CLAUDE_CAGE_SESSION
+
+    # Clean up inactive clean sessions we're not using
+    cleanup_stale_sessions "$cfg_source"
+
+    # Now compute paths using the selected session
+    work_dir=$(get_work_path "$cfg_source")
+    session_work_root=$(get_session_work_root)
     pipe_path=$(get_pipe_path "$cfg_source")
-    state_path=$(get_state_path "$cfg_source")
 
     # Check for other active sessions before doing anything destructive
     other_session_active=false
-    if has_other_sessions "$cfg_source" "$source_branch"; then
+    if has_other_sessions "$cfg_source"; then
         other_session_active=true
     fi
 
     # Register our session early (before any destructive operations)
-    register_session "$cfg_source" "$source_branch"
+    register_session "$cfg_source"
 
     # Check if existing cage is in sync with source
-    cage_state=$(check_cage_state "$cfg_source" "$work_dir" "$state_path")
+    cage_state=$(check_cage_state "$cfg_source" "$intermediary_dir" "$work_dir")
 
     case "$cage_state" in
         "in_sync")
-            echo "Cage is in sync with source. Pickin' up where we left off."
-            ;;
-        "ahead_clean")
-            if [ "$other_session_active" = true ]; then
-                echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
-            else
-                echo "Source moved ahead but cage is clean. Startin' fresh."
-                create_intermediary_clone "$cfg_source"
+            echo "Pickin' up where we left off."
+            # Current branch is in sync, but other branches may have new commits
+            if catchup_intermediary_branches "$cfg_source" "$intermediary_dir"; then
+                # Branches were updated - refresh work dir's remote-tracking refs
+                git -C "$work_dir" fetch "$intermediary_dir" '+refs/heads/*:refs/remotes/origin/*' --quiet 2>/dev/null || true
             fi
             ;;
-        "ahead_dirty")
+        "needs_work_dir")
+            if [ "$other_session_active" = true ] && [ "$cli_attach_session_mode" = true ]; then
+                echo "Attachin' to active session's workspace."
+            else
+                echo "Intermediary exists but work dir is gone. Rebuildin' workspace..."
+                create_intermediary_clone "$cfg_source" "$scope_path"
+            fi
+            ;;
+        "needs_update")
             if [ "$other_session_active" = true ]; then
                 echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
             else
-                handle_dirty_cage "$cfg_source" "$work_dir" "$intermediary_dir" "$state_path" "$cfg_exclude"
-                case "$DIRTY_CAGE_RESULT" in
-                    "recreate")
-                        create_intermediary_clone "$cfg_source"
-                        ;;
-                    "exit")
-                        echo "Alright, we'll sort this out later."
-                        exit 0
-                        ;;
-                    # "continue" - just proceed with existing cage
-                esac
+                echo "Source moved ahead. Catchin' up..."
+                create_intermediary_clone "$cfg_source" "$scope_path"
             fi
             ;;
         "no_cage"|*)
             # No existing cage, create fresh
-            create_intermediary_clone "$cfg_source"
+            create_intermediary_clone "$cfg_source" "$scope_path"
             ;;
     esac
 
     # Set up .caged/ symlinks if enabled
     if [ "$cfg_createCagedDir" = "true" ]; then
-        setup_caged_symlinks "$cfg_source"
+        setup_caged_symlinks "$cfg_source" "$scope_path"
     fi
 
     # Set up git hooks and communication pipe (if autoMerge enabled)
     if [ "$cfg_autoMerge" = "true" ]; then
         setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
-        setup_source_pre_commit "$cfg_source" "$cfg_exclude" "$source_branch"
-        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir" "$source_branch" "$state_path" "$work_dir"
+        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
+        setup_source_post_merge "$cfg_source" "$cfg_exclude" "$intermediary_dir"
     fi
 
-    # Set up work repo pre-commit hook to block force-added ignored files
-    # Default is true - force-added ignored files break patch sync
-    if [ "$cfg_git_blockForceAdd" = "true" ]; then
-        setup_work_pre_commit "$work_dir"
+    # Set up work repo pre-commit hook:
+    # - Block merges in scoped intermediaries (unreliable without full tree)
+    # - Block force-added ignored files if configured (default: true)
+    if [ "$cfg_git_blockForceAdd" = "true" ] || [ -n "$scope_path" ]; then
+        setup_work_pre_commit "$work_dir" "$scope_path"
     fi
 fi
 
@@ -463,13 +768,13 @@ echo ""
 echo "Inside sandbox:"
 echo "  $project_path              (working dir)"
 if [ "$direct_mount_mode" = false ]; then
-    echo "  /run$project_path          (git origin)"
+    echo "  /run$intermediary_dir      (git origin)"
 fi
 echo ""
 
 # Start pipe listener if autoMerge enabled (git mode only)
 if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
-    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$source_branch" "$state_path" "$verbose"
+    start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$verbose"
 fi
 
 # Set up cleanup handler for signals
@@ -478,15 +783,17 @@ cleanup_on_exit() {
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
         # Always unregister our session
-        if [ -n "$source_branch" ]; then
-            unregister_session "$cfg_source" "$source_branch"
+        unregister_session "$cfg_source"
+        # Deferred cleanup: if this scoped intermediary is now superseded
+        if [ -n "${scope_path:-}" ]; then
+            maybe_cleanup_superseded_intermediary "$cfg_source" "$scope_path"
         fi
         if [ -n "$PIPE_LISTENER_PID" ]; then
             stop_pipe_listener "$PIPE_LISTENER_PID"
             cleanup_pipe "$pipe_path"
         fi
-        if [ "$cfg_autoMerge" = "true" ] && [ -n "$source_branch" ]; then
-            cleanup_source_hooks "$cfg_source" "$source_branch"
+        if [ "$cfg_autoMerge" = "true" ]; then
+            cleanup_source_hooks "$cfg_source"
         fi
     fi
     exit $exit_code
@@ -541,13 +848,13 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
 fi
 
 if [ "$cfg_mode" = "docker" ]; then
-    run_in_docker "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    run_in_docker "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
 else
     # Use network-isolated bwrap if network filtering is enabled
     if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
-        run_in_bwrap_with_network "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap_with_network "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
     else
-        run_in_bwrap "$branch_intermediary_root" "$branch_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
     fi
 fi
 

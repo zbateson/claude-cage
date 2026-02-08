@@ -62,21 +62,21 @@ claude_cage {
     -- Put them at user level so they apply to all your projects.
 
     additionalMounts = {
-        "~/.local/bin/claude",   -- Claude Code binary
-        "~/.claude",             -- Claude config directory
-        "~/.claude.json",        -- Claude auth/settings
-        "~/.gitconfig",          -- Git config (for commits)
+        "~/.local/bin/claude",                        -- Claude Code binary
+        { source = "~/.claude", mode = "rw" },        -- Claude config (needs write access)
+        { source = "~/.claude.json", mode = "rw" },   -- Claude auth/settings
+        "~/.gitconfig",                               -- Git config (for commits)
     },
 
     -- =========================================================================
     -- GIT OPTIONS
     -- =========================================================================
-    -- Block commits containing force-added gitignored files (default: true).
-    -- Force-added ignored files break patch-based sync between cage and source.
-    -- Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
 
     -- git = {
-    --     blockForceAdd = true,
+    --     historyDepth = 50,       -- First-parent depth on default branch (default: 50)
+    --     defaultBranch = "auto",  -- Branch for history anchoring: "auto" or explicit name
+    --     scoped = false,          -- Scope intermediary to CWD subdirectory (same as --scoped)
+    --     blockForceAdd = true,    -- Block commits with force-added gitignored files
     -- },
 
     -- =========================================================================

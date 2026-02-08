@@ -287,6 +287,11 @@ if directMount == nil then directMount = false end
 local git = config.git or {}
 local git_blockForceAdd = git.blockForceAdd
 if git_blockForceAdd == nil then git_blockForceAdd = true end
+local git_historyDepth = git.historyDepth
+if git_historyDepth == nil then git_historyDepth = 50 end
+local git_defaultBranch = git.defaultBranch or "auto"
+local git_scoped = git.scoped
+if git_scoped == nil then git_scoped = false end
 
 -- Docker options
 local docker = config.docker or {}
@@ -344,6 +349,9 @@ else
 end
 
 print(tostring(git_blockForceAdd))
+print(tostring(git_historyDepth))
+print(git_defaultBranch)
+print(tostring(git_scoped))
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -419,6 +427,9 @@ LUAEOF
         read -r cfg_directMount
         read -r cfg_docker_packages
         read -r cfg_git_blockForceAdd
+        read -r cfg_git_historyDepth
+        read -r cfg_git_defaultBranch
+        read -r cfg_git_scoped
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do

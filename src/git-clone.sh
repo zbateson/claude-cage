@@ -1,5 +1,5 @@
 # ============================================================================
-# Git archive + fresh init (no history of excluded files)
+# Bare intermediary with history (fast-export/fast-import)
 # ============================================================================
 
 # Base directories for cage data
@@ -15,55 +15,121 @@ sanitize_branch_name() {
     echo "$branch" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g'
 }
 
-# Current branch for path construction (set by main.sh before calling get_cage_path)
-CLAUDE_CAGE_BRANCH=""
+# Current session ID for path construction (set by main.sh before calling get_work_path)
+# Format: YYYYMMDDHHMMSS timestamp
+CLAUDE_CAGE_SESSION=""
 
-# Get the cache path for a source directory
-# Arguments: $1 = source directory, $2 = type (work|intermediary)
-# Uses CLAUDE_CAGE_BRANCH if set, otherwise defaults to "default"
-get_cage_path() {
+# Get the work directory path for a source directory
+# Work dirs are per-session: sessions/<session_id>/work$source_dir
+# Arguments: $1 = source directory
+get_work_path() {
     local source_dir="$1"
-    local type="$2"
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/$type$source_dir"
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
+    echo "$CLAUDE_CAGE_CACHE/sessions/$session_id/work$source_dir"
+}
+
+# Get the intermediary path for a source directory
+# Intermediary is a bare repo shared across branches: intermediary$source_dir
+# Arguments: $1 = source directory
+get_intermediary_path() {
+    local source_dir="$1"
+    echo "$CLAUDE_CAGE_CACHE/intermediary$source_dir"
+}
+
+# Get the intermediary path with scope awareness.
+# Scoped intermediaries live in a separate top-level directory to prevent
+# nesting conflicts with unscoped intermediaries:
+#   Unscoped: intermediary/<source_dir>  (standard path via get_intermediary_path)
+#   Scoped:   scoped/<git_root>/<scope_path>
+# Arguments: $1 = source_dir, $2 = scope_path (empty = unscoped, falls through to get_intermediary_path)
+get_scoped_intermediary_path() {
+    local source_dir="$1"
+    local scope_path="${2:-}"
+    if [ -n "$scope_path" ]; then
+        local git_root
+        git_root=$(get_git_root "$source_dir")
+        echo "$CLAUDE_CAGE_CACHE/scoped${git_root}/${scope_path}/.bare"
+    else
+        echo "$CLAUDE_CAGE_CACHE/intermediary$source_dir"
+    fi
+}
+
+# Get the commit map file path (inside bare intermediary)
+# Maps intermediary hashes to source hashes
+get_commit_map_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-commit-map"
+}
+
+# Get the source branches file path (inside bare intermediary)
+# Lists all source branch names (for pre-receive guard)
+get_source_branches_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-source-branches"
+}
+
+# Get the source marks file path (inside bare intermediary)
+get_source_marks_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-source-marks"
+}
+
+# Get the import marks file path (inside bare intermediary)
+get_import_marks_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-import-marks"
+}
+
+# Get the exclude hash file path (inside bare intermediary)
+# Stores hash of exclude patterns to detect config changes
+get_exclude_hash_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-exclude-hash"
 }
 
 # Get the pipe path for a source directory
-# Uses CLAUDE_CAGE_BRANCH if set
+# Uses CLAUDE_CAGE_SESSION if set
 get_pipe_path() {
     local source_dir="$1"
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_RUNTIME/pipes/$branch_dir$source_dir"
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
+    echo "$CLAUDE_CAGE_RUNTIME/pipes/$session_id$source_dir"
 }
 
-# Get the state file path for a source directory
-# State file tracks the last processed commit from source
-# Uses CLAUDE_CAGE_BRANCH if set, hashes the path for a flat file structure
-get_state_path() {
-    local source_dir="$1"
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/state-$path_hash"
+# Get the session work root directory (contains all projects for a session)
+# This is mounted at / so all same-session projects are visible at original paths
+get_session_work_root() {
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
+    echo "$CLAUDE_CAGE_CACHE/sessions/$session_id/work"
 }
 
-# Get the branch work root directory (contains all projects for a branch)
-# This is mounted at / so all same-branch projects are visible at original paths
-get_branch_work_root() {
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/work"
+# Get the latest session file path (inside bare intermediary)
+get_latest_session_path() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-latest-session"
 }
 
-# Get the branch intermediary root directory (contains all intermediaries for a branch)
-# This is mounted at /run so all same-branch intermediaries are accessible
-get_branch_intermediary_root() {
-    local branch_dir="${CLAUDE_CAGE_BRANCH:-default}"
-    branch_dir=$(sanitize_branch_name "$branch_dir")
-    echo "$CLAUDE_CAGE_CACHE/branches/$branch_dir/intermediary"
+# Write the latest session ID to the intermediary
+write_latest_session() {
+    local intermediary_dir="$1"
+    local session_id="$2"
+    echo "$session_id" > "$(get_latest_session_path "$intermediary_dir")"
+}
+
+# Read the latest session ID from the intermediary
+# Returns empty string if not set
+read_latest_session() {
+    local intermediary_dir="$1"
+    local path
+    path=$(get_latest_session_path "$intermediary_dir")
+    if [ -f "$path" ]; then
+        cat "$path"
+    fi
+}
+
+# Get the intermediary root directory (contains all intermediaries across all branches)
+# This is mounted at /run so all intermediaries are accessible
+get_intermediary_root() {
+    echo "$CLAUDE_CAGE_CACHE/intermediary"
 }
 
 # Get the git root directory for a path
@@ -80,22 +146,340 @@ is_git_repo() {
     git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-# List all cached branches for a source directory
-# Returns sanitized branch names (one per line)
-list_cached_branches() {
+# Get the relative path from git root to source directory (scope path)
+# Returns empty string if source_dir IS the git root
+# Arguments: $1 = source directory
+get_scope_path() {
     local source_dir="$1"
-    local branches=()
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    if [ "$source_dir" = "$git_root" ]; then
+        echo ""
+    else
+        # Use realpath to normalize, then strip git_root prefix
+        local real_source real_root
+        real_source=$(realpath "$source_dir")
+        real_root=$(realpath "$git_root")
+        echo "${real_source#"$real_root"/}"
+    fi
+}
 
-    # Check each branch directory in cache
-    if [ -d "$CLAUDE_CAGE_CACHE/branches" ]; then
-        for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
-            [ -d "$branch_dir" ] || continue
-            local branch_name
-            branch_name=$(basename "$branch_dir")
-            # Check if this branch has data for our source directory
-            if [ -d "$branch_dir/work$source_dir" ] || [ -d "$branch_dir/intermediary$source_dir" ]; then
-                echo "$branch_name"
+# Get a hash of the git root for use in repos.list paths
+# Arguments: $1 = source directory
+get_git_root_hash() {
+    local source_dir="$1"
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    path_hash "$git_root"
+}
+
+# Get the repos.list file path for a git root
+# Arguments: $1 = source directory
+get_repos_list_path() {
+    local source_dir="$1"
+    local root_hash
+    root_hash=$(get_git_root_hash "$source_dir")
+    echo "$CLAUDE_CAGE_CACHE/repos/$root_hash"
+}
+
+# Get the scope-path metadata file path (inside bare intermediary)
+get_scope_path_file() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-scope-path"
+}
+
+# Get the git-root metadata file path (inside bare intermediary)
+get_git_root_file() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-git-root"
+}
+
+# Get the exclude-pathspecs metadata file path (inside bare intermediary)
+get_exclude_pathspecs_file() {
+    local intermediary_dir="$1"
+    echo "$intermediary_dir/claude-cage-exclude-pathspecs"
+}
+
+# ============================================================================
+# repos.list management (tracks scoped intermediaries per git root)
+# File: $CACHE/repos/<git-root-hash> — one scope per line (empty line = root/unscoped)
+# ============================================================================
+
+# Add a scope entry to repos.list
+# Arguments: $1 = source_dir, $2 = scope_path (empty for root/unscoped)
+repos_list_add() {
+    local source_dir="$1"
+    local scope_path="${2:-}"
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+
+    mkdir -p "$(dirname "$repos_file")"
+
+    # Don't add duplicates
+    if [ -f "$repos_file" ]; then
+        if [ -z "$scope_path" ]; then
+            # Empty pattern: grep -qxF "" matches any line, so check for empty lines explicitly
+            grep -qx '^$' "$repos_file" 2>/dev/null && return
+        else
+            grep -qxF "$scope_path" "$repos_file" 2>/dev/null && return
+        fi
+    fi
+    echo "$scope_path" >> "$repos_file"
+}
+
+# Remove a scope entry from repos.list
+# Arguments: $1 = source_dir, $2 = scope_path (empty for root/unscoped)
+repos_list_remove() {
+    local source_dir="$1"
+    local scope_path="${2:-}"
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+
+    [ -f "$repos_file" ] || return
+
+    # Remove the matching line (exact match)
+    local tmp
+    tmp=$(mktemp)
+    if [ -z "$scope_path" ]; then
+        # Empty pattern: grep -vxF "" removes all lines, so remove empty lines explicitly
+        grep -v '^$' "$repos_file" > "$tmp" 2>/dev/null || true
+    else
+        grep -vxF "$scope_path" "$repos_file" > "$tmp" 2>/dev/null || true
+    fi
+    mv "$tmp" "$repos_file"
+
+    # Clean up empty file
+    if [ ! -s "$repos_file" ]; then
+        rm -f "$repos_file"
+    fi
+}
+
+# Print all registered scopes for a source directory
+# Arguments: $1 = source_dir
+# Output: one scope per line (empty line = root/unscoped)
+repos_list_scopes() {
+    local source_dir="$1"
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+
+    [ -f "$repos_file" ] && cat "$repos_file"
+}
+
+# Check if a broader (parent) scope already exists
+# Arguments: $1 = source_dir, $2 = scope_path
+# Returns 0 if a parent scope exists, 1 otherwise
+repos_list_has_parent() {
+    local source_dir="$1"
+    local scope_path="$2"
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+
+    [ -f "$repos_file" ] || return 1
+
+    while IFS= read -r existing; do
+        # Empty string = root scope, which is parent of everything
+        if [ -z "$existing" ]; then
+            return 0
+        fi
+        # Check if existing is a prefix of scope_path (broader scope)
+        if [ -n "$scope_path" ] && [ "$existing" != "$scope_path" ]; then
+            if [[ "$scope_path" == "$existing/"* ]]; then
+                return 0
             fi
+        fi
+    done < "$repos_file"
+    return 1
+}
+
+# Clean orphaned repos.list entries (intermediary dir doesn't exist)
+# Arguments: $1 = source_dir
+repos_list_clean_orphans() {
+    local source_dir="$1"
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+
+    [ -f "$repos_file" ] || return
+
+    local tmp
+    tmp=$(mktemp)
+    local kept=0
+    while IFS= read -r scope; do
+        local idir
+        idir=$(get_scoped_intermediary_path "$git_root" "$scope")
+        if [ -d "$idir" ]; then
+            echo "$scope" >> "$tmp"
+            kept=$((kept + 1))
+        fi
+    done < "$repos_file"
+
+    if [ "$kept" -eq 0 ]; then
+        rm -f "$repos_file" "$tmp"
+    else
+        mv "$tmp" "$repos_file"
+    fi
+}
+
+# Check if a broader intermediary exists on disk for a given scope.
+# Arguments: $1 = source_dir, $2 = scope_path
+# Returns 0 if a real broader intermediary exists, 1 otherwise
+check_broader_intermediary_exists() {
+    local source_dir="$1"
+    local scope_path="$2"
+    [ -n "$scope_path" ] || return 1
+
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+    [ -f "$repos_file" ] || return 1
+
+    while IFS= read -r _existing_scope; do
+        local _is_parent=false
+        if [ -z "$_existing_scope" ]; then
+            _is_parent=true
+        elif [[ "$scope_path" == "$_existing_scope/"* ]]; then
+            _is_parent=true
+        fi
+        if [ "$_is_parent" = true ]; then
+            local _parent_idir
+            _parent_idir=$(get_scoped_intermediary_path "$git_root" "$_existing_scope")
+            if [ -d "$_parent_idir" ] && [ -f "$_parent_idir/HEAD" ]; then
+                return 0
+            fi
+        fi
+    done < "$repos_file"
+    return 1
+}
+
+# Remove narrower child scoped intermediaries that are subsets of the given scope.
+# Skips children with active sessions (checked via has_any_sessions).
+# Arguments: $1 = source_dir (at git root or broader scope), $2 = scope_path being created
+cleanup_child_intermediaries() {
+    local source_dir="$1"
+    local scope_path="${2:-}"
+
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+    [ -f "$repos_file" ] || return
+
+    local children_to_remove=()
+    while IFS= read -r _existing_scope; do
+        # Skip self
+        [ "$_existing_scope" = "$scope_path" ] && continue
+        # Check if _existing_scope is a child of scope_path
+        local _is_child=false
+        if [ -z "$scope_path" ]; then
+            # Root scope: everything else is a child
+            [ -n "$_existing_scope" ] && _is_child=true
+        elif [[ "$_existing_scope" == "$scope_path/"* ]]; then
+            _is_child=true
+        fi
+        if [ "$_is_child" = true ]; then
+            local child_source_dir="$git_root/$_existing_scope"
+            # Skip if child has active sessions
+            if has_any_sessions "$child_source_dir"; then
+                echo "  Skippin' cleanup of $_existing_scope — active session"
+                continue
+            fi
+            local child_idir
+            child_idir=$(get_scoped_intermediary_path "$git_root" "$_existing_scope")
+            if [ -d "$child_idir" ]; then
+                rm -rf "$child_idir"
+                echo "  Cleaned up narrower scope: $_existing_scope"
+                cleanup_empty_parents "$child_idir" "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE"
+            fi
+            children_to_remove+=("$_existing_scope")
+        fi
+    done < "$repos_file"
+
+    # Remove children from repos.list
+    for child in "${children_to_remove[@]}"; do
+        repos_list_remove "$source_dir" "$child"
+    done
+}
+
+# Deferred cleanup: remove a scoped intermediary if a broader scope now exists.
+# Called on session exit when the narrower scope is no longer needed.
+# Arguments: $1 = source_dir, $2 = scope_path
+maybe_cleanup_superseded_intermediary() {
+    local source_dir="$1"
+    local scope_path="$2"
+    [ -n "$scope_path" ] || return 0
+
+    # Don't clean up if other sessions still use this scope
+    if has_any_sessions "$source_dir"; then
+        return 0
+    fi
+
+    # Check if a broader scope exists
+    if ! check_broader_intermediary_exists "$source_dir" "$scope_path"; then
+        return 0
+    fi
+
+    local git_root
+    git_root=$(get_git_root "$source_dir")
+    local idir
+    idir=$(get_scoped_intermediary_path "$git_root" "$scope_path")
+    if [ -d "$idir" ]; then
+        rm -rf "$idir"
+        cleanup_empty_parents "$idir" "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE"
+        repos_list_remove "$source_dir" "$scope_path"
+        echo "Cleaned up scoped intermediary: $scope_path (broader scope covers it now)"
+    fi
+}
+
+# Build a list of source directories across all scopes for a git root.
+# Sets: _CROSS_SCOPE_SOURCE_DIRS array
+build_cross_scope_source_dirs() {
+    local source_dir="$1"
+    _CROSS_SCOPE_SOURCE_DIRS=("$source_dir")
+    local git_root
+    git_root=$(get_git_root "$source_dir" 2>/dev/null) || true
+    [ -z "$git_root" ] && return
+    local repos_file
+    repos_file=$(get_repos_list_path "$source_dir")
+    [ -f "$repos_file" ] || return
+    while IFS= read -r _scope; do
+        local _sd
+        if [ -z "$_scope" ]; then _sd="$git_root"; else _sd="$git_root/$_scope"; fi
+        local _dup=false _e
+        for _e in "${_CROSS_SCOPE_SOURCE_DIRS[@]}"; do
+            [ "$_e" = "$_sd" ] && _dup=true && break
+        done
+        [ "$_dup" = false ] && _CROSS_SCOPE_SOURCE_DIRS+=("$_sd")
+    done < "$repos_file"
+}
+
+# List all cached sessions for a source directory (newest first)
+# Discovers sessions across all scopes in the same git root via repos.list.
+# Output: one line per session: "<session_id> <branch> <source_dir> <scope>"
+# (scope is empty for unscoped sessions — naturally handled by read -r)
+list_cached_sessions() {
+    local source_dir="$1"
+    build_cross_scope_source_dirs "$source_dir"
+    local -a source_dirs=("${_CROSS_SCOPE_SOURCE_DIRS[@]}")
+
+    # Scan sessions for all discovered source dirs
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        local session_id sd
+        for session_dir in $(ls -1dr "$CLAUDE_CAGE_CACHE/sessions"/* 2>/dev/null); do
+            [ -d "$session_dir" ] || continue
+            session_id=$(basename "$session_dir")
+            for sd in "${source_dirs[@]}"; do
+                local work="$session_dir/work$sd"
+                # Must have .git to be a real work dir (not just a parent of a scoped work dir)
+                if [ -d "$work/.git" ]; then
+                    local branch scope=""
+                    branch=$(get_work_branch "$work")
+                    [ -f "$work/.git/claude-cage-scope-path" ] && \
+                        scope=$(cat "$work/.git/claude-cage-scope-path")
+                    echo "$session_id $branch $sd $scope"
+                fi
+            done
         done
     fi
 }
@@ -112,115 +496,272 @@ is_work_dirty() {
     return 1
 }
 
-# Clean up stale state files (state files with no corresponding work/intermediary dirs)
-# Arguments: $1 = source directory (optional, if not provided cleans all)
-clean_stale_state_files() {
-    local source_dir="$1"
-    local cleaned=0
+# Check if a work directory has unpushed commits
+# Returns 0 if unpushed exist, 1 if all pushed (or not a git repo)
+work_has_unpushed() {
+    local work_dir="$1"
+    [ -d "$work_dir/.git" ] || return 1
+    local branch
+    branch=$(git -C "$work_dir" branch --show-current 2>/dev/null)
+    [ -z "$branch" ] && return 1
+    # Check if origin/<branch> exists
+    if ! git -C "$work_dir" rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
+        # No tracking branch — if there are commits, they're unpushed
+        local count
+        count=$(git -C "$work_dir" rev-list --count HEAD 2>/dev/null) || return 1
+        [ "$count" -gt 0 ]
+        return
+    fi
+    # Check for unpushed commits
+    local ahead
+    ahead=$(git -C "$work_dir" rev-list --count "origin/$branch..HEAD" 2>/dev/null) || return 1
+    [ "$ahead" -gt 0 ]
+}
 
-    if [ ! -d "$CLAUDE_CAGE_CACHE/branches" ]; then
-        return 0
+# Get the current branch of a work directory
+get_work_branch() {
+    local work_dir="$1"
+    git -C "$work_dir" branch --show-current 2>/dev/null
+}
+
+# Find a reusable session for a source directory
+# Discovers sessions across all scopes in the same git root via repos.list.
+# Sets globals:
+#   REUSE_SESSION_ID      - session ID (or empty)
+#   REUSE_SESSION_STATE   - "active" | "clean" | "dirty" | "none"
+#   REUSE_SESSION_BRANCH  - branch name of the session's work dir
+#   REUSE_SESSION_SOURCE  - source_dir of the top-priority session
+#   REUSE_SESSION_SCOPE   - scope of the top-priority session
+#   REUSE_ACTIVE_SESSIONS - newline-separated list of "session_id branch source_dir scope" for active sessions
+#   REUSE_CLEAN_SESSIONS  - newline-separated list of "session_id branch source_dir scope" for inactive clean sessions
+#   REUSE_DIRTY_SESSIONS  - newline-separated list of "session_id branch dirty_type source_dir scope" for inactive dirty sessions
+find_reusable_session() {
+    local source_dir="$1"
+
+    REUSE_SESSION_ID=""
+    REUSE_SESSION_STATE="none"
+    REUSE_SESSION_BRANCH=""
+    REUSE_SESSION_SOURCE=""
+    REUSE_SESSION_SCOPE=""
+    REUSE_ACTIVE_SESSIONS=""
+    REUSE_DIRTY_SESSIONS=""
+    REUSE_CLEAN_SESSIONS=""
+
+    if [ ! -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        return
     fi
 
-    for branch_dir in "$CLAUDE_CAGE_CACHE/branches"/*; do
-        [ -d "$branch_dir" ] || continue
+    # Build list of source_dirs to scan (cross-scope discovery)
+    build_cross_scope_source_dirs "$source_dir"
+    local -a source_dirs=("${_CROSS_SCOPE_SOURCE_DIRS[@]}")
 
-        for state_file in "$branch_dir"/state-*; do
-            [ -f "$state_file" ] || continue
+    local -a active_sessions=()
+    local -a inactive_clean=()
+    local -a inactive_dirty=()
 
-            local path_hash
-            path_hash=$(basename "$state_file" | sed 's/^state-//')
+    # Scan sessions newest first, across all source_dirs
+    local session_id session_dir sd work branch scope
+    for session_dir in $(ls -1dr "$CLAUDE_CAGE_CACHE/sessions"/* 2>/dev/null); do
+        [ -d "$session_dir" ] || continue
+        session_id=$(basename "$session_dir")
+        for sd in "${source_dirs[@]}"; do
+            work="$session_dir/work$sd"
+            # Must have .git to be a real work dir (not just a parent of a scoped work dir)
+            [ -d "$work/.git" ] || continue
 
-            # Check if there's a corresponding work or intermediary dir
-            local has_work=false
-            local has_intermediary=false
+            branch=$(get_work_branch "$work")
+            scope=""
+            [ -f "$work/.git/claude-cage-scope-path" ] && \
+                scope=$(cat "$work/.git/claude-cage-scope-path")
 
-            # If source_dir specified, only check that path's hash
-            if [ -n "$source_dir" ]; then
-                local expected_hash
-                expected_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-                if [ "$path_hash" != "$expected_hash" ]; then
-                    continue
+            # Check if session has a live PID (using correct source_dir for this work dir)
+            if session_is_active "$sd" "$session_id"; then
+                active_sessions+=("$session_id $branch $sd $scope")
+            else
+                local has_uncommitted=false has_unpushed=false dirty_type=""
+                is_work_dirty "$work" && has_uncommitted=true
+                work_has_unpushed "$work" && has_unpushed=true
+                if [ "$has_uncommitted" = true ] && [ "$has_unpushed" = true ]; then
+                    dirty_type="uncommitted+unpushed"
+                elif [ "$has_uncommitted" = true ]; then
+                    dirty_type="uncommitted"
+                elif [ "$has_unpushed" = true ]; then
+                    dirty_type="unpushed"
                 fi
-            fi
-
-            # Look for any directory that would correspond to this state file
-            # State file hash is based on source path, so check work/* and intermediary/*
-            if [ -d "$branch_dir/work" ]; then
-                for work_path in "$branch_dir/work"/*; do
-                    if [ -d "$work_path" ]; then
-                        local work_hash
-                        # Reconstruct the source path and hash it
-                        # work_path is: branch_dir/work/<source_path>
-                        local reconstructed_source="${work_path#"$branch_dir/work"}"
-                        work_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
-                        if [ "$work_hash" = "$path_hash" ]; then
-                            has_work=true
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            if [ -d "$branch_dir/intermediary" ]; then
-                for inter_path in "$branch_dir/intermediary"/*; do
-                    if [ -d "$inter_path" ]; then
-                        local inter_hash
-                        local reconstructed_source="${inter_path#"$branch_dir/intermediary"}"
-                        inter_hash=$(echo -n "$reconstructed_source" | md5sum | cut -c1-12)
-                        if [ "$inter_hash" = "$path_hash" ]; then
-                            has_intermediary=true
-                            break
-                        fi
-                    fi
-                done
-            fi
-
-            # If no corresponding directories, remove the state file
-            if [ "$has_work" = false ] && [ "$has_intermediary" = false ]; then
-                if [ "$verbose" = true ]; then
-                    echo "Removing stale state file: $state_file"
+                if [ -n "$dirty_type" ]; then
+                    inactive_dirty+=("$session_id $branch $dirty_type $sd $scope")
+                else
+                    inactive_clean+=("$session_id $branch $sd $scope")
                 fi
-                run rm -f "$state_file"
-                cleaned=$((cleaned + 1))
             fi
         done
     done
 
-    if [ "$cleaned" -gt 0 ] && [ "$verbose" = true ]; then
-        echo "Cleaned up $cleaned stale state file(s)"
+    # Build active sessions list
+    if [ ${#active_sessions[@]} -gt 0 ]; then
+        REUSE_ACTIVE_SESSIONS=$(printf '%s\n' "${active_sessions[@]}")
     fi
 
-    return 0
+    # Build dirty sessions list
+    if [ ${#inactive_dirty[@]} -gt 0 ]; then
+        REUSE_DIRTY_SESSIONS=$(printf '%s\n' "${inactive_dirty[@]}")
+    fi
+
+    # Build clean sessions list
+    if [ ${#inactive_clean[@]} -gt 0 ]; then
+        REUSE_CLEAN_SESSIONS=$(printf '%s\n' "${inactive_clean[@]}")
+    fi
+
+    # Priority: active > inactive dirty > inactive clean
+    if [ ${#active_sessions[@]} -gt 0 ]; then
+        read -r REUSE_SESSION_ID REUSE_SESSION_BRANCH REUSE_SESSION_SOURCE REUSE_SESSION_SCOPE \
+            <<< "${active_sessions[0]}"
+        REUSE_SESSION_STATE="active"
+    elif [ ${#inactive_dirty[@]} -gt 0 ]; then
+        local _dtype
+        read -r REUSE_SESSION_ID REUSE_SESSION_BRANCH _dtype REUSE_SESSION_SOURCE REUSE_SESSION_SCOPE \
+            <<< "${inactive_dirty[0]}"
+        REUSE_SESSION_STATE="dirty"
+    elif [ ${#inactive_clean[@]} -gt 0 ]; then
+        read -r REUSE_SESSION_ID REUSE_SESSION_BRANCH REUSE_SESSION_SOURCE REUSE_SESSION_SCOPE \
+            <<< "${inactive_clean[0]}"
+        REUSE_SESSION_STATE="clean"
+    fi
 }
 
-# Clean up cache for a specific branch
-# Arguments: $1 = source directory, $2 = sanitized branch name
-clean_branch_cache() {
+# Reuse an inactive clean session or create a new one
+# Only reuses sessions matching the current source_dir (same-scope only).
+# Arguments: $1 = source_dir
+# Uses globals: REUSE_CLEAN_SESSIONS, CLAUDE_CAGE_CACHE
+# Sets: CLAUDE_CAGE_SESSION
+reuse_or_create_session() {
     local source_dir="$1"
-    local branch_name="$2"
-    local branch_cache="$CLAUDE_CAGE_CACHE/branches/$branch_name"
-    local work_dir="$branch_cache/work$source_dir"
-    local intermediary_dir="$branch_cache/intermediary$source_dir"
-    local caged_link="$source_dir/.caged/$branch_name"
+    if [ -n "${REUSE_CLEAN_SESSIONS:-}" ]; then
+        # Filter to same-source entries only (skip cross-scope clean sessions)
+        local same_source csid cbranch csource cscope
+        same_source=$(while IFS=' ' read -r csid cbranch csource cscope; do
+            [ "$csource" = "$source_dir" ] && echo "$csid $cbranch $csource $cscope"
+        done <<< "$REUSE_CLEAN_SESSIONS")
+        if [ -n "$same_source" ]; then
+            CLAUDE_CAGE_SESSION=$(echo "$same_source" | head -1 | awk '{print $1}')
+            echo "Reusin' clean session $CLAUDE_CAGE_SESSION."
+            return
+        fi
+    fi
+    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$source_dir" ]; then
+        sleep 1
+        CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+    fi
+}
 
-    # Remove source hooks for this branch
+# Clean up inactive clean sessions we're not using
+# Only cleans sessions matching the current source_dir (same-scope only).
+# Removes work dirs and empty parent/session dirs for all inactive clean
+# sessions except the one currently selected (CLAUDE_CAGE_SESSION).
+# Arguments: $1 = source_dir
+# Uses globals: REUSE_CLEAN_SESSIONS, CLAUDE_CAGE_SESSION, CLAUDE_CAGE_CACHE
+cleanup_stale_sessions() {
+    local source_dir="$1"
+    [ -z "${REUSE_CLEAN_SESSIONS:-}" ] && return
+    [ "${dry_run:-}" = true ] && return
+
+    local count=0
+    local csid cbranch csource cscope
+    while IFS=' ' read -r csid cbranch csource cscope; do
+        [ -z "$csid" ] && continue
+        [ "$csid" = "$CLAUDE_CAGE_SESSION" ] && continue
+        [ "$csource" != "$source_dir" ] && continue  # Skip cross-scope
+
+        local session_cache="$CLAUDE_CAGE_CACHE/sessions/$csid"
+        local work_dir="$session_cache/work$source_dir"
+        [ -d "$work_dir" ] || continue
+
+        rm -rf "$work_dir"
+        ((count++))
+
+        # Remove .caged symlink for this session
+        local caged_link="$source_dir/.caged/sessions/$csid"
+        [ -d "$caged_link" ] && rm -rf "$caged_link"
+
+        cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+
+        # Clean empty session dir
+        if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
+            rm -rf "$session_cache/work"
+        fi
+        if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
+            rm -rf "$session_cache"
+        fi
+    done <<< "$REUSE_CLEAN_SESSIONS"
+
+    if [ "$count" -gt 0 ]; then
+        echo "Cleaned up $count stale session(s)."
+    fi
+}
+
+# Check if a specific session has a live PID for a project
+# Arguments: $1 = source_dir, $2 = session_id
+session_is_active() {
+    local source_dir="$1"
+    local session_id="$2"
+    local _ph
+    _ph=$(path_hash "$source_dir")
+    local session_dir="$CLAUDE_CAGE_RUNTIME/sessions/$_ph"
+
+    [ -d "$session_dir" ] || return 1
+
+    for pidfile in "$session_dir"/*; do
+        [ -f "$pidfile" ] || continue
+        local pid
+        pid=$(basename "$pidfile")
+        # Read session ID from file content
+        local file_session
+        file_session=$(cat "$pidfile" 2>/dev/null)
+        if [ "$file_session" = "$session_id" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Clean up cache for a specific session
+# Arguments: $1 = source directory, $2 = session_id (timestamp)
+clean_session_cache() {
+    local source_dir="$1"
+    local session_id="$2"
+    local session_cache="$CLAUDE_CAGE_CACHE/sessions/$session_id"
+    local work_dir="$session_cache/work$source_dir"
+    # Read scope from work dir metadata (if present) to find the correct intermediary
+    local _clean_scope=""
+    if [ -f "$work_dir/.git/claude-cage-scope-path" ]; then
+        _clean_scope=$(cat "$work_dir/.git/claude-cage-scope-path")
+    fi
+
+    local intermediary_dir
+    intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$_clean_scope")
+    local caged_link="$source_dir/.caged/sessions/$session_id"
+
+    # Remove source hooks for this project (only if no other sessions active)
     local git_root
     git_root=$(get_git_root "$source_dir" 2>/dev/null)
     if [ -n "$git_root" ]; then
-        local pre_commit_hook="$git_root/.git/hooks/pre-commit.d/claude-cage-$branch_name"
-        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$branch_name"
+        local _ph
+        _ph=$(path_hash "$source_dir")
+        local post_commit_hook="$git_root/.git/hooks/post-commit.d/claude-cage-$_ph"
+        local post_merge_hook="$git_root/.git/hooks/post-merge.d/claude-cage-$_ph"
 
-        if [ -f "$pre_commit_hook" ]; then
-            run rm -f "$pre_commit_hook"
-            echo "Removed pre-commit hook: $pre_commit_hook"
-            maybe_remove_dispatcher "$git_root" "pre-commit"
-        fi
-
-        if [ -f "$post_commit_hook" ]; then
-            run rm -f "$post_commit_hook"
-            echo "Removed post-commit hook: $post_commit_hook"
-            maybe_remove_dispatcher "$git_root" "post-commit"
+        if ! has_other_sessions "$source_dir"; then
+            if [ -f "$post_commit_hook" ]; then
+                run rm -f "$post_commit_hook"
+                echo "Removed post-commit hook: $post_commit_hook"
+                maybe_remove_dispatcher "$git_root" "post-commit"
+            fi
+            if [ -f "$post_merge_hook" ]; then
+                run rm -f "$post_merge_hook"
+                echo "Removed post-merge hook: $post_merge_hook"
+                maybe_remove_dispatcher "$git_root" "post-merge"
+            fi
         fi
     fi
 
@@ -230,43 +771,67 @@ clean_branch_cache() {
         echo "Removed work directory: $work_dir"
     fi
 
-    # Remove intermediary directory
-    if [ -d "$intermediary_dir" ]; then
-        run rm -rf "$intermediary_dir"
-        echo "Removed intermediary directory: $intermediary_dir"
-    fi
-
-    # Remove state file
-    local path_hash
-    path_hash=$(echo -n "$source_dir" | md5sum | cut -c1-12)
-    local state_file="$branch_cache/state-$path_hash"
-    if [ -f "$state_file" ]; then
-        run rm -f "$state_file"
-        echo "Removed state file: $state_file"
-    fi
-
-    # Remove .caged symlink for this branch
-    if [ -L "$caged_link/work" ] || [ -L "$caged_link/intermediary" ]; then
+    # Remove .caged symlink for this session
+    if [ -d "$caged_link" ]; then
         run rm -rf "$caged_link"
         echo "Removed .caged symlink: $caged_link"
     fi
 
-    # Clean up empty branch directory if no other projects use it
-    if [ -d "$branch_cache/work" ] && [ -z "$(ls -A "$branch_cache/work" 2>/dev/null)" ]; then
-        run rm -rf "$branch_cache/work"
+    # Clean up empty parent directories between work_dir and session_cache/work
+    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+
+    # Clean up empty session directory if no other projects use it
+    if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
+        run rm -rf "$session_cache/work"
     fi
-    if [ -d "$branch_cache/intermediary" ] && [ -z "$(ls -A "$branch_cache/intermediary" 2>/dev/null)" ]; then
-        run rm -rf "$branch_cache/intermediary"
+    if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
+        run rm -rf "$session_cache"
+        echo "Removed empty session cache: $session_cache"
     fi
-    if [ -d "$branch_cache" ] && [ -z "$(ls -A "$branch_cache" 2>/dev/null)" ]; then
-        run rm -rf "$branch_cache"
-        echo "Removed empty branch cache: $branch_cache"
+
+    # Check if shared intermediary should be removed
+    # Only remove if no other sessions use it (no work dirs reference this source)
+    local other_sessions_exist=false
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        for sd in "$CLAUDE_CAGE_CACHE/sessions"/*; do
+            [ -d "$sd" ] || continue
+            if [ -d "$sd/work$source_dir/.git" ]; then
+                other_sessions_exist=true
+                break
+            fi
+        done
     fi
+
+    if [ "$other_sessions_exist" = false ] && [ -d "$intermediary_dir" ]; then
+        # Read scope_path before removing intermediary (for repos.list cleanup)
+        local scope_path=""
+        local scope_path_file
+        scope_path_file=$(get_scope_path_file "$intermediary_dir")
+        if [ -f "$scope_path_file" ]; then
+            scope_path=$(cat "$scope_path_file")
+        fi
+
+        run rm -rf "$intermediary_dir"
+        echo "Removed shared intermediary: $intermediary_dir"
+
+        # Remove from repos.list
+        repos_list_remove "$source_dir" "$scope_path"
+
+        # Clean up empty parent dirs
+        cleanup_empty_parents "$intermediary_dir" "$CLAUDE_CAGE_CACHE/intermediary" "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE"
+    fi
+
+    # Remove empty top-level cache dirs (scoped/ and intermediary/)
+    local _top_dir
+    for _top_dir in "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"; do
+        if [ -d "$_top_dir" ] && [ -z "$(ls -A "$_top_dir" 2>/dev/null)" ]; then
+            run rm -rf "$_top_dir"
+        fi
+    done
 
     # Clean up empty .caged directory
     local caged_dir="$source_dir/.caged"
     if [ -d "$caged_dir" ]; then
-        # Only .gitignore left?
         local remaining
         remaining=$(ls -A "$caged_dir" 2>/dev/null | grep -v '^\.gitignore$')
         if [ -z "$remaining" ]; then
@@ -274,6 +839,574 @@ clean_branch_cache() {
             echo "Removed empty .caged directory"
         fi
     fi
+}
+
+# Install the scope-prefix-stripping script into the intermediary.
+# This is the single source of truth for the binary-safe awk logic that
+# strips scope prefixes from fast-export stream paths. Called once during
+# intermediary setup; invoked by strip_scope_prefix() and the post-commit hook.
+# Arguments: $1 = intermediary_dir
+install_strip_prefix_script() {
+    local intermediary_dir="$1"
+    cat > "$intermediary_dir/claude-cage-strip-prefix" << 'STRIPEOF'
+#!/bin/sh
+# Strip a path prefix from fast-export stream M/D/R/C lines (in-place).
+# Binary-safe: tracks "data N" byte counts to skip over blob/message content
+# so only actual path operation lines are modified.
+# Usage: claude-cage-strip-prefix <prefix> <file>
+PREFIX="$1"
+FILE="$2"
+TMP="${FILE}.strip-tmp"
+LC_ALL=C awk -v prefix="$PREFIX" '
+BEGIN { OFS = " "; dr = 0; plen = length(prefix) }
+{
+    # Inside a data section: pass through, count bytes consumed
+    # (length + 1 accounts for the newline awk consumed as RS)
+    if (dr > 0) { print; dr -= length($0) + 1; next }
+
+    # "data N" starts a data section — pass through, enter byte-counting mode
+    if (/^data [0-9]+$/) { dr = substr($0, 6) + 0; print; next }
+
+    # Strip prefix from M/D/R/C path fields.
+    # Paths may be C-quoted ("path") when they contain high-bit bytes, tabs,
+    # backslashes, or double-quotes. Check for both unquoted and quoted forms.
+    if ($1 == "M" && NF >= 4) {
+        if (substr($4, 1, plen) == prefix)
+            $4 = substr($4, plen + 1)
+        else if (substr($4, 1, 1) == "\"" && substr($4, 2, plen) == prefix)
+            $4 = "\"" substr($4, plen + 2)
+    }
+    else if ($1 == "D" && NF >= 2) {
+        if (substr($2, 1, plen) == prefix)
+            $2 = substr($2, plen + 1)
+        else if (substr($2, 1, 1) == "\"" && substr($2, 2, plen) == prefix)
+            $2 = "\"" substr($2, plen + 2)
+    }
+    else if (($1 == "R" || $1 == "C") && NF >= 3) {
+        if (substr($2, 1, plen) == prefix) $2 = substr($2, plen + 1)
+        else if (substr($2, 1, 1) == "\"" && substr($2, 2, plen) == prefix)
+            $2 = "\"" substr($2, plen + 2)
+        if (substr($3, 1, plen) == prefix) $3 = substr($3, plen + 1)
+        else if (substr($3, 1, 1) == "\"" && substr($3, 2, plen) == prefix)
+            $3 = "\"" substr($3, plen + 2)
+    }
+    print
+}
+' "$FILE" > "$TMP" && mv "$TMP" "$FILE"
+STRIPEOF
+    chmod +x "$intermediary_dir/claude-cage-strip-prefix"
+}
+
+# Install the per-commit sync helper script into the intermediary.
+# This is the single source of truth for syncing one source commit to the intermediary
+# via fast-export/fast-import with pathspec excludes. Called by both post-commit and
+# post-merge hooks on the source repo.
+# Arguments: $1 = intermediary_dir
+install_sync_commit_script() {
+    local intermediary_dir="$1"
+    cat > "$intermediary_dir/claude-cage-sync-commit" << 'SYNCEOF'
+#!/bin/bash
+# Sync a single source commit to the intermediary via fast-export/fast-import.
+# Called by post-commit and post-merge hooks on the source repo.
+# Arguments: $1 = commit hash to sync
+# Required environment variables (set by calling hook):
+#   INTERMEDIARY, SOURCE_MARKS, IMPORT_MARKS, COMMIT_MAP, SYNC_LOG
+#   SCOPE_PATH, SCOPE_LABEL, EXCLUDE_PATHSPECS_FILE
+COMMIT_HASH="$1"
+COMMIT_SHORT="${COMMIT_HASH:0:8}"
+
+_sync_log() {
+    printf '[%s] %s %-14s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" "$3" >> "$SYNC_LOG"
+}
+
+SUBJECT=$(git log -1 --format=%s "$COMMIT_HASH" | head -c 50)
+_sync_log "$COMMIT_SHORT" ">>intermediary" "applying: $SUBJECT"
+
+# Build combined pathspec: scope include + exclude (read from metadata file at runtime)
+PATHSPEC_ARGS=()
+[ -n "$SCOPE_PATH" ] && PATHSPEC_ARGS+=("$SCOPE_PATH/")
+if [ -f "$EXCLUDE_PATHSPECS_FILE" ]; then
+    while IFS= read -r _ps; do
+        [ -n "$_ps" ] && PATHSPEC_ARGS+=("$_ps")
+    done < "$EXCLUDE_PATHSPECS_FILE"
+fi
+
+EXPORT_ERR=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-err.$$")
+EXPORT_OUT=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-export-out.$$")
+
+# Determine branch for this commit (needed for ref rewriting and marks-gap injection)
+current_branch=$(git branch --show-current 2>/dev/null)
+# If detached or branch detection fails, try to find which branch contains this commit
+if [ -z "$current_branch" ]; then
+    current_branch=$(git branch --contains "$COMMIT_HASH" 2>/dev/null | head -1 | sed 's/^[ *]*//')
+fi
+
+# Export to temp file first so we can detect excluded-only commits before fast-import.
+# git fast-export --export-marks only writes commit marks (blobs are ignored per docs).
+# This means incremental exports lose blob marks from source-marks. For excluded-only
+# commits, fast-export can't reference parent blobs -> emits an orphan root commit
+# instead of a proper child. Piping that to fast-import would fail with
+# "new tip does not contain old tip". Detecting and skipping avoids this.
+git fast-export --import-marks="$SOURCE_MARKS" --export-marks="$SOURCE_MARKS" -1 "$COMMIT_HASH" \
+    ${PATHSPEC_ARGS:+-- "${PATHSPEC_ARGS[@]}"} \
+    >"$EXPORT_OUT" 2>"$EXPORT_ERR"
+EXPORT_RC=$?
+
+if [ "$EXPORT_RC" -ne 0 ]; then
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-export FAILED rc=$EXPORT_RC"
+    [ -s "$EXPORT_ERR" ] && _sync_log "$COMMIT_SHORT" ">>intermediary" "export stderr: $(cat "$EXPORT_ERR")"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL (export=$EXPORT_RC)"
+    rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+    exit 1
+fi
+
+# Rewrite hash-based refs to proper branch refs.
+# git fast-export -1 <hash> uses the hash as the ref name (e.g. "commit <hash>")
+# instead of "commit refs/heads/<branch>". fast-import needs a proper ref to
+# update the branch pointer.
+if [ -n "$current_branch" ]; then
+    sed -i "s|^commit ${COMMIT_HASH}$|commit refs/heads/${current_branch}|;s|^reset ${COMMIT_HASH}$|reset refs/heads/${current_branch}|" "$EXPORT_OUT"
+fi
+
+# Strip scope prefix from fast-export paths (scoped intermediaries only).
+# Uses the shared strip-prefix script installed in the intermediary.
+if [ -n "$SCOPE_PATH" ]; then
+    "$INTERMEDIARY/claude-cage-strip-prefix" "${SCOPE_PATH}/" "$EXPORT_OUT"
+fi
+
+# Excluded-only detection: no commit line means fast-export dropped it entirely (small repos).
+if ! grep -q '^commit ' "$EXPORT_OUT"; then
+    echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit (no commit line), mapped to 0"
+    echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
+    rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+    exit 0
+fi
+
+# No from line: either excluded-only (parent in marks, all changes filtered out)
+# or marks gap (parent not in marks, e.g. from sync_to_source/git-am or prior
+# excluded-only commit). Check parent to distinguish.
+if ! grep -q '^from ' "$EXPORT_OUT"; then
+    _PARENT=$(git rev-parse "${COMMIT_HASH}^" 2>/dev/null) || true
+    _PARENT_MARKED=false
+    if [ -n "$_PARENT" ] && [ -f "$SOURCE_MARKS" ] && grep -q " ${_PARENT}$" "$SOURCE_MARKS" 2>/dev/null; then
+        _PARENT_MARKED=true
+    fi
+    if [ "$_PARENT_MARKED" = true ] || [ -z "$_PARENT" ]; then
+        # Parent IS in marks (or root commit) but no from line -> truly excluded-only
+        echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
+        _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
+        rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+        exit 0
+    fi
+    # Parent NOT in marks — marks gap. Inject intermediary branch HEAD as parent.
+    # The deleteall + full-tree reconstruction produces the correct tree state.
+    _INT_HEAD=$(git -C "$INTERMEDIARY" rev-parse "$current_branch" 2>/dev/null)
+    if [ -n "$_INT_HEAD" ]; then
+        _sync_log "$COMMIT_SHORT" ">>intermediary" "marks gap: injecting parent ${_INT_HEAD:0:8}"
+        awk -v parent="$_INT_HEAD" '/^deleteall$/ && !done { print "from " parent; done=1 } { print }' \
+            "$EXPORT_OUT" > "$EXPORT_OUT.fix" && mv "$EXPORT_OUT.fix" "$EXPORT_OUT"
+    else
+        echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
+        _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only (no intermediary HEAD for $current_branch)"
+        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
+        rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+        exit 0
+    fi
+fi
+
+echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary$SCOPE_LABEL, run 'git pull' from claude-cage"
+
+IMPORT_ERR=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.$$")
+git -C "$INTERMEDIARY" fast-import --import-marks="$IMPORT_MARKS" --export-marks="$IMPORT_MARKS" --quiet \
+    <"$EXPORT_OUT" 2>"$IMPORT_ERR"
+IMPORT_RC=$?
+
+if [ "$IMPORT_RC" -ne 0 ]; then
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=$IMPORT_RC"
+    [ -s "$IMPORT_ERR" ] && _sync_log "$COMMIT_SHORT" ">>intermediary" "import stderr: $(cat "$IMPORT_ERR")"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL (import=$IMPORT_RC)"
+    rm -f "$EXPORT_ERR" "$IMPORT_ERR" "$EXPORT_OUT"
+    exit 1
+fi
+rm -f "$EXPORT_ERR" "$IMPORT_ERR" "$EXPORT_OUT"
+
+# Update commit mapping from marks
+if [ -f "$SOURCE_MARKS" ] && [ -f "$IMPORT_MARKS" ]; then
+    awk 'NR==FNR { source[$1]=$2; next } { if ($1 in source) print $2, source[$1] }' \
+        "$SOURCE_MARKS" "$IMPORT_MARKS" >> "$COMMIT_MAP"
+fi
+
+# If commit still not in mapping after marks join, record as excluded-only
+if ! grep -q " ${COMMIT_HASH}$" "$COMMIT_MAP" 2>/dev/null; then
+    echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+else
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import ok"
+fi
+SYNCEOF
+    chmod +x "$intermediary_dir/claude-cage-sync-commit"
+}
+
+# Strip the scope prefix from fast-export stream paths in a temp file.
+# Thin wrapper around the installed strip-prefix script.
+# Arguments: $1 = file, $2 = prefix (e.g. "services/api/"), $3 = intermediary_dir
+strip_scope_prefix() {
+    local file="$1"
+    local prefix="$2"
+    local intermediary_dir="$3"
+    "$intermediary_dir/claude-cage-strip-prefix" "$prefix" "$file"
+}
+
+# Build :(exclude,glob) pathspec args from pipe-delimited exclude patterns
+# Patterns without / get **/ prepended for basename matching at any depth
+# Patterns with / are used as-is for full path matching
+# Each pattern also gets a /**-suffixed variant to match directory contents
+# (git pathspec matches file paths, not directories, so **/__pycache__
+# alone won't match __pycache__/module.pyc — the /** variant is needed)
+# Arguments: $1 = pipe-delimited exclude patterns (e.g. ".env|*.log|secrets/")
+# Output: one pathspec arg per line on stdout
+build_exclude_pathspecs() {
+    local cfg_exclude="$1"
+    if [ -z "$cfg_exclude" ]; then
+        return
+    fi
+    local -a patterns
+    IFS='|' read -ra patterns <<< "$cfg_exclude"
+    local pat pathspec
+    for pat in "${patterns[@]}"; do
+        if [[ "$pat" == */* ]]; then
+            pathspec="$pat"
+        else
+            pathspec="**/$pat"
+        fi
+        printf '%s\n' ":(exclude,glob)$pathspec"
+        # Add /** variant to match files inside matching directories
+        # Strip trailing / or /* before appending /** to avoid double slashes
+        local base="${pathspec%/}"
+        base="${base%/\*}"
+        printf '%s\n' ":(exclude,glob)${base}/**"
+    done
+}
+
+# Compute a hash of exclude patterns for change detection
+compute_exclude_hash() {
+    local exclude_patterns="$1"
+    if [ -z "$exclude_patterns" ]; then
+        echo "empty"
+    else
+        echo -n "$exclude_patterns" | md5sum | cut -c1-32
+    fi
+}
+
+# Build commit mapping from fast-export/fast-import marks files
+# Joins source marks and import marks on mark ID to produce
+# <intermediary-hash> <source-hash> lines
+# Also detects dropped commits (in source rev-list but absent from source marks)
+# and maps them to "0 <source-hash>"
+# Arguments:
+#   $1 - source_marks_path
+#   $2 - import_marks_path
+#   $3 - commit_map_path (output, append mode)
+#   $4 - source_dir (for rev-list of dropped commits)
+#   $5 - rev_range (e.g. "main~50..main feature/foo")
+build_commit_map_from_marks() {
+    local source_marks="$1"
+    local import_marks="$2"
+    local commit_map="$3"
+    local source_dir="$4"
+    local rev_range="$5"
+
+    # Join marks on mark ID: source marks have :<id> <source-hash>,
+    # import marks have :<id> <intermediary-hash>
+    # Both files are in format: :<mark-id> <hash>
+    if [ -f "$source_marks" ] && [ -f "$import_marks" ]; then
+        # Use awk to join on mark ID
+        awk '
+        NR==FNR { source[$1] = $2; next }
+        { if ($1 in source) print $2, source[$1] }
+        ' "$source_marks" "$import_marks" >> "$commit_map"
+    fi
+
+    # Detect dropped commits (in source rev-list but not in source marks)
+    if [ -n "$rev_range" ] && [ -n "$source_dir" ] && [ -f "$source_marks" ]; then
+        # Get all commits in rev range
+        local all_commits
+        all_commits=$(git -C "$source_dir" rev-list $rev_range 2>/dev/null) || true
+
+        # Get all source hashes from marks
+        local -A marked_hashes
+        while read -r _mark hash; do
+            marked_hashes["$hash"]=1
+        done < "$source_marks"
+
+        # Commits in rev-list but not in marks were dropped (exclude-only commits)
+        local commit
+        for commit in $all_commits; do
+            if [ -z "${marked_hashes[$commit]+_}" ]; then
+                echo "0 $commit" >> "$commit_map"
+            fi
+        done
+    fi
+}
+
+# Catch up all intermediary branches to match source
+# Adds the current branch if missing, then incrementally fast-exports
+# new commits for every branch in the intermediary.
+# Arguments: $1 = source_dir, $2 = intermediary_dir
+# Returns 0 if any branches were updated, 1 if all already in sync
+catchup_intermediary_branches() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+
+    local source_marks_path
+    source_marks_path=$(get_source_marks_path "$intermediary_dir")
+    local import_marks_path
+    import_marks_path=$(get_import_marks_path "$intermediary_dir")
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
+
+    # Read scope_path from metadata (empty for unscoped)
+    local scope_path=""
+    local scope_path_file
+    scope_path_file=$(get_scope_path_file "$intermediary_dir")
+    if [ -f "$scope_path_file" ]; then
+        scope_path=$(cat "$scope_path_file")
+    fi
+
+    # When scoped, fast-export must run from git root (pathspecs are CWD-relative)
+    local export_dir="$source_dir"
+    if [ -n "$scope_path" ]; then
+        export_dir=$(get_git_root "$source_dir")
+    fi
+
+    # Build combined pathspec args: scope include + exclude
+    local -a pathspec_args=()
+    [ -n "$scope_path" ] && pathspec_args+=("$scope_path/")
+    if [ -n "$cfg_exclude" ]; then
+        while IFS= read -r _ea; do
+            pathspec_args+=("$_ea")
+        done < <(build_exclude_pathspecs "$cfg_exclude")
+    fi
+
+    local any_updated=false
+
+    # Check if current branch exists in intermediary
+    local branch_name
+    branch_name=$(get_source_branch "$source_dir")
+    if [ -n "$branch_name" ] && ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+        echo "  Addin' branch $branch_name to intermediary..."
+        any_updated=true
+
+        # Calculate range base from existing intermediary's oldest commit
+        local existing_range_base
+        existing_range_base=$(git -C "$intermediary_dir" rev-list --all --reverse 2>/dev/null | head -1)
+
+        # Map back to source hash
+        local source_range_base=""
+        if [ -f "$commit_map_path" ]; then
+            source_range_base=$(awk -v ih="$existing_range_base" '$1 == ih { print $2; exit }' "$commit_map_path")
+        fi
+
+        if [ -n "$source_range_base" ] && [ "$dry_run" != true ]; then
+            local catchup_tmp
+            catchup_tmp=$(mktemp)
+            git -C "$export_dir" fast-export \
+                --import-marks="$source_marks_path" \
+                --export-marks="$source_marks_path" \
+                "${source_range_base}..${branch_name}" \
+                ${pathspec_args:+-- "${pathspec_args[@]}"} \
+                >"$catchup_tmp" 2>/dev/null
+            [ -n "$scope_path" ] && strip_scope_prefix "$catchup_tmp" "$scope_path/" "$intermediary_dir"
+            git -C "$intermediary_dir" fast-import \
+                --import-marks="$import_marks_path" \
+                --export-marks="$import_marks_path" \
+                --quiet <"$catchup_tmp" 2>/dev/null
+            rm -f "$catchup_tmp"
+
+            # Update commit map
+            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${source_range_base}..${branch_name}"
+        fi
+
+        # If branch still not in intermediary (all unique commits out-of-scope),
+        # create ref from merge-base mapping
+        if ! git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+            local _mb_hash _int_hash=""
+            _mb_hash=$(git -C "$source_dir" merge-base "$(get_default_branch "$source_dir")" "$branch_name" 2>/dev/null) || true
+            if [ -n "$_mb_hash" ] && [ -f "$commit_map_path" ]; then
+                _int_hash=$(awk -v sh="$_mb_hash" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+                # Walk back if merge-base maps to 0 or isn't mapped
+                local _walker="$_mb_hash" _walk_max=50
+                while [ -z "$_int_hash" ] && [ "$_walk_max" -gt 0 ]; do
+                    _walker=$(git -C "$source_dir" rev-parse "${_walker}^" 2>/dev/null) || break
+                    _int_hash=$(awk -v sh="$_walker" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+                    _walk_max=$((_walk_max - 1))
+                done
+            fi
+            if [ -n "$_int_hash" ]; then
+                git -C "$intermediary_dir" branch "$branch_name" "$_int_hash" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    # Catch up all intermediary branches to source
+    local ib
+    while IFS= read -r ib; do
+        ib="${ib#  }"  # strip leading spaces from git branch output
+        ib="${ib#\* }"  # strip active branch marker
+        [ -z "$ib" ] && continue
+
+        # Check if source has this branch
+        if ! git -C "$source_dir" rev-parse --verify "$ib" >/dev/null 2>&1; then
+            continue
+        fi
+
+        local source_head
+        source_head=$(git -C "$source_dir" rev-parse "$ib" 2>/dev/null)
+        local intermediary_head
+        intermediary_head=$(git -C "$intermediary_dir" rev-parse "$ib" 2>/dev/null)
+
+        # Check if source is ahead (source HEAD not mapped)
+        if [ -f "$commit_map_path" ]; then
+            if grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
+                continue  # Already in sync
+            fi
+            # Also check if intermediary head maps to source head
+            if grep -q "^${intermediary_head} ${source_head}$" "$commit_map_path" 2>/dev/null; then
+                continue  # Already in sync
+            fi
+        fi
+
+        echo "  Catching up branch $ib..."
+        any_updated=true
+        if [ "$dry_run" != true ]; then
+            # Look up source hash corresponding to intermediary HEAD via commit map
+            local mapped_source_base=""
+            if [ -f "$commit_map_path" ]; then
+                mapped_source_base=$(awk -v ih="$intermediary_head" '$1 == ih && $2 != "0" { print $2; exit }' "$commit_map_path")
+            fi
+            if [ -z "$mapped_source_base" ]; then
+                continue  # Can't determine range base
+            fi
+
+            local catchup_tmp
+            catchup_tmp=$(mktemp)
+            git -C "$export_dir" fast-export \
+                --import-marks="$source_marks_path" \
+                --export-marks="$source_marks_path" \
+                "${mapped_source_base}..${ib}" \
+                ${pathspec_args:+-- "${pathspec_args[@]}"} \
+                >"$catchup_tmp" 2>/dev/null
+            [ -n "$scope_path" ] && strip_scope_prefix "$catchup_tmp" "$scope_path/" "$intermediary_dir"
+            git -C "$intermediary_dir" fast-import \
+                --import-marks="$import_marks_path" \
+                --export-marks="$import_marks_path" \
+                --quiet <"$catchup_tmp" 2>/dev/null || true
+            rm -f "$catchup_tmp"
+
+            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${mapped_source_base}..${ib}"
+        fi
+    done < <(git -C "$intermediary_dir" branch --list 2>/dev/null)
+
+    # Discover source branches not yet in intermediary and create refs
+    local _default_branch
+    _default_branch=$(get_default_branch "$source_dir")
+    local _sb
+    while IFS= read -r _sb; do
+        [ "$_sb" = "$branch_name" ] && continue  # Already handled above
+        if git -C "$intermediary_dir" rev-parse --verify "$_sb" >/dev/null 2>&1; then
+            continue  # Already in intermediary
+        fi
+        # Check if branch's merge-base is mapped in the commit map
+        local _mb_hash _int_hash=""
+        _mb_hash=$(git -C "$source_dir" merge-base "$_default_branch" "$_sb" 2>/dev/null) || continue
+        if [ -f "$commit_map_path" ]; then
+            _int_hash=$(awk -v sh="$_mb_hash" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+            local _walker="$_mb_hash" _walk_max=50
+            while [ -z "$_int_hash" ] && [ "$_walk_max" -gt 0 ]; do
+                _walker=$(git -C "$source_dir" rev-parse "${_walker}^" 2>/dev/null) || break
+                _int_hash=$(awk -v sh="$_walker" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+                _walk_max=$((_walk_max - 1))
+            done
+        fi
+        if [ -n "$_int_hash" ]; then
+            # Try fast-export first; if all commits are out-of-scope, create ref from mapping
+            if [ "$dry_run" != true ]; then
+                local catchup_tmp
+                catchup_tmp=$(mktemp)
+                git -C "$export_dir" fast-export \
+                    --import-marks="$source_marks_path" \
+                    --export-marks="$source_marks_path" \
+                    "${_mb_hash}..${_sb}" \
+                    ${pathspec_args:+-- "${pathspec_args[@]}"} \
+                    >"$catchup_tmp" 2>/dev/null || true
+                if [ -s "$catchup_tmp" ]; then
+                    [ -n "$scope_path" ] && strip_scope_prefix "$catchup_tmp" "$scope_path/" "$intermediary_dir"
+                    git -C "$intermediary_dir" fast-import \
+                        --import-marks="$import_marks_path" \
+                        --export-marks="$import_marks_path" \
+                        --quiet <"$catchup_tmp" 2>/dev/null || true
+                    build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${_mb_hash}..${_sb}"
+                fi
+                rm -f "$catchup_tmp"
+            fi
+            # If branch still not created (all commits out-of-scope), create from mapping
+            if ! git -C "$intermediary_dir" rev-parse --verify "$_sb" >/dev/null 2>&1; then
+                git -C "$intermediary_dir" branch "$_sb" "$_int_hash" 2>/dev/null || true
+            fi
+            any_updated=true
+        fi
+    done < <(git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/)
+
+    # Update source branches file
+    local source_branches_path
+    source_branches_path=$(get_source_branches_path "$intermediary_dir")
+    git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/ > "$source_branches_path"
+
+    if [ "$any_updated" = true ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Detect the default branch for a source repository
+# Detection order:
+# 1. cfg_git_defaultBranch if not "auto"
+# 2. git symbolic-ref refs/remotes/origin/HEAD
+# 3. Check for main then master branch existence
+# 4. Last resort: current branch
+# Arguments: $1 = source directory
+get_default_branch() {
+    local source_dir="$1"
+
+    # 1. Config override
+    if [ -n "${cfg_git_defaultBranch:-}" ] && [ "$cfg_git_defaultBranch" != "auto" ]; then
+        echo "$cfg_git_defaultBranch"
+        return
+    fi
+
+    # 2. Remote HEAD symref
+    local remote_head
+    remote_head=$(git -C "$source_dir" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+    if [ -n "$remote_head" ]; then
+        echo "$remote_head"
+        return
+    fi
+
+    # 3. Check for main then master
+    if git -C "$source_dir" rev-parse --verify main >/dev/null 2>&1; then
+        echo "main"
+        return
+    fi
+    if git -C "$source_dir" rev-parse --verify master >/dev/null 2>&1; then
+        echo "master"
+        return
+    fi
+
+    # 4. Current branch
+    git -C "$source_dir" branch --show-current
 }
 
 # Get current branch from source project
@@ -299,123 +1432,279 @@ get_source_branch() {
     echo "$branch"
 }
 
-# Create the intermediary and work directories
-# Arguments: $1 = source directory (defaults to pwd)
+# Create or update the bare intermediary and work directory
+# Arguments: $1 = source directory (defaults to pwd), $2 = scope_path (optional, relative to git root)
 create_intermediary_clone() {
     local source_dir="${1:-$(pwd)}"
+    local scope_path="${2:-}"
     local intermediary_dir
     local work_dir
-    intermediary_dir=$(get_cage_path "$source_dir" "intermediary")
-    work_dir=$(get_cage_path "$source_dir" "work")
+    intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$scope_path")
+    work_dir=$(get_work_path "$source_dir")
+
+    # When scoped, fast-export must run from git root (pathspecs are CWD-relative)
+    local export_dir="$source_dir"
+    if [ -n "$scope_path" ]; then
+        export_dir=$(get_git_root "$source_dir")
+    fi
 
     # Capture source branch before we start
     local source_branch
     source_branch=$(get_source_branch "$source_dir")
+    local branch_name="${source_branch}"
+
+    # Detect default branch for history anchoring
+    local default_branch
+    default_branch=$(get_default_branch "$source_dir")
+    local history_depth="${cfg_git_historyDepth:-50}"
+
     echo "Source branch: $source_branch"
+    echo "Default branch: $default_branch"
 
-    echo ""
-    echo "Buildin' your intermediary now..."
+    # Compute exclude hash for change detection
+    local current_exclude_hash
+    current_exclude_hash=$(compute_exclude_hash "$cfg_exclude")
 
-    # Clean up existing directories if they exist
-    if [ -d "$intermediary_dir" ]; then
-        echo "  Cleanin' out the old intermediary..."
-        run rm -rf "$intermediary_dir"
+    if [ -d "$intermediary_dir" ] && [ -f "$intermediary_dir/HEAD" ]; then
+        # Existing intermediary - check exclude hash
+        local stored_exclude_hash=""
+        local exclude_hash_path
+        exclude_hash_path=$(get_exclude_hash_path "$intermediary_dir")
+        if [ -f "$exclude_hash_path" ]; then
+            stored_exclude_hash=$(cat "$exclude_hash_path")
+        fi
+
+        if [ "$stored_exclude_hash" != "$current_exclude_hash" ]; then
+            echo ""
+            echo "Exclude patterns changed. Need to rebuild the intermediary."
+            echo "  Cleanin' out the old intermediary..."
+            run rm -rf "$intermediary_dir"
+            # Fall through to create new
+        fi
     fi
+
+    if [ ! -d "$intermediary_dir" ]; then
+        # Create new bare intermediary
+        echo ""
+        echo "Buildin' your intermediary now..."
+
+        run mkdir -p "$(dirname "$intermediary_dir")"
+
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] git init --bare $intermediary_dir"
+            echo "[dry-run] git fast-export ... | git fast-import ..."
+        else
+            git init --bare "$intermediary_dir" --quiet
+
+            # Install strip-prefix script (needed before first fast-export for scoped)
+            [ -n "$scope_path" ] && install_strip_prefix_script "$intermediary_dir"
+
+            # Calculate export range with merge-base widening
+            local range_base
+            range_base=$(git -C "$source_dir" rev-parse "${default_branch}~${history_depth}" 2>/dev/null) || \
+                range_base=$(git -C "$source_dir" rev-list --max-parents=0 HEAD 2>/dev/null | tail -1)
+
+            # Widen to include merge-base of current branch if needed
+            if [ "$source_branch" != "$default_branch" ]; then
+                local merge_base
+                merge_base=$(git -C "$source_dir" merge-base "$default_branch" "$source_branch" 2>/dev/null) || true
+                if [ -n "$merge_base" ]; then
+                    if ! git -C "$source_dir" merge-base --is-ancestor "$range_base" "$merge_base" 2>/dev/null; then
+                        # Merge base is older than our range - widen
+                        range_base="$merge_base"
+                    fi
+                fi
+            fi
+
+            # Discover in-scope branches (merge-base falls within range)
+            local -a export_branches=("$default_branch")
+            if [ "$source_branch" != "$default_branch" ]; then
+                export_branches+=("$source_branch")
+            fi
+
+            local branch
+            while IFS= read -r branch; do
+                [ "$branch" = "$default_branch" ] && continue
+                [ "$branch" = "$source_branch" ] && continue
+                local mb
+                mb=$(git -C "$source_dir" merge-base "$default_branch" "$branch" 2>/dev/null) || continue
+                if git -C "$source_dir" merge-base --is-ancestor "$range_base" "$mb" 2>/dev/null; then
+                    export_branches+=("$branch")
+                fi
+            done < <(git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/)
+
+            # Build rev range args
+            # If range_base is a root commit, export full branches (no range prefix)
+            # because root..HEAD is empty when HEAD == root
+            local is_root_range=false
+            if ! git -C "$source_dir" rev-parse --verify "${range_base}^" >/dev/null 2>&1; then
+                is_root_range=true
+            fi
+
+            local -a range_args=()
+            for b in "${export_branches[@]}"; do
+                range_args+=("$b")
+            done
+
+            local source_marks_path
+            source_marks_path=$(get_source_marks_path "$intermediary_dir")
+            local import_marks_path
+            import_marks_path=$(get_import_marks_path "$intermediary_dir")
+            local commit_map_path
+            commit_map_path=$(get_commit_map_path "$intermediary_dir")
+
+            if [ "$verbose" = true ]; then
+                if [ "$is_root_range" = true ]; then
+                    echo -e "${_yellow}[run] git fast-export {${export_branches[*]}} | git fast-import${_reset}" >&2
+                else
+                    echo -e "${_yellow}[run] git fast-export ${range_base}..{${export_branches[*]}} | git fast-import${_reset}" >&2
+                fi
+            fi
+
+            # Build combined pathspec args: scope include + exclude
+            local -a pathspec_args=()
+            [ -n "$scope_path" ] && pathspec_args+=("$scope_path/")
+            if [ -n "$cfg_exclude" ]; then
+                while IFS= read -r _ea; do
+                    pathspec_args+=("$_ea")
+                done < <(build_exclude_pathspecs "$cfg_exclude")
+            fi
+
+            # Build fast-export range arguments
+            local -a export_range_args=()
+            if [ "$is_root_range" = true ]; then
+                # Root commit included: export full branches
+                export_range_args=("${range_args[@]}")
+            else
+                # Normal range: range_base..first_branch + other branches
+                export_range_args=("${range_base}..${range_args[0]}" "${range_args[@]:1}")
+            fi
+
+            local export_tmp
+            export_tmp=$(mktemp)
+            git -C "$export_dir" fast-export \
+                --export-marks="$source_marks_path" \
+                "${export_range_args[@]}" \
+                ${pathspec_args:+-- "${pathspec_args[@]}"} \
+                >"$export_tmp" 2>/dev/null
+            [ -n "$scope_path" ] && strip_scope_prefix "$export_tmp" "$scope_path/" "$intermediary_dir"
+            git -C "$intermediary_dir" fast-import \
+                --export-marks="$import_marks_path" \
+                --quiet <"$export_tmp" 2>/dev/null
+            rm -f "$export_tmp"
+
+            # Fix bare HEAD to point to default branch
+            git -C "$intermediary_dir" symbolic-ref HEAD "refs/heads/$default_branch"
+
+            # Build commit mapping rev range
+            local rev_range
+            if [ "$is_root_range" = true ]; then
+                rev_range="${range_args[*]}"
+            else
+                rev_range="${range_base}..${range_args[0]}"
+                for b in "${range_args[@]:1}"; do
+                    rev_range="$rev_range $b"
+                done
+            fi
+            : > "$commit_map_path"
+            build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "$rev_range"
+
+            # Store source branch names for pre-receive guard
+            local source_branches_path
+            source_branches_path=$(get_source_branches_path "$intermediary_dir")
+            git -C "$source_dir" for-each-ref --format='%(refname:short)' refs/heads/ > "$source_branches_path"
+
+            # Prevent force pushes
+            git -C "$intermediary_dir" config receive.denyNonFastForwards true
+
+            # Store exclude hash
+            local exclude_hash_path
+            exclude_hash_path=$(get_exclude_hash_path "$intermediary_dir")
+            echo "$current_exclude_hash" > "$exclude_hash_path"
+
+            # Store scope and git root metadata
+            echo "$scope_path" > "$(get_scope_path_file "$intermediary_dir")"
+            local git_root
+            git_root=$(get_git_root "$source_dir")
+            echo "$git_root" > "$(get_git_root_file "$intermediary_dir")"
+
+            # Store exclude pathspecs for hook runtime use
+            local exclude_pathspecs_file
+            exclude_pathspecs_file=$(get_exclude_pathspecs_file "$intermediary_dir")
+            : > "$exclude_pathspecs_file"
+            if [ -n "$cfg_exclude" ]; then
+                build_exclude_pathspecs "$cfg_exclude" > "$exclude_pathspecs_file"
+            fi
+
+            # Create empty sync.log so symlinks aren't broken before first sync
+            touch "$intermediary_dir/sync.log"
+
+            # Register in repos.list
+            repos_list_add "$source_dir" "$scope_path"
+
+            # Clean up any narrower scoped intermediaries now covered by this one
+            cleanup_child_intermediaries "$source_dir" "$scope_path"
+        fi
+
+        echo ""
+        echo "Intermediary's ready at: $intermediary_dir"
+        local commit_count
+        commit_count=$(git -C "$intermediary_dir" rev-list --all --count 2>/dev/null || echo "?")
+        local branch_count
+        branch_count=$(git -C "$intermediary_dir" branch --list 2>/dev/null | wc -l)
+        echo "  $commit_count commits across $branch_count branch(es)"
+    else
+        # Existing intermediary - incremental updates
+        echo ""
+        echo "Intermediary exists, checkin' for updates..."
+
+        catchup_intermediary_branches "$source_dir" "$intermediary_dir" || true
+    fi
+
+    # Install hooks on bare intermediary
+    if [ "$dry_run" != true ]; then
+        install_intermediary_hooks "$intermediary_dir"
+    fi
+
+    # Create/recreate work directory
     if [ -d "$work_dir" ]; then
         echo "  Cleanin' out the old workspace..."
         run rm -rf "$work_dir"
     fi
 
-    # Ensure parent directory exists
-    run mkdir -p "$(dirname "$intermediary_dir")"
-
-    # Build sparse-checkout patterns: include everything, then exclude configured patterns
-    # Format: /* (include all), then !pattern for each exclude
-    local -a sparse_patterns=("/*")
-    if [ -n "$cfg_exclude" ]; then
-        IFS='|' read -ra excludes <<< "$cfg_exclude"
-        for pattern in "${excludes[@]}"; do
-            sparse_patterns+=("!$pattern")
-        done
-    fi
-
-    # Clone from committed state using sparse checkout
-    # --depth 1: shallow clone (only latest commit)
-    # --sparse: enable sparse checkout
-    # --filter=blob:none: don't fetch blobs until needed (partial clone)
-    # --no-checkout: don't populate working directory yet
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir"
-        echo "[dry-run] git sparse-checkout init --no-cone"
-        echo "[dry-run] git sparse-checkout set ${sparse_patterns[*]}"
-        echo "[dry-run] git checkout"
-    else
-        if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] git clone --depth 1 --sparse --filter=blob:none --no-checkout $source_dir $intermediary_dir${_reset}" >&2
-        fi
-        git clone --depth 1 --sparse --filter=blob:none --no-checkout "$source_dir" "$intermediary_dir" 2>/dev/null
-
-        # Set up sparse checkout with gitignore-style patterns (no-cone mode)
-        git -C "$intermediary_dir" sparse-checkout init --no-cone
-        git -C "$intermediary_dir" sparse-checkout set "${sparse_patterns[@]}"
-
-        # Now checkout - only non-excluded files will appear in working directory
-        git -C "$intermediary_dir" checkout 2>/dev/null
-    fi
-
-    # Remove the cloned .git and reinitialize fresh (no history of excluded files)
-    echo "  Startin' fresh, clean slate..."
-
-    # Capture source commit info for the initial commit message
-    local source_short_hash
-    source_short_hash=$(git -C "$source_dir" rev-parse --short=8 HEAD 2>/dev/null)
-    local source_commit_msg
-    source_commit_msg=$(git -C "$source_dir" log -1 --format=%B 2>/dev/null)
-
-    local cage_commit_msg="${source_short_hash}: ${source_commit_msg}"
-
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] rm -rf $intermediary_dir/.git && git init && git add . && git commit"
-    else
-        rm -rf "$intermediary_dir/.git"
-        git -C "$intermediary_dir" init --quiet
-        git -C "$intermediary_dir" add .
-        if [ "$verbose" = true ]; then
-            echo -e "${_yellow}[run] git -C $intermediary_dir commit -m '${source_short_hash}: ...'${_reset}" >&2
-        fi
-        git -C "$intermediary_dir" commit -m "$cage_commit_msg" >/dev/null
-    fi
-
-    echo ""
-    echo "Intermediary's ready at: $intermediary_dir"
-
-    # Create branch in intermediary matching source (this is where source commits land)
-    local branch_name="${CLAUDE_CAGE_BRANCH:-$source_branch}"
-    echo "  Settin' up the $branch_name branch..."
-    run_quiet git -C "$intermediary_dir" checkout --quiet -b "$branch_name"
-
-    # Allow pushing to checked-out branch (updates working tree automatically)
-    if ! run_quiet git -C "$intermediary_dir" config receive.denyCurrentBranch updateInstead; then
-        echo "Warning: Failed to set receive.denyCurrentBranch config"
-    fi
-
-    # Prevent force pushes (amended commits cause sync issues)
-    if ! run_quiet git -C "$intermediary_dir" config receive.denyNonFastForwards true; then
-        echo "Warning: Failed to set receive.denyNonFastForwards config"
-    fi
-
-    # Create work directory by cloning from intermediary
     echo ""
     echo "Settin' up your workspace..."
-    run_quiet git clone --quiet "$intermediary_dir" "$work_dir"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] git clone $intermediary_dir $work_dir"
+    else
+        run_quiet git clone --quiet "$intermediary_dir" "$work_dir"
+
+        # Checkout current branch if not default
+        if [ "$branch_name" != "$(git -C "$intermediary_dir" symbolic-ref --short HEAD 2>/dev/null)" ]; then
+            if git -C "$intermediary_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+                run_quiet git -C "$work_dir" checkout --quiet "$branch_name" 2>/dev/null
+            fi
+        fi
+    fi
 
     # Update origin to use the path as it appears inside the cage
-    # Intermediary is mounted at /run, so origin is /run<source_dir>
-    run_quiet git -C "$work_dir" remote set-url origin "/run$source_dir"
+    # Bare intermediary is mounted at /run<intermediary_path>
+    local mounted_intermediary="/run${intermediary_dir}"
+    run_quiet git -C "$work_dir" remote set-url origin "$mounted_intermediary"
 
     # Configure push to auto-setup upstream tracking
     if ! run_quiet git -C "$work_dir" config push.autoSetupRemote true; then
         echo "Warning: Failed to set push.autoSetupRemote config"
+    fi
+
+    # Store scope_path in work dir for cleanup to find the correct intermediary
+    if [ "$dry_run" != true ] && [ -d "$work_dir/.git" ]; then
+        echo "$scope_path" > "$work_dir/.git/claude-cage-scope-path"
+    fi
+
+    # Record this session as the latest for the project
+    if [ "$dry_run" != true ]; then
+        write_latest_session "$intermediary_dir" "${CLAUDE_CAGE_SESSION:-}"
     fi
 
     echo ""
@@ -433,19 +1722,68 @@ create_intermediary_clone() {
             echo "  ... plus $((file_count - 20)) more where that came from"
         fi
     fi
+}
 
-    # Initialize state file with current source HEAD (skip in dry-run)
-    if [ "$dry_run" != true ]; then
-        local state_path
-        state_path=$(get_state_path "$source_dir")
-        git -C "$source_dir" rev-parse HEAD > "$state_path"
+# Install post-receive and pre-receive hooks on bare intermediary
+# Arguments: $1 = intermediary_dir (bare repo path)
+install_intermediary_hooks() {
+    local intermediary_dir="$1"
+    local hooks_dir="$intermediary_dir/hooks"
+
+    # Path to pipe as seen from inside the sandbox
+    local mounted_pipe_path="${CLAUDE_CAGE_MOUNTED_PIPE:-/tmp/claude-cage/pipe}"
+
+    mkdir -p "$hooks_dir"
+
+    # Post-receive hook: notify pipe listener of pushes
+    cat > "$hooks_dir/post-receive" << EOF
+#!/bin/bash
+SYNC_LOG="\$(git rev-parse --git-dir 2>/dev/null)/sync.log"
+while read oldrev newrev refname; do
+    printf '[%s] %s %-14s %s\n' "\$(date '+%Y-%m-%d %H:%M:%S')" "\${newrev:0:8}" "post-recv" "refname=\$refname oldrev=\${oldrev:0:8} newrev=\${newrev:0:8}" >> "\$SYNC_LOG"
+    if [ "\${CAGE_DEBUG:-}" = "1" ]; then
+        echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
     fi
+    echo "\$refname \$newrev \$oldrev" > "$mounted_pipe_path"
+done
+EOF
+    chmod +x "$hooks_dir/post-receive"
+
+    # Pre-receive hook: guard against out-of-scope branch name collisions
+    local source_branches_path
+    source_branches_path=$(get_source_branches_path "$intermediary_dir")
+    cat > "$hooks_dir/pre-receive" << 'HOOKEOF'
+#!/bin/bash
+# Guard against creating branches that collide with out-of-scope source branches
+SOURCE_BRANCHES_FILE="$(git rev-parse --git-dir 2>/dev/null)/claude-cage-source-branches"
+while read oldrev newrev refname; do
+    # Only check new branch creation (oldrev is all zeros)
+    if [ "$oldrev" = "0000000000000000000000000000000000000000" ]; then
+        branch_name="${refname#refs/heads/}"
+        # Check if this branch already exists in intermediary (allow - normal push)
+        if git rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+            continue
+        fi
+        # Check if branch name exists in source but not in intermediary
+        if [ -f "$SOURCE_BRANCHES_FILE" ] && grep -qx "$branch_name" "$SOURCE_BRANCHES_FILE"; then
+            echo "Hold on. Branch '$branch_name' exists on source but is outside the cage's history scope." >&2
+            echo "Use a different name, or start claude-cage on that branch directly." >&2
+            exit 1
+        fi
+    fi
+done
+HOOKEOF
+    chmod +x "$hooks_dir/pre-receive"
+
+    # Install sync-commit helper script (called by post-commit and post-merge hooks)
+    install_sync_commit_script "$intermediary_dir"
 }
 
 # Set up .caged/ directory with symlinks to cache directories
-# Arguments: $1 = source directory
+# Arguments: $1 = source directory, $2 = scope_path (optional)
 setup_caged_symlinks() {
     local source_dir="$1"
+    local scope_path="${2:-}"
     local git_root
     git_root=$(get_git_root "$source_dir")
 
@@ -455,16 +1793,16 @@ setup_caged_symlinks() {
     fi
 
     local caged_dir="$git_root/.caged"
-    local sanitized_branch
-    sanitized_branch=$(sanitize_branch_name "${CLAUDE_CAGE_BRANCH:-default}")
+    local session_id="${CLAUDE_CAGE_SESSION:-default}"
 
     # Target paths in cache
-    local work_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/work$source_dir"
-    local intermediary_target="$CLAUDE_CAGE_CACHE/branches/$sanitized_branch/intermediary$source_dir"
+    local work_target
+    work_target=$(get_work_path "$source_dir")
+    local intermediary_target
+    intermediary_target=$(get_scoped_intermediary_path "$source_dir" "$scope_path")
 
-    # Create .caged and branch directories
-    local branch_dir="$caged_dir/$sanitized_branch"
-    run mkdir -p "$branch_dir"
+    # Create .caged directory
+    run mkdir -p "$caged_dir"
 
     # Create self-ignoring .gitignore if missing
     if [ ! -f "$caged_dir/.gitignore" ]; then
@@ -475,17 +1813,8 @@ setup_caged_symlinks() {
         fi
     fi
 
-    # Create/update work symlink
-    local work_symlink="$branch_dir/work"
-    if [ "$dry_run" = true ]; then
-        echo "[dry-run] ln -sf $work_target $work_symlink"
-    else
-        rm -f "$work_symlink"
-        ln -s "$work_target" "$work_symlink"
-    fi
-
-    # Create/update intermediary symlink
-    local intermediary_symlink="$branch_dir/intermediary"
+    # Create/update top-level intermediary symlink (shared bare repo)
+    local intermediary_symlink="$caged_dir/intermediary"
     if [ "$dry_run" = true ]; then
         echo "[dry-run] ln -sf $intermediary_target $intermediary_symlink"
     else
@@ -493,9 +1822,9 @@ setup_caged_symlinks() {
         ln -s "$intermediary_target" "$intermediary_symlink"
     fi
 
-    # Create/update sync.log symlink
-    local sync_log_target="$intermediary_target/.git/sync.log"
-    local sync_log_symlink="$branch_dir/sync.log"
+    # Create/update top-level sync.log symlink
+    local sync_log_target="$intermediary_target/sync.log"
+    local sync_log_symlink="$caged_dir/sync.log"
     if [ "$dry_run" = true ]; then
         echo "[dry-run] ln -sf $sync_log_target $sync_log_symlink"
     else
@@ -503,7 +1832,17 @@ setup_caged_symlinks() {
         ln -s "$sync_log_target" "$sync_log_symlink"
     fi
 
-    if [ "$verbose" = true ]; then
-        echo "  Created .caged/$sanitized_branch/ symlinks"
+    # Create session-specific directory with work symlink
+    local session_dir="$caged_dir/sessions/$session_id"
+    run mkdir -p "$session_dir"
+
+    local work_symlink="$session_dir/work"
+    if [ "$dry_run" = true ]; then
+        echo "[dry-run] ln -sf $work_target $work_symlink"
+    else
+        rm -f "$work_symlink"
+        ln -s "$work_target" "$work_symlink"
     fi
+
+    verbose_log "  Created .caged/ symlinks (session: $session_id)"
 }

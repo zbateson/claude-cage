@@ -25,7 +25,7 @@ claude_cage {
     -- =========================================================================
     -- FILE EXCLUSION
     -- =========================================================================
-    -- Files matching these patterns are stripped at archive time.
+    -- Files matching these patterns are excluded during fast-export.
     -- They never enter the cage - not in files, not in git history.
 
     exclude = {
@@ -76,7 +76,7 @@ claude_cage {
     -- directMount = false,
 
     -- Isolated mode mounts only this project. When false (default), all
-    -- projects on the same git branch are visible inside the sandbox.
+    -- projects in the same session are visible inside the sandbox.
     -- isolated = false,
 
     -- =========================================================================
@@ -87,8 +87,8 @@ claude_cage {
 
     additionalMounts = {
         "~/.local/bin/claude",
-        "~/.claude",
-        "~/.claude.json",
+        { source = "~/.claude", mode = "rw" },
+        { source = "~/.claude.json", mode = "rw" },
         "~/.gitconfig",
         "~/.bashrc",
         "~/.profile",
@@ -130,12 +130,12 @@ claude_cage {
     -- =========================================================================
     -- GIT OPTIONS
     -- =========================================================================
-    -- Block commits containing force-added gitignored files (default: true).
-    -- Force-added ignored files break patch-based sync between cage and source.
-    -- Override inside sandbox with: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
 
     -- git = {
-    --     blockForceAdd = true,
+    --     historyDepth = 50,       -- First-parent depth on default branch (default: 50)
+    --     defaultBranch = "auto",  -- Branch for history anchoring: "auto" or explicit name
+    --     scoped = false,          -- Scope intermediary to CWD subdirectory (same as --scoped)
+    --     blockForceAdd = true,    -- Block commits with force-added gitignored files
     -- },
 
     -- =========================================================================
@@ -149,6 +149,6 @@ claude_cage {
     -- hideConfirmationPrompt = false,
 
     -- Create .caged/ directory with symlinks to cache directories.
-    -- Gives you easy access to work/ and intermediary/ for each branch.
+    -- Gives you easy access to work/ and intermediary/ for each session.
     -- createCagedDir = false,
 }

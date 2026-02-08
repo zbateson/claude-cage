@@ -526,52 +526,91 @@ EOF
     fi
 }
 
-# Set up pre-commit hook on work repo to block force-added gitignored files
-# Force-added ignored files break patch-based sync between cage and source.
-# Override with CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+# Set up pre-commit hook on work repo for cage safety checks:
+# - Block merge commits in scoped intermediaries (unreliable without full tree)
+# - Block force-added gitignored files (breaks patch-based sync)
 # Arguments:
 #   $1 - work_dir: The work directory (Claude's workspace)
+#   $2 - scope_path: (optional) Scope path for scoped intermediaries
 setup_work_pre_commit() {
     local work_dir="$1"
+    local scope_path="${2:-}"
     local hook_path="$work_dir/.git/hooks/pre-commit"
 
     if [ "$dry_run" = true ]; then
-        echo "[dry-run] create $hook_path (block force-added ignored files)"
+        echo "[dry-run] create $hook_path (work pre-commit checks)"
         return
     fi
 
-    cat > "$hook_path" << 'HOOKEOF'
+    cat > "$hook_path" << EOF
 #!/bin/bash
-# claude-cage: block commits containing force-added gitignored files
-# Force-added ignored files break patch-based sync between cage and source.
-# Override: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+# claude-cage: work directory pre-commit checks
+EOF
 
-if [ "${CLAUDE_CAGE_ALLOW_IGNORED:-}" = "1" ]; then
-    exit 0
-fi
+    # Block merge commits in scoped intermediaries
+    if [ -n "$scope_path" ]; then
+        cat >> "$hook_path" << EOF
 
-# Detect force-added ignored files staged for commit
-IGNORED=$(git ls-files -ic --exclude-standard 2>/dev/null)
-if [ -n "$IGNORED" ]; then
-    echo "Hold on there. You've got gitignored files force-added to this commit."
-    echo "That's gonna break the sync back to source."
+# Scoped intermediaries only have files within their scope ($scope_path/).
+# Merges can't be reliably performed because out-of-scope commits are dropped,
+# making the merge base and conflict detection unreliable.
+# Merge from source instead, then let the cage sync pick up the result.
+if [ -f .git/MERGE_HEAD ]; then
+    echo "Hold on. Merges ain't allowed in a scoped cage ($scope_path)."
+    echo "The intermediary only has files from this scope — merges could go sideways."
     echo ""
-    echo "Files:"
-    echo "$IGNORED" | sed 's/^/  /'
-    echo ""
-    echo "To unstage 'em:"
-    echo "  git reset HEAD <file>"
-    echo ""
-    echo "If you really know what you're doin':"
-    echo "  CLAUDE_CAGE_ALLOW_IGNORED=1 git commit"
+    echo "Instead, merge on your source repo and let the cage sync pick it up."
     exit 1
+fi
+EOF
+    fi
+
+    cat >> "$hook_path" << 'HOOKEOF'
+
+# Block force-added gitignored files (breaks patch-based sync)
+# Override: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
+if [ "${CLAUDE_CAGE_ALLOW_IGNORED:-}" != "1" ]; then
+    IGNORED=$(git ls-files -ic --exclude-standard 2>/dev/null)
+    if [ -n "$IGNORED" ]; then
+        echo "Hold on there. You've got gitignored files force-added to this commit."
+        echo "That's gonna break the sync back to source."
+        echo ""
+        echo "Files:"
+        echo "$IGNORED" | sed 's/^/  /'
+        echo ""
+        echo "To unstage 'em:"
+        echo "  git reset HEAD <file>"
+        echo ""
+        echo "If you really know what you're doin':"
+        echo "  CLAUDE_CAGE_ALLOW_IGNORED=1 git commit"
+        exit 1
+    fi
 fi
 
 exit 0
 HOOKEOF
     chmod +x "$hook_path"
 
+    # Block clean merges via pre-merge-commit hook (pre-commit only fires for
+    # conflict-resolved merges where the user runs `git commit` manually)
+    if [ -n "$scope_path" ]; then
+        local merge_hook_path="$work_dir/.git/hooks/pre-merge-commit"
+        cat > "$merge_hook_path" << EOF
+#!/bin/bash
+# claude-cage: block merge commits in scoped cage ($scope_path)
+# Scoped intermediaries only have files within their scope.
+# Merges can't be reliably performed because out-of-scope commits are dropped,
+# making the merge base and conflict detection unreliable.
+echo "Hold on. Merges ain't allowed in a scoped cage ($scope_path)."
+echo "The intermediary only has files from this scope — merges could go sideways."
+echo ""
+echo "Instead, merge on your source repo and let the cage sync pick it up."
+exit 1
+EOF
+        chmod +x "$merge_hook_path"
+    fi
+
     if [ "$verbose" = true ]; then
-        echo "  Created work hook: $hook_path (block force-added ignored files)"
+        echo "  Created work hook: $hook_path (pre-commit checks)"
     fi
 }

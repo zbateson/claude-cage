@@ -1383,4 +1383,74 @@ fi
 echo "  PASS: Root intermediary unaffected"
 
 echo ""
+echo "=== Testing merge commit blocking in scoped work directory ==="
+echo ""
+
+echo "Test 41: Merge commits blocked in scoped work directory"
+cd "$MONOREPO_PATH"
+git checkout "$BRANCH_NAME"
+rm -rf "$MONOREPO_PATH/.git/hooks/post-commit.d"
+rm -f "$MONOREPO_PATH/.git/hooks/post-commit"
+
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+
+# Create scoped intermediary for services/api
+CLAUDE_CAGE_SESSION="test-merge-block"
+cfg_exclude=".env"
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+
+# Get work dir and install pre-commit hook with scope
+MERGE_WORK=$(get_work_path "$SOURCE_API")
+setup_work_pre_commit "$MERGE_WORK" "services/api"
+
+cd "$MERGE_WORK"
+
+# Create divergent branches so merge is non-fast-forward (triggers pre-commit hook)
+git checkout -b merge-test-branch
+echo "merge branch content" > app.go
+git add app.go && git commit -m "Commit on merge-test-branch" --quiet
+
+# Switch back and make a different commit to create divergence
+git checkout "$BRANCH_NAME"
+echo "main branch content" > README.md
+git add README.md && git commit -m "Commit on main branch" --quiet
+
+# Attempt git merge — should be blocked by pre-merge-commit hook
+merge_rc=0
+merge_output=$(git merge merge-test-branch --no-edit 2>&1) || merge_rc=$?
+
+if [ "$merge_rc" -eq 0 ]; then
+    echo "FAIL: Merge should have been blocked by pre-merge-commit hook"
+    echo "  Output: $merge_output"
+    exit 1
+fi
+echo "  PASS: Merge blocked (exit code != 0)"
+
+if ! echo "$merge_output" | grep -q "scoped cage"; then
+    echo "FAIL: Error message should mention 'scoped cage'"
+    echo "  Output: $merge_output"
+    exit 1
+fi
+echo "  PASS: Error message mentions scoped cage"
+
+# Clean up the blocked merge state
+git merge --abort 2>/dev/null || true
+
+# Verify a normal (non-merge) commit still works
+echo "normal commit content" > app.go
+git add app.go
+normal_output=$(git commit -m "Normal commit in scoped cage" 2>&1)
+normal_rc=$?
+if [ "$normal_rc" -ne 0 ]; then
+    echo "FAIL: Normal (non-merge) commit should still work"
+    echo "  Output: $normal_output"
+    exit 1
+fi
+echo "  PASS: Normal commits still work"
+
+echo ""
 echo "=== All scoped tests passed! ==="

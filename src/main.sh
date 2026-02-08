@@ -674,10 +674,11 @@ else
         setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
     fi
 
-    # Set up work repo pre-commit hook to block force-added ignored files
-    # Default is true - force-added ignored files break patch sync
-    if [ "$cfg_git_blockForceAdd" = "true" ]; then
-        setup_work_pre_commit "$work_dir"
+    # Set up work repo pre-commit hook:
+    # - Block merges in scoped intermediaries (unreliable without full tree)
+    # - Block force-added ignored files if configured (default: true)
+    if [ "$cfg_git_blockForceAdd" = "true" ] || [ -n "$scope_path" ]; then
+        setup_work_pre_commit "$work_dir" "$scope_path"
     fi
 fi
 

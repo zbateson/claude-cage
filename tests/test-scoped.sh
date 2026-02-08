@@ -587,9 +587,9 @@ echo "post-roundtrip update" > services/api/app.go
 git add services/api/app.go
 hook_output=$(git commit -m "Source commit after round-trip" 2>&1)
 
-# The hook should NOT say "excluded files"
-if echo "$hook_output" | grep -q "only has excluded files"; then
-    echo "FAIL: Post-commit hook falsely reported excluded-only"
+# The hook should NOT say "out-of-scope"
+if echo "$hook_output" | grep -q "out-of-scope files"; then
+    echo "FAIL: Post-commit hook falsely reported excluded/out-of-scope"
     echo "  Hook output: $hook_output"
     echo "  Sync log:"
     cat "$INTERMEDIARY_DIR/sync.log" 2>/dev/null

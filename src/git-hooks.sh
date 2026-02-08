@@ -360,6 +360,8 @@ IMPORT_MARKS="$import_marks_path"
 COMMIT_MAP="$commit_map_path"
 SYNC_LOG="\$INTERMEDIARY/sync.log"
 SCOPE_PATH="$scope_path"
+SCOPE_LABEL=""
+[ -n "\$SCOPE_PATH" ] && SCOPE_LABEL=" (\$SCOPE_PATH)"
 EXCLUDE_PATHSPECS_FILE="$exclude_pathspecs_file"
 
 _sync_log() {
@@ -433,7 +435,7 @@ EXPORT_RC=\$?
 if [ "\$EXPORT_RC" -ne 0 ]; then
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-export FAILED rc=\$EXPORT_RC"
     [ -s "\$EXPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "export stderr: \$(cat "\$EXPORT_ERR")"
-    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT (export=\$EXPORT_RC)"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT\$SCOPE_LABEL (export=\$EXPORT_RC)"
     rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
     exit 0
 fi
@@ -448,7 +450,7 @@ fi
 if ! grep -q '^commit ' "\$EXPORT_OUT"; then
     echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit (no commit line), mapped to 0"
-    echo -e "\033[1;31mclaude-cage:\033[0m Nothin' changed in intermediary — commit only has excluded files"
+    echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope\$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
     rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
     exit 0
 fi
@@ -466,7 +468,7 @@ if ! grep -q '^from ' "\$EXPORT_OUT"; then
         # Parent IS in marks (or root commit) but no from line → truly excluded-only
         echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
         _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
-        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' changed in intermediary — commit only has excluded files"
+        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope\$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
         rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
         exit 0
     fi
@@ -480,13 +482,13 @@ if ! grep -q '^from ' "\$EXPORT_OUT"; then
     else
         echo "0 \$COMMIT_HASH" >> "\$COMMIT_MAP"
         _sync_log "\$COMMIT_SHORT" ">>intermediary" "excluded-only (no intermediary HEAD for \$current_branch)"
-        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' changed in intermediary — commit only has excluded files"
+        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope\$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
         rm -f "\$EXPORT_ERR" "\$EXPORT_OUT"
         exit 0
     fi
 fi
 
-echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary, run 'git pull' from claude-cage"
+echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary\$SCOPE_LABEL, run 'git pull' from claude-cage"
 
 IMPORT_ERR=\$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.\$\$")
 git -C "\$INTERMEDIARY" fast-import --import-marks="\$IMPORT_MARKS" --export-marks="\$IMPORT_MARKS" --quiet \\
@@ -496,7 +498,7 @@ IMPORT_RC=\$?
 if [ "\$IMPORT_RC" -ne 0 ]; then
     _sync_log "\$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=\$IMPORT_RC"
     [ -s "\$IMPORT_ERR" ] && _sync_log "\$COMMIT_SHORT" ">>intermediary" "import stderr: \$(cat "\$IMPORT_ERR")"
-    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT (import=\$IMPORT_RC)"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit \$COMMIT_SHORT\$SCOPE_LABEL (import=\$IMPORT_RC)"
     rm -f "\$EXPORT_ERR" "\$IMPORT_ERR" "\$EXPORT_OUT"
     exit 0
 fi

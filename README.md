@@ -164,8 +164,8 @@ claude_cage {
     -- Required mounts for Claude Code to work inside the sandbox
     additionalMounts = {
         "~/.local/bin/claude",   -- Claude Code binary
-        "~/.claude",             -- Claude config directory
-        "~/.claude.json",        -- Claude auth/settings
+        { source = "~/.claude", mode = "rw" },      -- Claude config (needs write access)
+        { source = "~/.claude.json", mode = "rw" },  -- Claude auth/settings
         "~/.gitconfig",          -- Git config (for commits)
     },
 
@@ -461,7 +461,7 @@ your-project/
 
 ## Failed Patch Recovery
 
-Sometimes patches fail to apply — merge conflicts happen. No sweat. Failed patches are saved to `claude-cage-failed-patches/<branch>/` in your project.
+Sometimes patches fail to apply — merge conflicts happen. No sweat. Failed patches are saved to `claude-cage-failed-patches/from-intermediary/<branch>/` in your project.
 
 Next time you run `claude-cage`, you'll get an interactive prompt:
 

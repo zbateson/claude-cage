@@ -147,7 +147,8 @@ Skip the startup confirmation prompt (default: false)
 Create .caged/ symlinks to session caches (default: false)
 .TP
 .B additionalMounts
-Extra mounts for sandbox
+Extra mounts for sandbox. Each entry is a string (read-only, same path inside
+sandbox) or an object with source, as/dest (optional), and mode ("ro" or "rw").
 .TP
 .B networkMode
 Network filtering: "disabled", "allowlist", or "blocklist" (default: "disabled")
@@ -157,6 +158,15 @@ Allowed destinations when networkMode is "allowlist"
 .TP
 .B block
 Blocked destinations when networkMode is "blocklist"
+.SS Docker Options
+.TP
+.B docker.image
+Docker image to use (default: "node:lts-slim"). Only used when mode = "docker".
+.TP
+.B docker.packages
+Array of packages to install in Docker container as root before dropping
+privileges (default: {"curl", "iputils-ping"}). Set to empty table to skip
+package installation.
 .SS Git Options
 .TP
 .B git.historyDepth

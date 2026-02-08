@@ -218,7 +218,7 @@ This means:
 
 When patches fail to apply (conflicts, user switched branches, etc.):
 
-1. Patch is saved to `<source>/claude-cage-failed-patches/<branch>/`
+1. Patch is saved to `<source>/claude-cage-failed-patches/from-intermediary/<branch>/`
 2. Filename includes timestamp and commit subject: `20250131-143022_Fix_bug.patch`
 3. At next startup, you get an interactive prompt:
 
@@ -321,9 +321,9 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 | `autoMerge` | `false` | Enable real-time sync via named pipe |
 | `allowNonGit` | unset | Allow running in non-git directories (see below) |
 | `directMount` | `false` | Mount source directly without git sync (see below) |
-| `isolated` | `false` | Only mount single project instead of all same-branch projects |
+| `isolated` | `false` | Only mount single project instead of all same-session projects |
 | `showBanner` | `true` | Show ASCII banner |
-| `hideConfirmationPrompt` | `false` | Skip the auto-merge info message and key press when autoMerge is off |
+| `hideConfirmationPrompt` | `false` | Skip the "press any key" confirmation prompt before entering sandbox |
 | `createCagedDir` | `false` | Create `.caged/` symlinks to session caches (see below) |
 | `additionalMounts` | `{}` | Extra mounts for sandbox (see below) |
 | `networkMode` | `"disabled"` | Network filtering: `"disabled"`, `"allowlist"`, `"blocklist"` |
@@ -541,7 +541,7 @@ For Zsh, the installer will offer to add the completions directory to your `fpat
 - [x] `manual_git_merge()` for manual sync
 - [x] Cleanup on exit
 - [x] Network isolation via slirp4netns (bwrap mode, no sudo required)
-- [x] Comprehensive test suite (~229 assertions across 14 files)
+- [x] Comprehensive test suite (~280 assertions across 14 files)
 - [x] Cache-based directory structure (`~/.cache/claude-cage/`) - no .gitignore needed
 - [x] Multi-project visibility (same-session projects see each other in sandbox)
 - [x] Subdirectory support (run from any subdirectory, hooks install at git root)
@@ -733,7 +733,9 @@ With `isolated = true`, only the single project's work and intermediary are moun
 - `CLAUDE_CAGE_ALLOW_IGNORED` - Set to `1` inside sandbox to override `git.blockForceAdd` and allow committing force-added gitignored files.
 
 **Internal (set by claude-cage):**
+- `CLAUDE_CAGE_VERSION` - Version string (e.g., `"0.1.0"`)
 - `CLAUDE_CAGE_SOURCING` - Set to `1` when sourcing script for function definitions only
+- `CLAUDE_CAGE_SYNCING` - Set to `1` during `git am` calls to prevent post-commit hook from re-syncing
 - `SLIRP_NETWORK` - Set to `1` inside slirp4netns network namespace
 - `BWRAP_REAL_UID`, `BWRAP_REAL_GID`, `BWRAP_REAL_USER`, `BWRAP_REAL_HOME` - Capture real user info before entering network namespace
 
@@ -760,21 +762,21 @@ bash tests/run-all.sh
 | Test File | Component | Tests |
 |-----------|-----------|-------|
 | test-helpers.sh | helpers.sh | 7 |
-| test-config.sh | config.sh | 16 |
+| test-config.sh | config.sh | 18 |
 | test-banner.sh | banner.sh | 6 |
-| test-git-clone.sh | git-clone.sh | 14 |
+| test-git-clone.sh | git-clone.sh | 22 |
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
-| test-git-hooks.sh | git-hooks.sh | 19 |
+| test-git-hooks.sh | git-hooks.sh | 22 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 19 |
 | test-network.sh | network.sh | 31 |
-| test-bwrap.sh | bwrap.sh | 11 |
+| test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 18 |
 | test-clean.sh | clean commands | 14 |
 | test-direct-mount.sh | direct mount mode | 8 |
-| test-scoped.sh | scoped intermediary | 41 |
+| test-scoped.sh | scoped intermediary | 66 |
 
-**Total: ~249 assertions across 14 files**
+**Total: ~280 assertions across 14 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

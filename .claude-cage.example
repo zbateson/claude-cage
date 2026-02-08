@@ -87,8 +87,8 @@ claude_cage {
 
     additionalMounts = {
         "~/.local/bin/claude",
-        "~/.claude",
-        "~/.claude.json",
+        { source = "~/.claude", mode = "rw" },
+        { source = "~/.claude.json", mode = "rw" },
         "~/.gitconfig",
         "~/.bashrc",
         "~/.profile",

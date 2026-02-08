@@ -62,10 +62,10 @@ claude_cage {
     -- Put them at user level so they apply to all your projects.
 
     additionalMounts = {
-        "~/.local/bin/claude",   -- Claude Code binary
-        "~/.claude",             -- Claude config directory
-        "~/.claude.json",        -- Claude auth/settings
-        "~/.gitconfig",          -- Git config (for commits)
+        "~/.local/bin/claude",                        -- Claude Code binary
+        { source = "~/.claude", mode = "rw" },        -- Claude config (needs write access)
+        { source = "~/.claude.json", mode = "rw" },   -- Claude auth/settings
+        "~/.gitconfig",                               -- Git config (for commits)
     },
 
     -- =========================================================================

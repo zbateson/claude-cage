@@ -329,16 +329,42 @@ sync_to_source() {
     local _sync_hash
     _sync_hash=$(path_hash "$source_dir")
 
+    # Track last mapped source hash for fast-forwarding the branch when we
+    # encounter an unmapped commit after a run of already-mapped ones
+    local last_mapped_source_hash=""
+
     local commit
     for commit in $commits; do
         local commit_short="${commit:0:8}"
         local commit_msg
         commit_msg=$(git -C "$intermediary_dir" log -1 --format=%s "$commit" 2>/dev/null)
 
-        # Check if already mapped (skip)
+        # Check if already mapped (skip, but track for fast-forward)
         if [ -f "$commit_map_path" ] && grep -q "^${commit} " "$commit_map_path" 2>/dev/null; then
+            last_mapped_source_hash=$(awk -v ih="$commit" '$1 == ih { print $2; exit }' "$commit_map_path")
             sync_log "$log_file" "$commit_short" ">>source" "already mapped, skip"
             continue
+        fi
+
+        # Fast-forward source branch to last mapped commit if it's behind
+        # (commits arrived via another branch but this branch wasn't advanced)
+        if [ -n "$last_mapped_source_hash" ] && [ "$last_mapped_source_hash" != "0" ]; then
+            local _ff_branch_hash
+            _ff_branch_hash=$(git -C "$source_dir" rev-parse --verify "$branch_name" 2>/dev/null) || true
+            if [ -n "$_ff_branch_hash" ] && [ "$_ff_branch_hash" != "$last_mapped_source_hash" ]; then
+                if git -C "$source_dir" merge-base --is-ancestor "$_ff_branch_hash" "$last_mapped_source_hash" 2>/dev/null; then
+                    local _ff_root
+                    _ff_root=$(git -C "$source_dir" rev-parse --show-toplevel)
+                    CLAUDE_CAGE_SYNCING=1 git -C "$_ff_root" update-ref "refs/heads/$branch_name" "$last_mapped_source_hash"
+                    sync_log "$log_file" "$commit_short" ">>source" "fast-forward $branch_name to ${last_mapped_source_hash:0:8} before apply"
+                    local _ff_current
+                    _ff_current=$(git -C "$_ff_root" branch --show-current 2>/dev/null) || true
+                    if [ "$_ff_current" = "$branch_name" ]; then
+                        git -C "$_ff_root" reset --hard 2>/dev/null
+                    fi
+                fi
+            fi
+            last_mapped_source_hash=""
         fi
 
         # Check if this is the initial import commit (has no meaningful source equivalent)
@@ -550,29 +576,22 @@ sync_to_source() {
     done
 
     # Fast-forward source branch if the tip commit is already mapped but
-    # the source branch hasn't been advanced (e.g., commits arrived via
-    # another branch and were all "already mapped, skip").
-    local tip_source_hash=""
-    if [ -f "$commit_map_path" ]; then
-        tip_source_hash=$(awk -v ih="$newrev" '$1 == ih { print $2; exit }' "$commit_map_path")
-    fi
-    if [ -n "$tip_source_hash" ] && [ "$tip_source_hash" != "0" ]; then
-        local source_branch_hash
-        source_branch_hash=$(git -C "$source_dir" rev-parse --verify "$branch_name" 2>/dev/null) || true
-        if [ -n "$source_branch_hash" ] && [ "$source_branch_hash" != "$tip_source_hash" ]; then
-            # Verify it's a fast-forward (source branch is ancestor of target)
-            if git -C "$source_dir" merge-base --is-ancestor "$source_branch_hash" "$tip_source_hash" 2>/dev/null; then
-                local git_root
-                git_root=$(git -C "$source_dir" rev-parse --show-toplevel)
-                CLAUDE_CAGE_SYNCING=1 git -C "$git_root" update-ref "refs/heads/$branch_name" "$tip_source_hash"
-                sync_log "$log_file" "${newrev:0:8}" ">>source" "fast-forward $branch_name to ${tip_source_hash:0:8}"
+    # the source branch hasn't been advanced (e.g., all commits arrived via
+    # another branch and were "already mapped, skip").
+    if [ -n "$last_mapped_source_hash" ] && [ "$last_mapped_source_hash" != "0" ]; then
+        local _ff_branch_hash
+        _ff_branch_hash=$(git -C "$source_dir" rev-parse --verify "$branch_name" 2>/dev/null) || true
+        if [ -n "$_ff_branch_hash" ] && [ "$_ff_branch_hash" != "$last_mapped_source_hash" ]; then
+            if git -C "$source_dir" merge-base --is-ancestor "$_ff_branch_hash" "$last_mapped_source_hash" 2>/dev/null; then
+                local _ff_root
+                _ff_root=$(git -C "$source_dir" rev-parse --show-toplevel)
+                CLAUDE_CAGE_SYNCING=1 git -C "$_ff_root" update-ref "refs/heads/$branch_name" "$last_mapped_source_hash"
+                sync_log "$log_file" "${newrev:0:8}" ">>source" "fast-forward $branch_name to ${last_mapped_source_hash:0:8}"
                 echo "  Fast-forwarded $branch_name on source."
-
-                # If user is on this branch, update their working tree
-                local _current
-                _current=$(git -C "$git_root" branch --show-current 2>/dev/null) || true
-                if [ "$_current" = "$branch_name" ]; then
-                    git -C "$git_root" reset --hard 2>/dev/null
+                local _ff_current
+                _ff_current=$(git -C "$_ff_root" branch --show-current 2>/dev/null) || true
+                if [ "$_ff_current" = "$branch_name" ]; then
+                    git -C "$_ff_root" reset --hard 2>/dev/null
                 fi
             fi
         fi

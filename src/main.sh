@@ -422,7 +422,7 @@ else
     echo -e "  Launch:        ${_red}$cfg_launch${_reset}  ⚠️  unrecognized launch command"
 fi
 if [ "$direct_mount_mode" = false ]; then
-    echo "  Auto-merge:    $cfg_autoMerge"
+    echo "  Auto-sync:     $cfg_autoSync"
     echo "  Isolated:      $cfg_isolated"
     if [ -n "$scope_path" ]; then
         echo "  Scoped to:     $scope_path"
@@ -480,9 +480,9 @@ else
     source_branch=$(get_source_branch "$cfg_source")
     if [ -z "$source_branch" ]; then
         echo "Hold on. Can't figure out what branch you're on."
-        echo "You need to be on a branch (not detached HEAD) for auto-merge to work."
-        if [ "$cfg_autoMerge" = "true" ]; then
-            echo "Either switch to a branch or disable autoMerge in your config."
+        echo "You need to be on a branch (not detached HEAD) for auto-sync to work."
+        if [ "$cfg_autoSync" = "true" ]; then
+            echo "Either switch to a branch or disable autoSync in your config."
             exit 1
         fi
     fi
@@ -737,8 +737,8 @@ else
         setup_caged_symlinks "$cfg_source" "$scope_path"
     fi
 
-    # Set up git hooks and communication pipe (if autoMerge enabled)
-    if [ "$cfg_autoMerge" = "true" ]; then
+    # Set up git hooks and communication pipe (if autoSync enabled)
+    if [ "$cfg_autoSync" = "true" ]; then
         setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
         setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
         setup_source_post_merge "$cfg_source" "$cfg_exclude" "$intermediary_dir"
@@ -772,8 +772,8 @@ if [ "$direct_mount_mode" = false ]; then
 fi
 echo ""
 
-# Start pipe listener if autoMerge enabled (git mode only)
-if [ "$direct_mount_mode" = false ] && [ "$cfg_autoMerge" = "true" ]; then
+# Start pipe listener if autoSync enabled (git mode only)
+if [ "$direct_mount_mode" = false ] && [ "$cfg_autoSync" = "true" ]; then
     start_pipe_listener "$cfg_source" "$intermediary_dir" "$pipe_path" "$verbose"
 fi
 
@@ -792,7 +792,7 @@ cleanup_on_exit() {
             stop_pipe_listener "$PIPE_LISTENER_PID"
             cleanup_pipe "$pipe_path"
         fi
-        if [ "$cfg_autoMerge" = "true" ]; then
+        if [ "$cfg_autoSync" = "true" ]; then
             cleanup_source_hooks "$cfg_source"
         fi
     fi
@@ -828,9 +828,9 @@ if [ "$cfg_mode" != "docker" ]; then
     if [ "$direct_mount_mode" = true ]; then
         echo ""
         echo -e "${_cyan}⚠️  Direct mount: Changes are made directly to source files.${_reset}"
-    elif [ "$cfg_autoMerge" != "true" ]; then
+    elif [ "$cfg_autoSync" != "true" ]; then
         echo ""
-        echo -e "${_cyan}⚠️  Auto-merge is OFF for this cage (branch: $source_branch).${_reset}"
+        echo -e "${_cyan}⚠️  Auto-sync is OFF for this cage (branch: $source_branch).${_reset}"
         echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
         echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
     fi

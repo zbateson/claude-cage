@@ -266,8 +266,8 @@ local showBanner = config.showBanner
 if showBanner == nil then showBanner = true end
 local networkMode = config.networkMode or "disabled"
 local mode = config.mode or "bwrap"
-local autoMerge = config.autoMerge
-if autoMerge == nil then autoMerge = false end
+local autoSync = config.autoSync
+if autoSync == nil then autoSync = false end
 local isolated = config.isolated
 if isolated == nil then isolated = false end
 local hideConfirmationPrompt = config.hideConfirmationPrompt
@@ -326,7 +326,7 @@ print(array_to_string(block.networks))
 print(project)
 print(config_root)
 print(mode)
-print(tostring(autoMerge))
+print(tostring(autoSync))
 print(tostring(isolated))
 print(docker_image)
 print(launch)
@@ -417,7 +417,7 @@ LUAEOF
         read -r cfg_project
         read -r cfg_config_root
         read -r cfg_mode
-        read -r cfg_autoMerge
+        read -r cfg_autoSync
         read -r cfg_isolated
         read -r cfg_docker_image
         read -r cfg_launch

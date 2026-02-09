@@ -17,8 +17,8 @@ claude_cage {
     -- Sandbox mode: "bwrap" (default) or "docker"
     -- mode = "bwrap",
 
-    -- Auto-sync commits back to source in real-time
-    -- autoMerge = true,
+    -- EXPERIMENTAL: Auto-sync commits back to source in real-time
+    -- autoSync = true,
 
     -- Allow non-git directories (mounts directly without git sync)
     -- allowNonGit = true,

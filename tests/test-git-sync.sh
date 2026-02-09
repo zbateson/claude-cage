@@ -827,5 +827,255 @@ if [ ! -d "$failed_dir" ] || [ -z "$(ls -A "$failed_dir" 2>/dev/null)" ]; then
 fi
 echo "  PASS: Failed merge patch saved for recovery"
 
+# ============================================================================
+# Test 22: autoSync with dirty tree, no conflicts
+# ============================================================================
+echo ""
+echo "Test 22: autoSync with dirty tree should stash, apply, and restore"
+
+setup_test_cage "source22"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+# Make a commit in work and push
+echo "claude added this" > "$WORK_DIR/newfile.txt"
+git -C "$WORK_DIR" add newfile.txt
+git -C "$WORK_DIR" commit -q -m "Add newfile from Claude"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Dirty the source working tree (non-conflicting change)
+echo "user edit" >> "$SOURCE_PATH/file.txt"
+
+# Verify source is dirty
+if [ -z "$(git -C "$SOURCE_PATH" status --porcelain)" ]; then
+    echo "FAIL: Source should be dirty before sync"
+    exit 1
+fi
+
+# Sync
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+# Verify Claude's commit was applied
+if [ ! -f "$SOURCE_PATH/newfile.txt" ]; then
+    echo "FAIL: newfile.txt not in source after sync"
+    exit 1
+fi
+echo "  PASS: Claude's commit applied"
+
+# Verify user's edit was restored from stash
+if ! grep -q "user edit" "$SOURCE_PATH/file.txt"; then
+    echo "FAIL: User's edit should be restored from stash"
+    echo "  file.txt contents: $(cat "$SOURCE_PATH/file.txt")"
+    exit 1
+fi
+echo "  PASS: User's dirty edit restored"
+
+# Verify stash list is empty (clean pop)
+stash_count=$(git -C "$SOURCE_PATH" stash list 2>/dev/null | wc -l)
+if [ "$stash_count" -ne 0 ]; then
+    echo "FAIL: Stash list should be empty after clean restore"
+    echo "  Stash list: $(git -C "$SOURCE_PATH" stash list)"
+    exit 1
+fi
+echo "  PASS: Stash list empty (clean pop)"
+
+# Verify commit mapping updated
+commit_map_path=$(get_commit_map_path "$INTERMEDIARY_DIR")
+newrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+if ! grep -q "^$newrev " "$commit_map_path"; then
+    echo "FAIL: Commit mapping should be updated"
+    exit 1
+fi
+echo "  PASS: Commit mapping updated"
+
+# ============================================================================
+# Test 23: autoSync with dirty tree, conflicts (Claude wins)
+# ============================================================================
+echo ""
+echo "Test 23: autoSync with conflicts should favor Claude, stash user's hunks"
+
+setup_test_cage "source23"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+# Make a conflicting commit in work: overwrite file.txt
+echo "claude version" > "$WORK_DIR/file.txt"
+git -C "$WORK_DIR" add file.txt
+git -C "$WORK_DIR" commit -q -m "Claude overwrites file.txt"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Dirty source with conflicting edit to file.txt
+echo "user version" > "$SOURCE_PATH/file.txt"
+
+# Sync
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+# Verify Claude's version wins in the committed tree
+committed_content=$(git -C "$SOURCE_PATH" show HEAD:file.txt 2>/dev/null)
+if [ "$committed_content" != "claude version" ]; then
+    echo "FAIL: HEAD:file.txt should be 'claude version', got: '$committed_content'"
+    exit 1
+fi
+echo "  PASS: Claude's version in committed tree"
+
+# Verify a stash exists with user's conflicting changes
+stash_count=$(git -C "$SOURCE_PATH" stash list 2>/dev/null | wc -l)
+if [ "$stash_count" -eq 0 ]; then
+    echo "FAIL: Should have a stash with user's conflicting changes"
+    exit 1
+fi
+# Verify stash message
+if ! git -C "$SOURCE_PATH" stash list 2>/dev/null | grep -q "conflicted"; then
+    echo "FAIL: Stash message should mention 'conflicted'"
+    echo "  Stash list: $(git -C "$SOURCE_PATH" stash list)"
+    exit 1
+fi
+echo "  PASS: User's conflicting changes stashed with descriptive message"
+
+# ============================================================================
+# Test 24: autoSync with untracked file collision
+# ============================================================================
+echo ""
+echo "Test 24: autoSync with untracked file collision should stash untracked"
+
+setup_test_cage "source24"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+# Claude adds a new file
+echo "claude brand-new" > "$WORK_DIR/brand-new.txt"
+git -C "$WORK_DIR" add brand-new.txt
+git -C "$WORK_DIR" commit -q -m "Claude adds brand-new.txt"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Create the same file as untracked on source (collision)
+echo "user brand-new" > "$SOURCE_PATH/brand-new.txt"
+
+# Sync
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+# Verify Claude's version is in the committed tree
+committed_content=$(git -C "$SOURCE_PATH" show HEAD:brand-new.txt 2>/dev/null)
+if [ "$committed_content" != "claude brand-new" ]; then
+    echo "FAIL: HEAD:brand-new.txt should be 'claude brand-new', got: '$committed_content'"
+    exit 1
+fi
+echo "  PASS: Claude's brand-new.txt in committed tree"
+
+# The user's untracked file should have been stashed
+stash_count=$(git -C "$SOURCE_PATH" stash list 2>/dev/null | wc -l)
+if [ "$stash_count" -eq 0 ]; then
+    echo "FAIL: Should have a stash with user's untracked brand-new.txt"
+    exit 1
+fi
+echo "  PASS: User's untracked file collision stashed"
+
+# ============================================================================
+# Test 25: autoSync with multiple commits in batch
+# ============================================================================
+echo ""
+echo "Test 25: autoSync with multiple commits and dirty tree"
+
+setup_test_cage "source25"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+
+# Multiple commits
+echo "a" > "$WORK_DIR/a.txt"
+git -C "$WORK_DIR" add a.txt && git -C "$WORK_DIR" commit -q -m "Add a"
+echo "b" > "$WORK_DIR/b.txt"
+git -C "$WORK_DIR" add b.txt && git -C "$WORK_DIR" commit -q -m "Add b"
+echo "c" > "$WORK_DIR/c.txt"
+git -C "$WORK_DIR" add c.txt && git -C "$WORK_DIR" commit -q -m "Add c"
+
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Dirty source (non-conflicting)
+echo "wip" >> "$SOURCE_PATH/file.txt"
+
+# Sync
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+# Verify all three files exist
+for f in a b c; do
+    if [ ! -f "$SOURCE_PATH/${f}.txt" ]; then
+        echo "FAIL: ${f}.txt not in source after batch sync"
+        exit 1
+    fi
+done
+echo "  PASS: All three commits applied"
+
+# Verify user's edit preserved
+if ! grep -q "wip" "$SOURCE_PATH/file.txt"; then
+    echo "FAIL: User's 'wip' edit should be preserved"
+    exit 1
+fi
+echo "  PASS: User's WIP edit restored"
+
+# Stash should be empty (no conflicts)
+stash_count=$(git -C "$SOURCE_PATH" stash list 2>/dev/null | wc -l)
+if [ "$stash_count" -ne 0 ]; then
+    echo "FAIL: Stash should be empty after non-conflicting batch sync"
+    exit 1
+fi
+echo "  PASS: Stash list empty"
+
+# ============================================================================
+# Test 26: autoSync with clean tree (no stash needed)
+# ============================================================================
+echo ""
+echo "Test 26: autoSync with clean tree should not stash"
+
+setup_test_cage "source26"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+echo "clean sync" > "$WORK_DIR/clean.txt"
+git -C "$WORK_DIR" add clean.txt
+git -C "$WORK_DIR" commit -q -m "Clean sync test"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Source is CLEAN (no dirty changes)
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" >/dev/null 2>&1
+
+# Verify commit applied
+if [ ! -f "$SOURCE_PATH/clean.txt" ]; then
+    echo "FAIL: clean.txt should be in source"
+    exit 1
+fi
+echo "  PASS: Clean sync applied"
+
+# Verify no stash entries
+stash_count=$(git -C "$SOURCE_PATH" stash list 2>/dev/null | wc -l)
+if [ "$stash_count" -ne 0 ]; then
+    echo "FAIL: No stash should be created for clean tree"
+    exit 1
+fi
+echo "  PASS: No stash created"
+
+# Verify commit mapping
+commit_map_path=$(get_commit_map_path "$INTERMEDIARY_DIR")
+newrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+if ! grep -q "^$newrev " "$commit_map_path"; then
+    echo "FAIL: Commit mapping should be updated"
+    exit 1
+fi
+echo "  PASS: Commit mapping updated"
+
 echo ""
 echo "=== All git-sync tests passed! ==="

@@ -60,10 +60,12 @@ claude_cage {
     -- =========================================================================
     -- SYNC OPTIONS
     -- =========================================================================
-    -- Auto-merge syncs Claude's commits back to your source repo in real-time.
-    -- When enabled, git hooks are installed on your source repo.
+    -- EXPERIMENTAL: Auto-sync pushes Claude's commits back to your source repo
+    -- in real-time. If your working tree is dirty, changes are stashed before
+    -- sync and restored after. On conflict, Claude's version wins; your
+    -- conflicting hunks are saved to a separate stash.
 
-    autoMerge = true,
+    autoSync = true,
 
     -- Allow running in non-git directories. When true, directories without
     -- a git repo are mounted directly (no sync, changes go straight to source).

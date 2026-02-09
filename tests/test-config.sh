@@ -105,10 +105,10 @@ if ! echo "$output" | grep -q "secrets"; then
 fi
 echo "  PASS: Parsed exclude array"
 
-echo "Test 4: Should parse autoMerge option"
+echo "Test 4: Should parse autoSync option"
 cat > "$TEST_TMP/project4/.claude-cage" << 'EOF'
 claude_cage {
-    autoMerge = true,
+    autoSync = true,
     showBanner = false,
     hideConfirmationPrompt = true
 }
@@ -117,13 +117,13 @@ EOF
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
-if ! echo "$output" | grep -q "Auto-merge:.*true"; then
-    echo "FAIL: Should show autoMerge = true"
+if ! echo "$output" | grep -q "Auto-sync:.*true"; then
+    echo "FAIL: Should show autoSync = true"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Parsed autoMerge option"
+echo "  PASS: Parsed autoSync option"
 
 echo "Test 5: Should parse mode option (bwrap vs docker)"
 cat > "$TEST_TMP/project4/.claude-cage" << 'EOF'
@@ -229,14 +229,14 @@ claude_cage {
     showBanner = false,
     hideConfirmationPrompt = true,
     exclude = { "local-exclude" },
-    autoMerge = true
+    autoSync = true
 }
 EOF
 # Create includeIf target config
 cat > "$TEST_TMP/projects/grouped/claude-cage.config" << 'EOF'
 claude_cage {
     exclude = { "grouped-exclude" },
-    autoMerge = false
+    autoSync = false
 }
 EOF
 # Create user config with includeIf
@@ -265,8 +265,8 @@ if ! echo "$output" | grep -q "local-exclude"; then
     echo "$output"
     exit 1
 fi
-# autoMerge from local should override includeIf (scalar)
-if ! echo "$output" | grep -q "Auto-merge:.*true"; then
+# autoSync from local should override includeIf (scalar)
+if ! echo "$output" | grep -q "Auto-sync:.*true"; then
     echo "FAIL: Local config should override includeIf scalar values"
     echo "Output was:"
     echo "$output"

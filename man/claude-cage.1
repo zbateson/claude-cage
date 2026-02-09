@@ -25,7 +25,7 @@ Network filtering via iptables (optional)
 .TP
 .B git-merge
 Fetch refs from intermediary repository for manual merge. Use this when
-autoMerge is disabled and you want to bring Claude's changes back to source.
+autoSync is disabled and you want to bring Claude's changes back to source.
 .TP
 .B clean \fR[\fIID\fR...]
 Remove cached session(s). With no arguments, presents interactive selection
@@ -101,7 +101,7 @@ Configuration uses Lua syntax:
 claude_cage {
     launch = "claude",
     mode = "bwrap",
-    autoMerge = true,
+    autoSync = true,
     exclude = { ".env", "secrets/**" },
     networkMode = "allowlist",
     allow = {
@@ -122,8 +122,11 @@ Command to run inside sandbox (default: "claude")
 .B mode
 Sandbox mode: "bwrap" or "docker" (default: "bwrap")
 .TP
-.B autoMerge
-Enable real-time sync via named pipe (default: false)
+.B autoSync
+EXPERIMENTAL. Enable real-time sync via named pipe (default: false). If your
+working tree is dirty, changes are stashed before sync and restored after.
+On conflict, Claude's version wins; your conflicting hunks are saved to a
+separate stash.
 .TP
 .B exclude
 Array of patterns to exclude via :(exclude,glob) pathspec

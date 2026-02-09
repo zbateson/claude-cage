@@ -159,7 +159,7 @@ make clean  # Remove built file
 
 ### Outbound (Claude -> Source)
 
-When `autoMerge = true`:
+When `autoSync = true` (**EXPERIMENTAL**):
 
 1. Claude makes commits in the work directory
 2. Claude runs `git push origin`
@@ -167,12 +167,19 @@ When `autoMerge = true`:
 4. Hook writes `<refname> <newrev> <oldrev>` to named pipe (mounted at `/tmp/claude-cage/pipe` inside sandbox)
 5. Pipe listener on host reads the message
 6. `sync_to_source()` runs:
+   - If source working tree is dirty and user is on the target branch: stashes all changes (including untracked) before applying
    - Walks commits `oldrev..newrev` in topological order
    - Skips commits already in the commit mapping (loop prevention)
    - Uses `git format-patch` for each new commit
    - Applies to source with `git am --3way` (same branch) or temp-index + `git update-ref` (user switched branches)
    - Adds `<intermediary-hash> <source-hash>` to commit mapping after each successful apply
    - For new branches (oldrev is 0000...): creates branch on source from mapped parent
+   - After all commits: pops the stash to restore user's WIP
+   - On stash pop conflict: Claude's version wins; user's conflicting hunks are saved to a separate stash (`git stash list` to find them)
+
+**Known limitation:** The stash cycle does not preserve the user's staged vs unstaged distinction. All changes are staged before stashing and unstaged after restore.
+
+**Recommendation:** For the smoothest co-create experience, work on a fresh branch so there's no conflict between your edits and Claude's commits.
 
 ### Inbound (Source -> Intermediary)
 
@@ -199,7 +206,7 @@ The `:(exclude,glob)` pathspec handles commits that touch both excluded and non-
 
 Multiple claude-cage sessions can run concurrently on the same project. Session tracking prevents cleanup race conditions and protects running sessions:
 
-1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<path-hash>/` early at startup (before any destructive operations), regardless of autoMerge setting
+1. **Session registration** - Each session creates a PID file in `$XDG_RUNTIME_DIR/claude-cage/sessions/<path-hash>/` early at startup (before any destructive operations), regardless of autoSync setting
 2. **Rebuild protection** - If another session is active for the same project, the cage is never rebuilt (even if source has moved ahead). New sessions get their own work directory.
 3. **Hook dispatcher** - Source `post-commit` and `post-merge` hooks use a dispatcher pattern (`.git/hooks/<hook>` runs all scripts in `<hook>.d/`)
 4. **Project-scoped hooks** - Each project gets hook files: `post-commit.d/claude-cage-<path-hash>` and `post-merge.d/claude-cage-<path-hash>`
@@ -273,7 +280,7 @@ Use a visible filename like `claude-cage.config` for included configs so they're
 
 Later configs override earlier ones for scalar values. Arrays (like `exclude`) merge across all levels.
 
-**No config?** If no config exists at any level, an interactive builder walks you through creating one. It prompts for sandbox mode, common excludes, auto-merge, and optional tool-specific mounts (e.g., Claude Code's `~/.claude`).
+**No config?** If no config exists at any level, an interactive builder walks you through creating one. It prompts for sandbox mode, common excludes, auto-sync, and optional tool-specific mounts (e.g., Claude Code's `~/.claude`).
 
 Example `.claude-cage`:
 
@@ -281,7 +288,7 @@ Example `.claude-cage`:
 claude_cage {
     exclude = { ".env", "secrets/**", "application-*.properties" },
     mode = "bwrap",  -- or "docker"
-    autoMerge = true,  -- enable real-time sync
+    autoSync = true,  -- EXPERIMENTAL: enable real-time sync with co-create support
     allowNonGit = true,  -- allow non-git directories
     showBanner = true,
 
@@ -318,7 +325,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 | `launch` | `"claude"` | Command to run inside sandbox |
 | `exclude` | `{}` | Patterns to exclude from archive |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
-| `autoMerge` | `false` | Enable real-time sync via named pipe |
+| `autoSync` | `false` | **EXPERIMENTAL** Enable real-time sync via named pipe (supports co-create with stash/apply/pop) |
 | `allowNonGit` | unset | Allow running in non-git directories (see below) |
 | `directMount` | `false` | Mount source directly without git sync (see below) |
 | `isolated` | `false` | Only mount single project instead of all same-session projects |
@@ -357,7 +364,7 @@ By default, claude-cage creates an intermediary clone and uses git to sync chang
 - No intermediary or work directory is created
 - No git hooks or sync mechanism
 - Changes made inside the sandbox immediately affect the source files
-- `autoMerge`, `createCagedDir`, and `exclude` are ignored
+- `autoSync`, `createCagedDir`, and `exclude` are ignored
 
 **Example configs:**
 

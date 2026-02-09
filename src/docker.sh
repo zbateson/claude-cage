@@ -258,15 +258,15 @@ TOOLS_EOF
 }
 
 # Generate info messages to display after installs, right before launching
-# Uses container-side env vars: CAGE_DIRECT_MOUNT, CAGE_AUTO_MERGE, CAGE_SOURCE_BRANCH
+# Uses container-side env vars: CAGE_DIRECT_MOUNT, CAGE_AUTO_SYNC, CAGE_SOURCE_BRANCH
 generate_docker_info_script() {
     cat << 'INFO_EOF'
 # Info messages (after installs, before launch)
 _ci='\033[36m'; _cw='\033[97m'; _cr='\033[0m'
 if [ "$CAGE_DIRECT_MOUNT" = "true" ]; then
     echo -e "\n${_ci}⚠️  Direct mount: Changes are made directly to source files.${_cr}" >&2
-elif [ "$CAGE_AUTO_MERGE" != "true" ]; then
-    echo -e "\n${_ci}⚠️  Auto-merge is OFF for this cage (branch: $CAGE_SOURCE_BRANCH).${_cr}" >&2
+elif [ "$CAGE_AUTO_SYNC" != "true" ]; then
+    echo -e "\n${_ci}⚠️  Auto-sync is OFF for this cage (branch: $CAGE_SOURCE_BRANCH).${_cr}" >&2
     echo -e "${_ci}   To bring changes back to source, run: ${_cw}claude-cage git-merge${_cr}" >&2
     echo -e "${_ci}   (Must be run from branch '$CAGE_SOURCE_BRANCH')${_cr}" >&2
 fi
@@ -398,7 +398,7 @@ run_in_docker() {
     docker_args+=(-e "LANG=C.UTF-8")
     docker_args+=(-e "DEBIAN_FRONTEND=noninteractive")
     docker_args+=(-e "CAGE_DIRECT_MOUNT=${direct_mount_mode:-false}")
-    docker_args+=(-e "CAGE_AUTO_MERGE=${cfg_autoMerge:-false}")
+    docker_args+=(-e "CAGE_AUTO_SYNC=${cfg_autoSync:-false}")
     docker_args+=(-e "CAGE_SOURCE_BRANCH=${source_branch:-}")
     [ "$verbose" = true ] && docker_args+=(-e "CAGE_VERBOSE=1")
     [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")

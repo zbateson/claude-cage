@@ -42,7 +42,7 @@ cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     showBanner = false,
     hideConfirmationPrompt = true,
-    autoMerge = true
+    autoSync = true
 }
 EOF
 

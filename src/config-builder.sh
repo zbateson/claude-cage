@@ -254,13 +254,13 @@ config_builder_run() {
 
     echo
 
-    # 5. Auto-merge
-    echo "Auto-merge pushes your sandbox commits back to source in real-time."
+    # 5. Auto-sync
+    echo "Auto-sync pushes your sandbox commits back to source in real-time."
     echo "Without it, you gotta run 'claude-cage git-merge' yourself."
-    config_builder_prompt_yesno "Want auto-merge?" "y"
-    local auto_merge=$?
-    local auto_merge_str="false"
-    [ $auto_merge -eq 0 ] && auto_merge_str="true"
+    config_builder_prompt_yesno "Want auto-sync?" "y"
+    local auto_sync=$?
+    local auto_sync_str="false"
+    [ $auto_sync -eq 0 ] && auto_sync_str="true"
 
     echo
 
@@ -387,7 +387,7 @@ config_builder_run() {
     local config_content="claude_cage {"
     config_content+="\n    launch = \"$launch_cmd\","
     config_content+="\n    mode = \"$mode\","
-    config_content+="\n    autoMerge = $auto_merge_str,"
+    config_content+="\n    autoSync = $auto_sync_str,"
     config_content+="\n    allowNonGit = $allow_non_git_str,"
     config_content+="\n    createCagedDir = $create_caged_str,"
 

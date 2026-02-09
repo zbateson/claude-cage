@@ -568,10 +568,10 @@ git -C "$SOURCE_PATH" branch -D ff-feature 2>/dev/null || true
 git -C "$SOURCE_PATH" branch -D noff-feature 2>/dev/null || true
 
 echo ""
-echo "=== Testing autoMerge=false (no hooks) ==="
+echo "=== Testing autoSync=false (no hooks) ==="
 echo ""
 
-echo "Test 19: No hooks when autoMerge=false"
+echo "Test 19: No hooks when autoSync=false"
 # Clean up all existing state
 rm -rf "$INTERMEDIARY_DIR" "$CLAUDE_CAGE_RUNTIME"
 rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
@@ -585,7 +585,7 @@ git init --bare "$INTERMEDIARY_DIR" --quiet
 git -C "$SOURCE_PATH" fast-export HEAD 2>/dev/null \
     | git -C "$INTERMEDIARY_DIR" fast-import --quiet 2>/dev/null
 
-# When autoMerge=false, setup_git_hooks should NOT be called.
+# When autoSync=false, setup_git_hooks should NOT be called.
 # Verify that without calling setup_git_hooks:
 # - no pipe exists
 # - no source hooks exist
@@ -612,7 +612,7 @@ if [ -d "$SOURCE_PATH/.git/hooks/pre-commit.d" ]; then
     done
 fi
 
-echo "  PASS: No pipe or source hooks created (autoMerge=false path)"
+echo "  PASS: No pipe or source hooks created (autoSync=false path)"
 
 echo ""
 echo "=== Testing unscoped merge prevention hooks ==="

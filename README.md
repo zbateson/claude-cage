@@ -155,8 +155,8 @@ claude_cage {
     -- Sandbox mode: "bwrap" or "docker"
     mode = "bwrap",
 
-    -- Auto-sync commits back to source
-    autoMerge = true,
+    -- EXPERIMENTAL: Auto-sync commits back to source (supports co-create)
+    autoSync = true,
 
     -- Allow sandboxing non-git directories (mounts directly, no sync)
     allowNonGit = true,
@@ -239,7 +239,7 @@ claude-cage --dry-run
 # Verbose output
 claude-cage --verbose
 
-# Manually merge Claude's changes (if autoMerge is off)
+# Manually merge Claude's changes (if autoSync is off)
 claude-cage git-merge
 
 # Attach to an existing active session
@@ -273,6 +273,31 @@ claude-cage
 # Terminal 2: Attach to the same session
 claude-cage --attach-session
 ```
+
+## Co-Create Workflow (EXPERIMENTAL)
+
+When `autoSync = true`, you and Claude can work on the same branch at the same time. Claude's commits are automatically synced back to your source repo — and if you've got uncommitted work in your tree, claude-cage handles it without blowin' anythin' away.
+
+**How it works:**
+1. When Claude pushes commits, claude-cage checks if your working tree is dirty
+2. If dirty: your changes (including untracked files) are stashed automatically
+3. Claude's commits are applied via `git am --3way`
+4. Your stash is popped back on top
+
+**When there's a conflict:**
+- Claude's version wins — his commits land clean on the branch
+- Your conflicting hunks are surgically extracted and saved to a separate stash
+- Run `git stash list` to find stashes labeled `claude-cage: your changes that conflicted`
+- Run `git stash show -p stash@{N}` to see exactly what was set aside
+
+**Recommendations:**
+- Work on a fresh branch when co-creating — keeps things clean if you need to rewind
+- Commit your work frequently to minimize what's in the stash
+- Check `git stash list` after a sync to see if anything was set aside
+
+**Known limitations:**
+- Staging state (what you had `git add`'d vs unstaged) is not preserved during sync — everything comes back as unstaged modifications
+- This is an experimental feature — back up important uncommitted work before relyin' on it
 
 ## Network Filtering
 
@@ -364,7 +389,7 @@ Want git workflow for your main project but also let Claude browse your other re
 claude_cage {
     -- Git sync for this project only
     isolated = true,
-    autoMerge = true,
+    autoSync = true,
 
     -- But mount the whole open source directory read-only
     additionalMounts = {
@@ -447,7 +472,7 @@ your-project/
 │   └── sessions/
 │       └── <timestamp>/
 │           └── work → ~/.cache/.../sessions/<timestamp>/work/<project-path>/
-└── .git/hooks/                          # Hooks added when autoMerge=true
+└── .git/hooks/                          # Hooks added when autoSync=true
     ├── post-commit.d/claude-cage-*      # Syncs your commits to intermediary
     └── post-merge.d/claude-cage-*       # Syncs merge commits to intermediary
 ```

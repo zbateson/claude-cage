@@ -14,6 +14,100 @@ sync_log() {
     fi
 }
 
+# Check if source working tree has uncommitted changes (staged, unstaged, or untracked)
+# Arguments: $1=source_dir
+source_is_dirty() {
+    local source_dir="$1"
+    [ -n "$(git -C "$source_dir" status --porcelain 2>/dev/null)" ]
+}
+
+# Resolve conflicts after git stash pop by favoring Claude's version (HEAD).
+# For each conflicting file, extracts the user's version and stashes it separately.
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - base_hash: The HEAD hash before git-am applied Claude's commits
+#   $3 - log_file: Path to sync log file
+resolve_stash_conflicts() {
+    local source_dir="$1"
+    local base_hash="$2"
+    local log_file="$3"
+
+    # Get list of conflicting (unmerged) files
+    local conflicting_files
+    conflicting_files=$(git -C "$source_dir" diff --name-only --diff-filter=U 2>/dev/null)
+
+    if [ -z "$conflicting_files" ]; then
+        # No unmerged files — stash pop failed for another reason, just reset
+        git -C "$source_dir" checkout -- . 2>/dev/null || true
+        git -C "$source_dir" stash drop 2>/dev/null || true
+        return 0
+    fi
+
+    local user_conflict_files=()
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local user_wins_dir="$tmpdir/user-wins"
+    mkdir -p "$user_wins_dir"
+
+    # Phase 1: While stash@{0} still exists, compute user-wins for each conflict
+    while IFS= read -r cfile; do
+        [ -z "$cfile" ] && continue
+
+        local base_ver="$tmpdir/base"
+        local claude_ver="$tmpdir/claude"
+        local user_ver="$tmpdir/user"
+
+        # Extract three versions
+        git -C "$source_dir" show "${base_hash}:${cfile}" > "$base_ver" 2>/dev/null || : > "$base_ver"
+        git -C "$source_dir" show "HEAD:${cfile}" > "$claude_ver" 2>/dev/null || : > "$claude_ver"
+        git -C "$source_dir" show "stash@{0}:${cfile}" > "$user_ver" 2>/dev/null || : > "$user_ver"
+
+        # Create user-wins merge (theirs=user's version wins on conflict)
+        local uw_file="$user_wins_dir/$cfile"
+        mkdir -p "$(dirname "$uw_file")"
+        cp "$claude_ver" "$uw_file"
+        git merge-file --theirs "$uw_file" "$base_ver" "$user_ver" 2>/dev/null || true
+
+        # If user-wins differs from claude, user had conflicting edits
+        if ! cmp -s "$uw_file" "$claude_ver"; then
+            user_conflict_files+=("$cfile")
+        fi
+
+        rm -f "$base_ver" "$claude_ver" "$user_ver"
+    done <<< "$conflicting_files"
+
+    # Phase 2: Resolve all conflicts in favor of Claude (ours = HEAD = post-am)
+    while IFS= read -r cfile; do
+        [ -z "$cfile" ] && continue
+        git -C "$source_dir" checkout --ours -- "$cfile" 2>/dev/null || true
+    done <<< "$conflicting_files"
+    # shellcheck disable=SC2086
+    git -C "$source_dir" add -- $conflicting_files 2>/dev/null || true
+    git -C "$source_dir" reset 2>/dev/null || true
+
+    # Phase 3: Drop the original stash (the one that failed to pop)
+    git -C "$source_dir" stash drop 2>/dev/null || true
+
+    # Phase 4: If there were user-conflicting files, write user-wins and stash them
+    if [ ${#user_conflict_files[@]} -gt 0 ]; then
+        for cfile in "${user_conflict_files[@]}"; do
+            local uw_file="$user_wins_dir/$cfile"
+            if [ -f "$uw_file" ]; then
+                local target="$source_dir/$cfile"
+                mkdir -p "$(dirname "$target")"
+                cp "$uw_file" "$target"
+            fi
+        done
+
+        git -C "$source_dir" add -- "${user_conflict_files[@]}" 2>/dev/null || true
+        git -C "$source_dir" stash push -m "claude-cage: your changes that conflicted with Claude's sync" -- "${user_conflict_files[@]}" 2>/dev/null || true
+
+        sync_log "$log_file" "--------" ">>source" "stash pop had ${#user_conflict_files[@]} conflicting file(s), Claude wins; user hunks stashed"
+    fi
+
+    rm -rf "$tmpdir"
+}
+
 # Check if existing cage is in sync with source
 # Returns: "no_cage" | "in_sync" | "needs_work_dir" | "needs_update"
 # Arguments:
@@ -333,6 +427,24 @@ sync_to_source() {
     # encounter an unmapped commit after a run of already-mapped ones
     local last_mapped_source_hash=""
 
+    # Stash dirty working tree before applying commits (autoSync co-create mode)
+    local did_stash=false
+    local stash_base_hash=""
+    local current_branch
+    current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null) || true
+
+    if [ "$current_branch" = "$branch_name" ] && source_is_dirty "$source_dir"; then
+        stash_base_hash=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)
+        # Stage untracked files so stash captures them (respects .gitignore)
+        git -C "$source_dir" add -A 2>/dev/null || true
+        local stash_output
+        stash_output=$(git -C "$source_dir" stash push -m "claude-cage: WIP before sync batch" 2>&1) || true
+        if echo "$stash_output" | grep -q "Saved working directory"; then
+            did_stash=true
+            sync_log "$log_file" "--------" ">>source" "stashed dirty tree before sync"
+        fi
+    fi
+
     local commit
     for commit in $commits; do
         local commit_short="${commit:0:8}"
@@ -594,6 +706,22 @@ sync_to_source() {
                     git -C "$_ff_root" reset --hard 2>/dev/null
                 fi
             fi
+        fi
+    fi
+
+    # Restore stashed working tree (autoSync co-create mode)
+    if [ "$did_stash" = true ]; then
+        local pop_rc
+        git -C "$source_dir" stash pop 2>/dev/null && pop_rc=0 || pop_rc=$?
+        if [ "$pop_rc" -eq 0 ]; then
+            # Clean pop — unstage everything back to working tree state
+            git -C "$source_dir" reset 2>/dev/null || true
+            sync_log "$log_file" "--------" ">>source" "stash pop clean, WIP restored"
+        else
+            # Conflicts — resolve in favor of Claude, stash user's conflicting hunks
+            resolve_stash_conflicts "$source_dir" "$stash_base_hash" "$log_file"
+            git -C "$source_dir" reset 2>/dev/null || true
+            sync_log "$log_file" "--------" ">>source" "stash pop had conflicts, resolved (Claude wins)"
         fi
     fi
 

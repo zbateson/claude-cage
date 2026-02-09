@@ -1267,12 +1267,8 @@ catchup_intermediary_branches() {
         local intermediary_head
         intermediary_head=$(git -C "$intermediary_dir" rev-parse "$ib" 2>/dev/null)
 
-        # Check if source is ahead (source HEAD not mapped)
+        # Check if intermediary branch HEAD already maps to source branch HEAD
         if [ -f "$commit_map_path" ]; then
-            if grep -q " ${source_head}$" "$commit_map_path" 2>/dev/null; then
-                continue  # Already in sync
-            fi
-            # Also check if intermediary head maps to source head
             if grep -q "^${intermediary_head} ${source_head}$" "$commit_map_path" 2>/dev/null; then
                 continue  # Already in sync
             fi
@@ -1314,6 +1310,18 @@ catchup_intermediary_branches() {
             rm -f "$catchup_tmp"
 
             build_commit_map_from_marks "$source_marks_path" "$import_marks_path" "$commit_map_path" "$source_dir" "${mapped_source_base}..${ib}"
+
+            # If branch still not caught up (commits already imported via another branch),
+            # update the ref directly from the commit map
+            local current_int_head
+            current_int_head=$(git -C "$intermediary_dir" rev-parse "$ib" 2>/dev/null)
+            if ! grep -q "^${current_int_head} ${source_head}$" "$commit_map_path" 2>/dev/null; then
+                local expected_int_hash
+                expected_int_hash=$(awk -v sh="$source_head" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path")
+                if [ -n "$expected_int_hash" ]; then
+                    git -C "$intermediary_dir" update-ref "refs/heads/$ib" "$expected_int_hash" 2>/dev/null || true
+                fi
+            fi
         fi
     done < <(git -C "$intermediary_dir" branch --list 2>/dev/null)
 

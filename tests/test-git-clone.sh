@@ -320,4 +320,42 @@ fi
 echo "  PASS: divergent.txt present in re-created branch"
 
 echo ""
+echo "=== Testing catchup with converged branches ==="
+
+echo "Test 19: Fast-forward another branch to match master"
+cd "$SOURCE_PATH"
+git checkout -b converge-test
+echo "converge" > converge.txt
+git add converge.txt && git commit -m "Converge base"
+git checkout "$BRANCH_NAME"
+
+# Sync converge-test into intermediary
+catchup_intermediary_branches "$SOURCE_PATH" "$INTERMEDIARY_DIR" >/dev/null 2>&1 || true
+if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify converge-test >/dev/null 2>&1; then
+    echo "FAIL: converge-test branch not created in intermediary"
+    exit 1
+fi
+echo "  PASS: converge-test branch synced to intermediary"
+
+echo "Test 20: Add commit to master, fast-forward converge-test to match"
+echo "shared" > shared.txt
+git add shared.txt && git commit -m "Shared commit on master"
+# Sync master's new commit to intermediary
+catchup_intermediary_branches "$SOURCE_PATH" "$INTERMEDIARY_DIR" >/dev/null 2>&1 || true
+# Now fast-forward converge-test to same commit as master
+git branch -f converge-test "$BRANCH_NAME"
+echo "  PASS: converge-test now points to same commit as master on source"
+
+echo "Test 21: catchup updates converged branch ref"
+catchup_intermediary_branches "$SOURCE_PATH" "$INTERMEDIARY_DIR" >/dev/null 2>&1 || true
+# Both branches should now point to same commit in intermediary
+int_master=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+int_converge=$(git -C "$INTERMEDIARY_DIR" rev-parse converge-test 2>/dev/null)
+if [ "$int_master" != "$int_converge" ]; then
+    echo "FAIL: intermediary converge-test ($int_converge) != master ($int_master)"
+    exit 1
+fi
+echo "  PASS: intermediary converge-test updated to match master"
+
+echo ""
 echo "=== All git-clone tests passed! ==="

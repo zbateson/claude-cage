@@ -285,15 +285,15 @@ When `autoSync = true`, you and Claude can work on the same branch at the same t
 4. Your stash is popped back on top
 
 **When there's a conflict:**
-- Claude's version wins — his commits land clean on the branch
-- Your conflicting hunks are surgically extracted and saved to a separate stash
-- Run `git stash list` to find stashes labeled `claude-cage: your changes that conflicted`
-- Run `git stash show -p stash@{N}` to see exactly what was set aside
+- Claude's commits still land clean on the branch (applied before stash pop)
+- Your working tree gets conflict markers — standard git conflict state
+- The stash stays put (git doesn't drop it on a failed pop)
+- Resolve with your usual tools: edit the markers, `git checkout --ours/--theirs`, `git mergetool`, etc.
+- Once resolved, run `git stash drop` to clean up the stash
 
 **Recommendations:**
 - Work on a fresh branch when co-creating — keeps things clean if you need to rewind
 - Commit your work frequently to minimize what's in the stash
-- Check `git stash list` after a sync to see if anything was set aside
 
 **Known limitations:**
 - Staging state (what you had `git add`'d vs unstaged) is not preserved during sync — everything comes back as unstaged modifications

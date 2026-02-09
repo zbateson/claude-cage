@@ -892,10 +892,10 @@ fi
 echo "  PASS: Commit mapping updated"
 
 # ============================================================================
-# Test 23: autoSync with dirty tree, conflicts (Claude wins)
+# Test 23: autoSync with dirty tree, conflicts left for user
 # ============================================================================
 echo ""
-echo "Test 23: autoSync with conflicts should favor Claude, stash user's hunks"
+echo "Test 23: autoSync with conflicts should leave conflict markers for user"
 
 setup_test_cage "source23"
 
@@ -924,25 +924,30 @@ if [ "$committed_content" != "claude version" ]; then
 fi
 echo "  PASS: Claude's version in committed tree"
 
-# Verify a stash exists with user's conflicting changes
+# Verify working tree has conflict markers (unresolved stash pop)
+if ! grep -q "<<<<<<" "$SOURCE_PATH/file.txt" 2>/dev/null; then
+    echo "FAIL: file.txt should have conflict markers"
+    exit 1
+fi
+echo "  PASS: Conflict markers left in working tree for user to resolve"
+
+# Verify stash still exists (git stash pop doesn't drop on conflict)
 stash_count=$(git -C "$SOURCE_PATH" stash list 2>/dev/null | wc -l)
 if [ "$stash_count" -eq 0 ]; then
-    echo "FAIL: Should have a stash with user's conflicting changes"
+    echo "FAIL: Stash should still exist (not dropped on conflict)"
     exit 1
 fi
-# Verify stash message
-if ! git -C "$SOURCE_PATH" stash list 2>/dev/null | grep -q "conflicted"; then
-    echo "FAIL: Stash message should mention 'conflicted'"
-    echo "  Stash list: $(git -C "$SOURCE_PATH" stash list)"
-    exit 1
-fi
-echo "  PASS: User's conflicting changes stashed with descriptive message"
+echo "  PASS: Stash preserved (not dropped on failed pop)"
+
+# Clean up conflict state for next test
+git -C "$SOURCE_PATH" checkout -- . 2>/dev/null || true
+git -C "$SOURCE_PATH" stash drop 2>/dev/null || true
 
 # ============================================================================
 # Test 24: autoSync with untracked file collision
 # ============================================================================
 echo ""
-echo "Test 24: autoSync with untracked file collision should stash untracked"
+echo "Test 24: autoSync with untracked file collision leaves conflict for user"
 
 setup_test_cage "source24"
 
@@ -971,13 +976,17 @@ if [ "$committed_content" != "claude brand-new" ]; then
 fi
 echo "  PASS: Claude's brand-new.txt in committed tree"
 
-# The user's untracked file should have been stashed
+# The user's untracked file should have been stashed (stash still present on conflict)
 stash_count=$(git -C "$SOURCE_PATH" stash list 2>/dev/null | wc -l)
 if [ "$stash_count" -eq 0 ]; then
     echo "FAIL: Should have a stash with user's untracked brand-new.txt"
     exit 1
 fi
-echo "  PASS: User's untracked file collision stashed"
+echo "  PASS: User's untracked file collision preserved in stash"
+
+# Clean up conflict state for next test
+git -C "$SOURCE_PATH" checkout -- . 2>/dev/null || true
+git -C "$SOURCE_PATH" stash drop 2>/dev/null || true
 
 # ============================================================================
 # Test 25: autoSync with multiple commits in batch

@@ -175,7 +175,7 @@ When `autoSync = true` (**EXPERIMENTAL**):
    - Adds `<intermediary-hash> <source-hash>` to commit mapping after each successful apply
    - For new branches (oldrev is 0000...): creates branch on source from mapped parent
    - After all commits: pops the stash to restore user's WIP
-   - On stash pop conflict: Claude's version wins; user's conflicting hunks are saved to a separate stash (`git stash list` to find them)
+   - On stash pop conflict: conflict markers are left in the working tree for the user to resolve via normal git tools (the stash is preserved — git doesn't drop it on failed pop)
 
 **Known limitation:** The stash cycle does not preserve the user's staged vs unstaged distinction. All changes are staged before stashing and unstaged after restore.
 

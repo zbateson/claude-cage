@@ -615,4 +615,109 @@ fi
 echo "  PASS: No pipe or source hooks created (autoMerge=false path)"
 
 echo ""
+echo "=== Testing unscoped merge prevention hooks ==="
+echo ""
+
+echo "Test 20: Unscoped work dir gets pre-merge-commit hook requiring pushed branches"
+
+# Create a fresh work dir (unscoped = no scope_path)
+MERGE_WORK="$TEST_TMP/merge-work"
+rm -rf "$MERGE_WORK"
+mkdir -p "$MERGE_WORK"
+cd "$MERGE_WORK"
+git init -q
+git config user.email "test@example.com"
+git config user.name "Test User"
+echo "base" > file.txt
+git add . && git commit -q -m "Initial"
+
+# Set up a bare remote to act as intermediary
+MERGE_REMOTE="$TEST_TMP/merge-remote"
+rm -rf "$MERGE_REMOTE"
+git clone --bare -q "$MERGE_WORK" "$MERGE_REMOTE"
+git -C "$MERGE_WORK" remote add origin "$MERGE_REMOTE"
+
+# Install hooks (no scope_path = unscoped)
+setup_work_pre_commit "$MERGE_WORK" ""
+
+# Verify pre-merge-commit hook exists
+if [ ! -f "$MERGE_WORK/.git/hooks/pre-merge-commit" ]; then
+    echo "FAIL: pre-merge-commit hook should exist for unscoped work dir"
+    exit 1
+fi
+echo "  PASS: pre-merge-commit hook created for unscoped work dir"
+
+# Verify hook contains the remote branch check (not a total block)
+if ! grep -q "git branch -r --contains" "$MERGE_WORK/.git/hooks/pre-merge-commit"; then
+    echo "FAIL: Hook should check 'git branch -r --contains' (not block all merges)"
+    exit 1
+fi
+echo "  PASS: Hook checks for pushed branches (not total block)"
+
+echo "Test 21: Unscoped hook blocks merge of unpushed branch"
+
+# Create a local-only branch (not pushed to remote)
+git -C "$MERGE_WORK" checkout -q -b local-feature
+echo "local feature" > "$MERGE_WORK/feature.txt"
+git -C "$MERGE_WORK" add . && git -C "$MERGE_WORK" commit -q -m "Local feature"
+git -C "$MERGE_WORK" checkout -q master
+
+# Make a change on master so the merge can't fast-forward
+echo "master change" > "$MERGE_WORK/master.txt"
+git -C "$MERGE_WORK" add . && git -C "$MERGE_WORK" commit -q -m "Master change"
+
+# Attempt non-ff merge — should be blocked by pre-merge-commit hook
+set +e
+merge_out_file="$TEST_TMP/merge-output.txt"
+git -C "$MERGE_WORK" merge local-feature --no-ff --no-edit >"$merge_out_file" 2>&1
+merge_rc=$?
+set -e
+if [ "$merge_rc" -eq 0 ]; then
+    echo "FAIL: Merge of unpushed branch should have been blocked"
+    exit 1
+fi
+echo "  PASS: Merge of unpushed branch blocked (exit code != 0)"
+
+if ! grep -q "ain't been pushed" "$merge_out_file"; then
+    echo "FAIL: Error message should mention branch not pushed"
+    echo "  Got: $(cat "$merge_out_file")"
+    exit 1
+fi
+echo "  PASS: Error message mentions unpushed branch"
+
+# Clean up the blocked merge state
+git -C "$MERGE_WORK" merge --abort 2>/dev/null || true
+
+echo "Test 22: Unscoped hook allows merge of pushed branch"
+
+# Push the feature branch to remote
+git -C "$MERGE_WORK" push -q origin local-feature 2>/dev/null
+
+# Also push master so fetch works
+git -C "$MERGE_WORK" push -q origin master 2>/dev/null
+
+# Fetch to update remote tracking refs
+git -C "$MERGE_WORK" fetch -q origin
+
+# Now merge should succeed (branch is on remote)
+set +e
+git -C "$MERGE_WORK" merge local-feature --no-ff --no-edit >"$merge_out_file" 2>&1
+merge_rc=$?
+set -e
+if [ "$merge_rc" -ne 0 ]; then
+    echo "FAIL: Merge of pushed branch should succeed"
+    echo "  Got: $(cat "$merge_out_file")"
+    exit 1
+fi
+echo "  PASS: Merge of pushed branch allowed"
+
+# Verify it's a merge commit
+merge_head=$(git -C "$MERGE_WORK" rev-parse HEAD)
+if ! git -C "$MERGE_WORK" rev-parse --verify "${merge_head}^2" >/dev/null 2>&1; then
+    echo "FAIL: Result should be a merge commit"
+    exit 1
+fi
+echo "  PASS: Result is a proper merge commit"
+
+echo ""
 echo "=== All git-hooks tests passed! ==="

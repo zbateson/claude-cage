@@ -544,6 +544,7 @@ EOF
 
 # Set up pre-commit hook on work repo for cage safety checks:
 # - Block merge commits in scoped intermediaries (unreliable without full tree)
+# - Require merge targets to be pushed first in unscoped intermediaries
 # - Block force-added gitignored files (breaks patch-based sync)
 # Arguments:
 #   $1 - work_dir: The work directory (Claude's workspace)
@@ -579,6 +580,22 @@ if [ -f .git/MERGE_HEAD ]; then
     exit 1
 fi
 EOF
+    else
+        cat >> "$hook_path" << 'EOF'
+
+# Merge targets must be pushed to remote (intermediary) first.
+# sync_to_source needs both parents mapped to create a real merge on source.
+merge_head=$(git rev-parse --verify MERGE_HEAD 2>/dev/null) || true
+if [ -n "$merge_head" ]; then
+    if ! git branch -r --contains "$merge_head" 2>/dev/null | grep -q .; then
+        echo "Hold on. That branch ain't been pushed to the remote yet."
+        echo "Push it first so the merge can sync back to source properly."
+        echo ""
+        echo "Run 'git merge --abort' to undo, push your branch, then merge again."
+        exit 1
+    fi
+fi
+EOF
     fi
 
     cat >> "$hook_path" << 'HOOKEOF'
@@ -609,8 +626,8 @@ HOOKEOF
 
     # Block clean merges via pre-merge-commit hook (pre-commit only fires for
     # conflict-resolved merges where the user runs `git commit` manually)
+    local merge_hook_path="$work_dir/.git/hooks/pre-merge-commit"
     if [ -n "$scope_path" ]; then
-        local merge_hook_path="$work_dir/.git/hooks/pre-merge-commit"
         cat > "$merge_hook_path" << EOF
 #!/bin/bash
 # claude-cage: block merge commits in scoped cage ($scope_path)
@@ -622,6 +639,29 @@ echo "The intermediary only has files from this scope — merges could go sidewa
 echo ""
 echo "Run 'git merge --abort' to undo, then merge on your source repo instead."
 exit 1
+EOF
+        chmod +x "$merge_hook_path"
+    else
+        cat > "$merge_hook_path" << 'EOF'
+#!/bin/bash
+# claude-cage: require merge targets to be pushed to remote first
+# sync_to_source needs both parents mapped to create a real merge on source.
+# Note: MERGE_HEAD doesn't exist yet when pre-merge-commit runs,
+# so we extract the merge target from GIT_REFLOG_ACTION instead.
+merge_branch="${GIT_REFLOG_ACTION#merge }"
+if [ -n "$merge_branch" ] && [ "$merge_branch" != "$GIT_REFLOG_ACTION" ]; then
+    merge_head=$(git rev-parse --verify "$merge_branch" 2>/dev/null) || true
+    if [ -n "$merge_head" ]; then
+        if ! git branch -r --contains "$merge_head" 2>/dev/null | grep -q .; then
+            echo "Hold on. That branch ain't been pushed to the remote yet."
+            echo "Push it first so the merge can sync back to source properly."
+            echo ""
+            echo "Run 'git merge --abort' to undo, push your branch, then merge again."
+            exit 1
+        fi
+    fi
+fi
+exit 0
 EOF
         chmod +x "$merge_hook_path"
     fi

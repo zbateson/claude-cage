@@ -267,4 +267,57 @@ done < "$commit_map"
 echo "  PASS: Commit map entries have correct format"
 
 echo ""
+echo "=== Testing catchup with diverged branch ==="
+
+echo "Test 15: Create a branch on source and sync to intermediary"
+cd "$SOURCE_PATH"
+git checkout -b feature-diverge
+echo "feature work" > feature.txt
+git add feature.txt && git commit -m "Feature commit"
+feature_hash_old=$(git rev-parse HEAD)
+git checkout "$BRANCH_NAME"
+
+catchup_intermediary_branches "$SOURCE_PATH" "$INTERMEDIARY_DIR" >/dev/null 2>&1 || true
+if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify feature-diverge >/dev/null 2>&1; then
+    echo "FAIL: feature-diverge branch not created in intermediary"
+    exit 1
+fi
+echo "  PASS: feature-diverge branch synced to intermediary"
+
+echo "Test 16: Delete and recreate branch at divergent commit"
+git branch -D feature-diverge
+# Create from an unrelated point (initial commit, not a descendant of the old tip)
+initial_hash=$(git rev-list --reverse HEAD | head -1)
+git checkout -b feature-diverge "$initial_hash"
+echo "divergent work" > divergent.txt
+git add divergent.txt && git commit -m "Divergent commit"
+divergent_hash=$(git rev-parse HEAD)
+git checkout "$BRANCH_NAME"
+
+echo "Test 17: catchup detects divergence and re-creates branch"
+catchup_intermediary_branches "$SOURCE_PATH" "$INTERMEDIARY_DIR" >/dev/null 2>&1 || true
+if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify feature-diverge >/dev/null 2>&1; then
+    echo "FAIL: feature-diverge branch missing from intermediary after catchup"
+    exit 1
+fi
+# Verify the intermediary branch maps to the NEW source hash, not the old one
+commit_map="$INTERMEDIARY_DIR/claude-cage-commit-map"
+intermediary_diverge_hash=$(git -C "$INTERMEDIARY_DIR" rev-parse feature-diverge)
+mapped_source=$(awk -v ih="$intermediary_diverge_hash" '$1 == ih { print $2; exit }' "$commit_map")
+if [ "$mapped_source" = "$feature_hash_old" ]; then
+    echo "FAIL: intermediary still points to old (pre-divergence) source hash"
+    exit 1
+fi
+echo "  PASS: intermediary branch re-created for diverged source branch"
+
+echo "Test 18: Divergent file exists in intermediary tree"
+tree_listing=$(git -C "$INTERMEDIARY_DIR" ls-tree -r --name-only feature-diverge)
+if ! echo "$tree_listing" | grep -q "divergent.txt"; then
+    echo "FAIL: divergent.txt not found in intermediary feature-diverge tree"
+    echo "Tree: $tree_listing"
+    exit 1
+fi
+echo "  PASS: divergent.txt present in re-created branch"
+
+echo ""
 echo "=== All git-clone tests passed! ==="

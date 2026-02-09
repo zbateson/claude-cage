@@ -1290,6 +1290,14 @@ catchup_intermediary_branches() {
                 continue  # Can't determine range base
             fi
 
+            # Check if source branch is still a descendant of the mapped base
+            if ! git -C "$export_dir" merge-base --is-ancestor "$mapped_source_base" "$ib" 2>/dev/null; then
+                # Branch was recreated at a divergent point — delete and let the
+                # "new branches" section below re-create it from scratch
+                git -C "$intermediary_dir" branch -D "$ib" 2>/dev/null || true
+                continue
+            fi
+
             local catchup_tmp
             catchup_tmp=$(mktemp)
             git -C "$export_dir" fast-export \

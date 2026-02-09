@@ -264,8 +264,10 @@ update_marks_after_sync() {
     fi
 }
 
-# Apply changes from intermediary to source using format-patch/git-am
-# Commit-mapping-based: walks commits, skips already-mapped ones
+# Apply changes from intermediary to source
+# Commit-mapping-based: walks first-parent commits, skips already-mapped ones
+# Merge commits: creates real merge on source via commit-tree (two parents)
+# Regular commits: applied via git-am (same branch) or temp-index (switched branch)
 # Arguments:
 #   $1 - source_dir: The original source directory
 #   $2 - intermediary_dir: The bare intermediary directory
@@ -347,6 +349,10 @@ sync_to_source() {
 
         echo "  ${commit_short}: ${commit_msg:0:50}"
 
+        # Check if this is a merge commit (has second parent)
+        local cage_second_parent=""
+        cage_second_parent=$(git -C "$intermediary_dir" rev-parse --verify "${commit}^2" 2>/dev/null) || true
+
         # Generate patch (git log --format=email handles both regular and merge
         # commits; format-patch silently skips merges so we don't use it)
         local patch
@@ -358,6 +364,93 @@ sync_to_source() {
             sync_log "$log_file" "$commit_short" ">>source" "empty patch, skipped"
             # Map to 0 (no source equivalent)
             echo "$commit 0" >> "$commit_map_path"
+            continue
+        fi
+
+        # Merge commits: create a real merge on source with both parents.
+        # Uses commit-tree + update-ref so no hooks fire (prevents sync loops).
+        if [ -n "$cage_second_parent" ]; then
+            # Look up source equivalent of second parent
+            local source_second_parent=""
+            if [ -f "$commit_map_path" ]; then
+                source_second_parent=$(awk -v ih="$cage_second_parent" '$1 == ih { print $2; exit }' "$commit_map_path")
+            fi
+
+            if [ -z "$source_second_parent" ] || [ "$source_second_parent" = "0" ]; then
+                echo "  Can't sync this merge — second parent ain't on source."
+                echo "  Push the branch to the remote first, then merge."
+                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
+                sync_log "$log_file" "$commit_short" ">>source" "merge FAILED: second parent ${cage_second_parent:0:8} not mapped"
+                continue
+            fi
+
+            local source_first_parent
+            source_first_parent=$(git -C "$source_dir" rev-parse "$branch_name" 2>/dev/null)
+
+            if [ -z "$source_first_parent" ]; then
+                echo "  Can't sync merge — branch $branch_name don't exist on source."
+                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
+                sync_log "$log_file" "$commit_short" ">>source" "merge FAILED: branch $branch_name missing on source"
+                continue
+            fi
+
+            sync_log "$log_file" "$commit_short" ">>source" "merge on $branch_name: first=${source_first_parent:0:8} second=${source_second_parent:0:8}"
+
+            local git_root
+            git_root=$(git -C "$source_dir" rev-parse --show-toplevel)
+            local tmp_index="$git_root/.git/claude-cage-tmp-index"
+
+            local author_name author_email author_date
+            author_name=$(echo "$patch" | grep "^From:" | head -1 | sed 's/^From: //' | sed 's/ <.*//')
+            author_email=$(echo "$patch" | grep "^From:" | head -1 | sed 's/.*<\(.*\)>/\1/')
+            author_date=$(echo "$patch" | grep "^Date:" | head -1 | sed 's/^Date: //')
+
+            local commit_full_msg
+            commit_full_msg=$(git -C "$intermediary_dir" log -1 --format=%B "$commit" 2>/dev/null)
+
+            (
+                export GIT_INDEX_FILE="$tmp_index"
+                cd "$git_root"
+                git read-tree "$branch_name"
+
+                local -a apply_args=(--cached)
+                [ -n "$scope_path" ] && apply_args+=(--directory="$scope_path")
+                local apply_output apply_rc
+                apply_output=$(echo "$patch" | git apply "${apply_args[@]}" 2>&1) && apply_rc=0 || apply_rc=$?
+
+                if [ "$apply_rc" -eq 0 ]; then
+                    local tree new_commit
+                    tree=$(git write-tree)
+
+                    export GIT_AUTHOR_NAME="$author_name"
+                    export GIT_AUTHOR_EMAIL="$author_email"
+                    [ -n "$author_date" ] && export GIT_AUTHOR_DATE="$author_date"
+
+                    new_commit=$(git commit-tree "$tree" \
+                        -p "$source_first_parent" \
+                        -p "$source_second_parent" \
+                        -m "$commit_full_msg")
+
+                    unset GIT_INDEX_FILE
+                    git update-ref "refs/heads/$branch_name" "$new_commit"
+
+                    # If user is on this branch, update their working tree
+                    local _current
+                    _current=$(git branch --show-current 2>/dev/null)
+                    if [ "$_current" = "$branch_name" ]; then
+                        git reset --hard 2>/dev/null
+                    fi
+
+                    update_marks_after_sync "$new_commit" "$commit" "$commit_map_path" "$source_marks_path" "$import_marks_path"
+                    echo "  Got it. Merge is in on $branch_name."
+                    sync_log "$log_file" "$commit_short" ">>source" "merge ok on $branch_name new=${new_commit:0:8}"
+                else
+                    echo "  Merge patch didn't apply clean to $branch_name."
+                    save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
+                    sync_log "$log_file" "$commit_short" ">>source" "merge FAILED on $branch_name: $(echo "$apply_output" | tail -1)"
+                fi
+            )
+            rm -f "$tmp_index"
             continue
         fi
 
@@ -373,7 +466,7 @@ sync_to_source() {
                 source_parent=$(awk -v ih="$parent_hash" '$1 == ih { print $2; exit }' "$commit_map_path")
             fi
             if [ -n "$source_parent" ] && [ "$source_parent" != "0" ]; then
-                git -C "$source_dir" checkout -b "$branch_name" "$source_parent" 2>/dev/null
+                git -C "$source_dir" branch "$branch_name" "$source_parent" 2>/dev/null
                 source_has_branch=true
                 sync_log "$log_file" "$commit_short" ">>source" "created branch $branch_name from $source_parent"
             fi

@@ -680,43 +680,36 @@ fi
 echo "  PASS: New branch created on source via sync_to_source"
 
 # ============================================================================
-# Test 20: Merge commit sync (format-patch skips merges, we handle them)
+# Test 20: Merge commit creates real merge on source (two parents)
 # ============================================================================
 echo ""
-echo "Test 20: Merge commits should sync to source via first-parent diff"
+echo "Test 20: Merge commits should create real merge on source with two parents"
 
 setup_test_cage "source20"
 
-# Create a feature branch with a change
-git -C "$SOURCE_PATH" checkout -q -b feature20
-echo "feature content" > "$SOURCE_PATH/feature20.txt"
-git -C "$SOURCE_PATH" add . && git -C "$SOURCE_PATH" commit -q -m "Add feature20"
-git -C "$SOURCE_PATH" checkout -q master
-
-# Sync feature branch to intermediary
-apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$cfg_exclude" >/dev/null 2>&1
-
-# Make a conflicting change on master
-echo "master version" > "$SOURCE_PATH/shared.txt"
-git -C "$SOURCE_PATH" add . && git -C "$SOURCE_PATH" commit -q -m "Master adds shared"
-apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$cfg_exclude" >/dev/null 2>&1
-
-# In the work dir, simulate a merge commit: create feature branch, merge it
+# Work: fetch and update master
 git -C "$WORK_DIR" fetch -q origin
 git -C "$WORK_DIR" pull -q origin master 2>/dev/null || git -C "$WORK_DIR" reset -q --hard origin/master
 
-# Create a feature branch in work with a change + new file
+# Work: create a feature branch with changes
 git -C "$WORK_DIR" checkout -q -b work-feature
 echo "feature version" > "$WORK_DIR/shared.txt"
 echo "extra" > "$WORK_DIR/extra.txt"
 git -C "$WORK_DIR" add . && git -C "$WORK_DIR" commit -q -m "Feature changes shared"
 
-# Make a conflicting change on work's master so merge will conflict
+# Push work-feature to intermediary (required: second parent must be mapped)
+feature_old="0000000000000000000000000000000000000000"
+git -C "$WORK_DIR" push -q origin work-feature 2>/dev/null
+
+# Sync work-feature to source so the feature commits get mapped
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/work-feature" "$feature_old" >/dev/null 2>&1
+
+# Work: back to master, make a conflicting change
 git -C "$WORK_DIR" checkout -q master
 echo "work master version" > "$WORK_DIR/shared.txt"
 git -C "$WORK_DIR" add . && git -C "$WORK_DIR" commit -q -m "Work master changes shared"
 
-# Merge in work (will conflict on shared.txt — both sides changed it)
+# Merge work-feature into master (will conflict on shared.txt)
 git -C "$WORK_DIR" merge work-feature --no-edit 2>/dev/null || true
 
 # Resolve conflict
@@ -724,9 +717,15 @@ echo "resolved content" > "$WORK_DIR/shared.txt"
 git -C "$WORK_DIR" add shared.txt
 git -C "$WORK_DIR" commit -q -m "Merge work-feature into master"
 
-# Record pre-push state (master~2 is before our two new commits + merge)
+# Record pre-push state
 local_master_before=$(git -C "$INTERMEDIARY_DIR" rev-parse master)
 local_master_after=$(git -C "$WORK_DIR" rev-parse master)
+
+# Verify it's actually a merge commit in the work dir
+if ! git -C "$WORK_DIR" rev-parse --verify "${local_master_after}^2" >/dev/null 2>&1; then
+    echo "FAIL: Work dir HEAD should be a merge commit (2 parents)"
+    exit 1
+fi
 
 # Push to intermediary
 git -C "$WORK_DIR" push -q origin master 2>/dev/null
@@ -734,20 +733,38 @@ git -C "$WORK_DIR" push -q origin master 2>/dev/null
 # Sync to source
 sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/master" "$local_master_before" >/dev/null 2>&1
 
-# Verify the merge resolution made it to source
-source_shared=$(cat "$SOURCE_PATH/shared.txt")
+# Verify the merge resolution made it to source (check committed tree, not working dir)
+source_shared=$(git -C "$SOURCE_PATH" show master:shared.txt 2>/dev/null)
 if [ "$source_shared" != "resolved content" ]; then
-    echo "FAIL: Expected 'resolved content' on source, got: '$source_shared'"
+    echo "FAIL: Expected 'resolved content' on source master, got: '$source_shared'"
     exit 1
 fi
 echo "  PASS: Merge conflict resolution synced to source"
 
 # Verify the extra file from the merge also made it
-if [ ! -f "$SOURCE_PATH/extra.txt" ]; then
-    echo "FAIL: extra.txt should exist on source after merge sync"
+source_extra=$(git -C "$SOURCE_PATH" show master:extra.txt 2>/dev/null)
+if [ "$source_extra" != "extra" ]; then
+    echo "FAIL: extra.txt should exist on source master after merge sync"
     exit 1
 fi
 echo "  PASS: Merge brought in all changes from feature branch"
+
+# Verify source commit is a REAL merge (has two parents)
+source_master=$(git -C "$SOURCE_PATH" rev-parse master)
+if ! git -C "$SOURCE_PATH" rev-parse --verify "${source_master}^2" >/dev/null 2>&1; then
+    echo "FAIL: Source master should be a merge commit with two parents"
+    exit 1
+fi
+echo "  PASS: Source commit is a real merge (two parents)"
+
+# Verify second parent on source points to the feature branch
+source_second_parent=$(git -C "$SOURCE_PATH" rev-parse "${source_master}^2")
+source_feature_head=$(git -C "$SOURCE_PATH" rev-parse work-feature 2>/dev/null)
+if [ "$source_second_parent" != "$source_feature_head" ]; then
+    echo "FAIL: Source merge second parent ($source_second_parent) should match work-feature ($source_feature_head)"
+    exit 1
+fi
+echo "  PASS: Source merge second parent matches feature branch"
 
 # Verify commit was mapped
 commit_map_path=$(get_commit_map_path "$INTERMEDIARY_DIR")
@@ -756,6 +773,59 @@ if ! grep -q "$local_master_after" "$commit_map_path" 2>/dev/null; then
     exit 1
 fi
 echo "  PASS: Merge commit mapped correctly"
+
+# ============================================================================
+# Test 21: Merge commit with unmapped second parent should error
+# ============================================================================
+echo ""
+echo "Test 21: Merge with unmapped second parent should fail gracefully"
+
+setup_test_cage "source21"
+
+# Work: create feature branch and merge WITHOUT pushing feature first
+git -C "$WORK_DIR" checkout -q -b unpushed-feature
+echo "unpushed content" > "$WORK_DIR/unpushed.txt"
+git -C "$WORK_DIR" add . && git -C "$WORK_DIR" commit -q -m "Unpushed feature"
+
+git -C "$WORK_DIR" checkout -q master
+echo "master change" > "$WORK_DIR/master21.txt"
+git -C "$WORK_DIR" add . && git -C "$WORK_DIR" commit -q -m "Master change"
+
+# Merge unpushed-feature (clean merge, no conflict)
+git -C "$WORK_DIR" merge unpushed-feature --no-edit -q 2>/dev/null
+
+local_master_before=$(git -C "$INTERMEDIARY_DIR" rev-parse master)
+
+# Push to intermediary (includes the merge and all commits)
+git -C "$WORK_DIR" push -q origin master 2>/dev/null
+
+# Sync to source — merge should fail because second parent wasn't synced
+sync_output=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/master" "$local_master_before" 2>&1) || true
+
+# The non-merge commits should have synced, but merge should have failed
+if [ ! -f "$SOURCE_PATH/master21.txt" ]; then
+    echo "FAIL: Non-merge commit (master21.txt) should have synced to source"
+    exit 1
+fi
+echo "  PASS: Non-merge commits synced despite merge failure"
+
+# Check sync log for the merge failure
+sync_log_file="$INTERMEDIARY_DIR/sync.log"
+if ! grep -q "merge FAILED.*not mapped" "$sync_log_file" 2>/dev/null; then
+    echo "FAIL: Sync log should contain merge failure with 'not mapped'"
+    echo "  Log contents:"
+    cat "$sync_log_file" 2>/dev/null | tail -5
+    exit 1
+fi
+echo "  PASS: Merge failure logged with 'not mapped' reason"
+
+# Verify a failed patch was saved
+failed_dir="$SOURCE_PATH/claude-cage-failed-patches/from-intermediary/master"
+if [ ! -d "$failed_dir" ] || [ -z "$(ls -A "$failed_dir" 2>/dev/null)" ]; then
+    echo "FAIL: Failed patch should have been saved for the merge commit"
+    exit 1
+fi
+echo "  PASS: Failed merge patch saved for recovery"
 
 echo ""
 echo "=== All git-sync tests passed! ==="

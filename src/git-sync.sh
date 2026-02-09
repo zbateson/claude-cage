@@ -549,6 +549,35 @@ sync_to_source() {
         fi
     done
 
+    # Fast-forward source branch if the tip commit is already mapped but
+    # the source branch hasn't been advanced (e.g., commits arrived via
+    # another branch and were all "already mapped, skip").
+    local tip_source_hash=""
+    if [ -f "$commit_map_path" ]; then
+        tip_source_hash=$(awk -v ih="$newrev" '$1 == ih { print $2; exit }' "$commit_map_path")
+    fi
+    if [ -n "$tip_source_hash" ] && [ "$tip_source_hash" != "0" ]; then
+        local source_branch_hash
+        source_branch_hash=$(git -C "$source_dir" rev-parse --verify "$branch_name" 2>/dev/null) || true
+        if [ -n "$source_branch_hash" ] && [ "$source_branch_hash" != "$tip_source_hash" ]; then
+            # Verify it's a fast-forward (source branch is ancestor of target)
+            if git -C "$source_dir" merge-base --is-ancestor "$source_branch_hash" "$tip_source_hash" 2>/dev/null; then
+                local git_root
+                git_root=$(git -C "$source_dir" rev-parse --show-toplevel)
+                CLAUDE_CAGE_SYNCING=1 git -C "$git_root" update-ref "refs/heads/$branch_name" "$tip_source_hash"
+                sync_log "$log_file" "${newrev:0:8}" ">>source" "fast-forward $branch_name to ${tip_source_hash:0:8}"
+                echo "  Fast-forwarded $branch_name on source."
+
+                # If user is on this branch, update their working tree
+                local _current
+                _current=$(git -C "$git_root" branch --show-current 2>/dev/null) || true
+                if [ "$_current" = "$branch_name" ]; then
+                    git -C "$git_root" reset --hard 2>/dev/null
+                fi
+            fi
+        fi
+    fi
+
     # Propagate to sibling intermediaries at other scope levels
     propagate_to_sibling_intermediaries "$source_dir" "$intermediary_dir"
 }

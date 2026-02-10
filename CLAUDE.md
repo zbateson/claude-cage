@@ -159,7 +159,7 @@ make clean  # Remove built file
 
 ### Outbound (Claude -> Source)
 
-When `autoSync = true` (**EXPERIMENTAL**):
+When `autoSync = true` (default):
 
 1. Claude makes commits in the work directory
 2. Claude runs `git push origin`
@@ -167,19 +167,20 @@ When `autoSync = true` (**EXPERIMENTAL**):
 4. Hook writes `<refname> <newrev> <oldrev>` to named pipe (mounted at `/tmp/claude-cage/pipe` inside sandbox)
 5. Pipe listener on host reads the message
 6. `sync_to_source()` runs:
-   - If source working tree is dirty and user is on the target branch: stashes all changes (including untracked) before applying
+   - If the target branch is the user's active branch and `syncActiveBranch` is not `true`: skip (log a message suggesting `claude-cage git-merge`)
+   - If source working tree is dirty and user is on the target branch (syncActiveBranch mode): stashes all changes (including untracked) before applying
    - Walks commits `oldrev..newrev` in topological order
    - Skips commits already in the commit mapping (loop prevention)
    - Uses `git format-patch` for each new commit
    - Applies to source with `git am --3way` (same branch) or temp-index + `git update-ref` (user switched branches)
    - Adds `<intermediary-hash> <source-hash>` to commit mapping after each successful apply
    - For new branches (oldrev is 0000...): creates branch on source from mapped parent
-   - After all commits: pops the stash to restore user's WIP
+   - After all commits: pops the stash to restore user's WIP (syncActiveBranch mode only)
    - On stash pop conflict: conflict markers are left in the working tree for the user to resolve via normal git tools (the stash is preserved — git doesn't drop it on failed pop)
 
-**Known limitation:** The stash cycle does not preserve the user's staged vs unstaged distinction. All changes are staged before stashing and unstaged after restore.
+**Known limitation (syncActiveBranch):** The stash cycle does not preserve the user's staged vs unstaged distinction. All changes are staged before stashing and unstaged after restore.
 
-**Recommendation:** For the smoothest co-create experience, work on a fresh branch so there's no conflict between your edits and Claude's commits.
+**Recommendation:** For the smoothest co-create experience with `syncActiveBranch`, work on a fresh branch so there's no conflict between your edits and Claude's commits.
 
 ### Inbound (Source -> Intermediary)
 
@@ -288,7 +289,8 @@ Example `.claude-cage`:
 claude_cage {
     exclude = { ".env", "secrets/**", "application-*.properties" },
     mode = "bwrap",  -- or "docker"
-    autoSync = true,  -- EXPERIMENTAL: enable real-time sync with co-create support
+    autoSync = true,  -- sync non-active branches back to source in real-time
+    -- syncActiveBranch = false,  -- EXPERIMENTAL: also sync active branch (stash/apply/pop)
     allowNonGit = true,  -- allow non-git directories
     showBanner = true,
 
@@ -325,7 +327,8 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 | `launch` | `"claude"` | Command to run inside sandbox |
 | `exclude` | `{}` | Patterns to exclude from archive |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
-| `autoSync` | `false` | **EXPERIMENTAL** Enable real-time sync via named pipe (supports co-create with stash/apply/pop) |
+| `autoSync` | `true` | Enable real-time sync of non-active branches via named pipe |
+| `syncActiveBranch` | `false` | **EXPERIMENTAL** Also sync to user's active branch (stash/apply/pop co-create mode) |
 | `allowNonGit` | unset | Allow running in non-git directories (see below) |
 | `directMount` | `false` | Mount source directly without git sync (see below) |
 | `isolated` | `false` | Only mount single project instead of all same-session projects |
@@ -364,7 +367,7 @@ By default, claude-cage creates an intermediary clone and uses git to sync chang
 - No intermediary or work directory is created
 - No git hooks or sync mechanism
 - Changes made inside the sandbox immediately affect the source files
-- `autoSync`, `createCagedDir`, and `exclude` are ignored
+- `autoSync`, `syncActiveBranch`, `createCagedDir`, and `exclude` are ignored
 
 **Example configs:**
 

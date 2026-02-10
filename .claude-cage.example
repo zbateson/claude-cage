@@ -60,12 +60,17 @@ claude_cage {
     -- =========================================================================
     -- SYNC OPTIONS
     -- =========================================================================
-    -- EXPERIMENTAL: Auto-sync pushes Claude's commits back to your source repo
-    -- in real-time. If your working tree is dirty, changes are stashed before
-    -- sync and restored after. On conflict, Claude's version wins; your
-    -- conflicting hunks are saved to a separate stash.
+    -- Auto-sync pushes Claude's commits on non-active branches back to your
+    -- source repo in real-time (via temp-index, no checkout needed).
+    -- Your active branch is untouched unless syncActiveBranch is also enabled.
+    -- Without autoSync, ALL branches need manual "claude-cage git-merge".
 
     autoSync = true,
+
+    -- EXPERIMENTAL: Also sync commits to the branch you're actively on.
+    -- Stashes your work, applies Claude's changes, then pops the stash.
+    -- Best on a dedicated branch. Can cause conflicts on shared ones.
+    -- syncActiveBranch = false,
 
     -- Allow running in non-git directories. When true, directories without
     -- a git repo are mounted directly (no sync, changes go straight to source).

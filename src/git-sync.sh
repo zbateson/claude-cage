@@ -340,10 +340,18 @@ sync_to_source() {
     # encounter an unmapped commit after a run of already-mapped ones
     local last_mapped_source_hash=""
 
-    # Stash dirty working tree before applying commits (autoSync co-create mode)
+    # Stash dirty working tree before applying commits (syncActiveBranch mode)
     local did_stash=false
     local current_branch
     current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null) || true
+
+    # Skip active branch unless syncActiveBranch is enabled
+    if [ "$current_branch" = "$branch_name" ] && [ "${cfg_syncActiveBranch:-}" != "true" ]; then
+        echo "Skippin' sync to $branch_name — that's your active branch."
+        echo "Run 'claude-cage git-merge' when you're ready to bring changes in."
+        sync_log "$log_file" "$newrev_short" ">>source" "skipped: $branch_name is active branch (syncActiveBranch off)"
+        return 0
+    fi
 
     if [ "$current_branch" = "$branch_name" ] && source_is_dirty "$source_dir"; then
         # Stage untracked files so stash captures them (respects .gitignore)
@@ -620,7 +628,7 @@ sync_to_source() {
         fi
     fi
 
-    # Restore stashed working tree (autoSync co-create mode)
+    # Restore stashed working tree (syncActiveBranch mode)
     if [ "$did_stash" = true ]; then
         local pop_rc
         git -C "$source_dir" stash pop 2>/dev/null && pop_rc=0 || pop_rc=$?

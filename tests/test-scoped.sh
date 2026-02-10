@@ -110,6 +110,7 @@ export CLAUDE_CAGE_SESSION
 cfg_exclude=".env"
 cfg_git_historyDepth=50
 cfg_git_defaultBranch="auto"
+cfg_syncActiveBranch=""
 dry_run=false
 verbose=false
 
@@ -497,6 +498,7 @@ echo ""
 echo "=== Testing scoped round-trip sync (intermediary → source) ==="
 echo ""
 
+cfg_syncActiveBranch="true"
 echo "Test 21: Round-trip: stripped-path commit syncs back to source with --directory"
 # Reset to the scoped session and its intermediary
 CLAUDE_CAGE_SESSION="test-scoped"

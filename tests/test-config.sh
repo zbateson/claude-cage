@@ -105,10 +105,9 @@ if ! echo "$output" | grep -q "secrets"; then
 fi
 echo "  PASS: Parsed exclude array"
 
-echo "Test 4: Should parse autoSync option"
+echo "Test 4: Should default autoSync to true"
 cat > "$TEST_TMP/project4/.claude-cage" << 'EOF'
 claude_cage {
-    autoSync = true,
     showBanner = false,
     hideConfirmationPrompt = true
 }
@@ -118,12 +117,12 @@ output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
     bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
 if ! echo "$output" | grep -q "Auto-sync:.*true"; then
-    echo "FAIL: Should show autoSync = true"
+    echo "FAIL: Default autoSync should be true"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Parsed autoSync option"
+echo "  PASS: Default autoSync is true"
 
 echo "Test 5: Should parse mode option (bwrap vs docker)"
 cat > "$TEST_TMP/project4/.claude-cage" << 'EOF'
@@ -459,6 +458,46 @@ if [ "$cfg_git_scoped" != "false" ]; then
     exit 1
 fi
 echo "  PASS: Default git.scoped is false"
+
+echo ""
+echo "=== Testing syncActiveBranch config ==="
+
+echo "Test 18: Should parse syncActiveBranch = true"
+setup_git_repo "$TEST_TMP/syncactive-test"
+cat > "$TEST_TMP/syncactive-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    syncActiveBranch = true
+}
+EOF
+
+cd "$TEST_TMP/syncactive-test"
+parse_config "syncactive-test" "$TEST_TMP/syncactive-test" "$TEST_TMP/syncactive-test/.claude-cage"
+
+if [ "$cfg_syncActiveBranch" != "true" ]; then
+    echo "FAIL: syncActiveBranch should be 'true', got '$cfg_syncActiveBranch'"
+    exit 1
+fi
+echo "  PASS: Parsed syncActiveBranch = true"
+
+echo "Test 18b: Should default syncActiveBranch to false"
+setup_git_repo "$TEST_TMP/syncactive-default-test"
+cat > "$TEST_TMP/syncactive-default-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+cd "$TEST_TMP/syncactive-default-test"
+parse_config "syncactive-default-test" "$TEST_TMP/syncactive-default-test" "$TEST_TMP/syncactive-default-test/.claude-cage"
+
+if [ "$cfg_syncActiveBranch" != "false" ]; then
+    echo "FAIL: syncActiveBranch should default to 'false', got '$cfg_syncActiveBranch'"
+    exit 1
+fi
+echo "  PASS: Default syncActiveBranch is false"
 
 echo ""
 echo "=== All config tests passed! ==="

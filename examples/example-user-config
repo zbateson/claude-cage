@@ -17,8 +17,11 @@ claude_cage {
     -- Sandbox mode: "bwrap" (default) or "docker"
     -- mode = "bwrap",
 
-    -- EXPERIMENTAL: Auto-sync commits back to source in real-time
+    -- Auto-sync non-active branches back to source in real-time (default: true)
     -- autoSync = true,
+
+    -- EXPERIMENTAL: Also sync to the branch you're actively on (stash/apply/pop)
+    -- syncActiveBranch = false,
 
     -- Allow non-git directories (mounts directly without git sync)
     -- allowNonGit = true,

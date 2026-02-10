@@ -423,6 +423,7 @@ else
 fi
 if [ "$direct_mount_mode" = false ]; then
     echo "  Auto-sync:     $cfg_autoSync"
+    echo "  Sync active:   $cfg_syncActiveBranch"
     echo "  Isolated:      $cfg_isolated"
     if [ -n "$scope_path" ]; then
         echo "  Scoped to:     $scope_path"
@@ -737,11 +738,13 @@ else
         setup_caged_symlinks "$cfg_source" "$scope_path"
     fi
 
-    # Set up git hooks and communication pipe (if autoSync enabled)
+    # Source → intermediary hooks: always installed
+    setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
+    setup_source_post_merge "$cfg_source" "$cfg_exclude" "$intermediary_dir"
+
+    # Cage → source via pipe: only when autoSync enabled
     if [ "$cfg_autoSync" = "true" ]; then
         setup_git_hooks "$cfg_source" "$intermediary_dir" "$pipe_path"
-        setup_source_post_commit "$cfg_source" "$cfg_exclude" "$intermediary_dir"
-        setup_source_post_merge "$cfg_source" "$cfg_exclude" "$intermediary_dir"
     fi
 
     # Set up work repo pre-commit hook:
@@ -792,9 +795,7 @@ cleanup_on_exit() {
             stop_pipe_listener "$PIPE_LISTENER_PID"
             cleanup_pipe "$pipe_path"
         fi
-        if [ "$cfg_autoSync" = "true" ]; then
-            cleanup_source_hooks "$cfg_source"
-        fi
+        cleanup_source_hooks "$cfg_source"
     fi
     exit $exit_code
 }
@@ -830,9 +831,11 @@ if [ "$cfg_mode" != "docker" ]; then
         echo -e "${_cyan}⚠️  Direct mount: Changes are made directly to source files.${_reset}"
     elif [ "$cfg_autoSync" != "true" ]; then
         echo ""
-        echo -e "${_cyan}⚠️  Auto-sync is OFF for this cage (branch: $source_branch).${_reset}"
+        echo -e "${_cyan}⚠️  Auto-sync is OFF. All branches need manual sync.${_reset}"
         echo -e "${_cyan}   To bring changes back to source, run: ${_white}claude-cage git-merge${_reset}"
-        echo -e "${_cyan}   (Must be run from branch '$source_branch')${_reset}"
+    elif [ "$cfg_syncActiveBranch" != "true" ]; then
+        echo ""
+        echo -e "${_cyan}⚠️  Auto-sync is ON for other branches. For $source_branch, use: ${_white}claude-cage git-merge${_reset}"
     fi
 
     echo ""

@@ -37,6 +37,7 @@ unset CLAUDE_CAGE_SOURCING
 cfg_exclude=""
 cfg_git_historyDepth=50
 cfg_git_defaultBranch="auto"
+cfg_syncActiveBranch="true"
 dry_run=false
 verbose=false
 debug=false
@@ -828,11 +829,12 @@ fi
 echo "  PASS: Failed merge patch saved for recovery"
 
 # ============================================================================
-# Test 22: autoSync with dirty tree, no conflicts
+# Test 22: syncActiveBranch with dirty tree, no conflicts
 # ============================================================================
 echo ""
-echo "Test 22: autoSync with dirty tree should stash, apply, and restore"
+echo "Test 22: syncActiveBranch with dirty tree should stash, apply, and restore"
 
+cfg_syncActiveBranch="true"
 setup_test_cage "source22"
 
 git -C "$WORK_DIR" config user.email "claude@test.com"
@@ -892,11 +894,12 @@ fi
 echo "  PASS: Commit mapping updated"
 
 # ============================================================================
-# Test 23: autoSync with dirty tree, conflicts left for user
+# Test 23: syncActiveBranch with dirty tree, conflicts left for user
 # ============================================================================
 echo ""
-echo "Test 23: autoSync with conflicts should leave conflict markers for user"
+echo "Test 23: syncActiveBranch with conflicts should leave conflict markers for user"
 
+cfg_syncActiveBranch="true"
 setup_test_cage "source23"
 
 git -C "$WORK_DIR" config user.email "claude@test.com"
@@ -944,11 +947,12 @@ git -C "$SOURCE_PATH" checkout -- . 2>/dev/null || true
 git -C "$SOURCE_PATH" stash drop 2>/dev/null || true
 
 # ============================================================================
-# Test 24: autoSync with untracked file collision
+# Test 24: syncActiveBranch with untracked file collision
 # ============================================================================
 echo ""
-echo "Test 24: autoSync with untracked file collision leaves conflict for user"
+echo "Test 24: syncActiveBranch with untracked file collision leaves conflict for user"
 
+cfg_syncActiveBranch="true"
 setup_test_cage "source24"
 
 git -C "$WORK_DIR" config user.email "claude@test.com"
@@ -989,11 +993,12 @@ git -C "$SOURCE_PATH" checkout -- . 2>/dev/null || true
 git -C "$SOURCE_PATH" stash drop 2>/dev/null || true
 
 # ============================================================================
-# Test 25: autoSync with multiple commits in batch
+# Test 25: syncActiveBranch with multiple commits in batch
 # ============================================================================
 echo ""
-echo "Test 25: autoSync with multiple commits and dirty tree"
+echo "Test 25: syncActiveBranch with multiple commits and dirty tree"
 
+cfg_syncActiveBranch="true"
 setup_test_cage "source25"
 
 git -C "$WORK_DIR" config user.email "claude@test.com"
@@ -1042,11 +1047,12 @@ fi
 echo "  PASS: Stash list empty"
 
 # ============================================================================
-# Test 26: autoSync with clean tree (no stash needed)
+# Test 26: syncActiveBranch with clean tree (no stash needed)
 # ============================================================================
 echo ""
-echo "Test 26: autoSync with clean tree should not stash"
+echo "Test 26: syncActiveBranch with clean tree should not stash"
 
+cfg_syncActiveBranch="true"
 setup_test_cage "source26"
 
 git -C "$WORK_DIR" config user.email "claude@test.com"
@@ -1085,6 +1091,82 @@ if ! grep -q "^$newrev " "$commit_map_path"; then
     exit 1
 fi
 echo "  PASS: Commit mapping updated"
+
+# ============================================================================
+# Test 27: syncActiveBranch=false skips active branch
+# ============================================================================
+echo ""
+echo "Test 27: syncActiveBranch=false should skip sync to active branch"
+
+cfg_syncActiveBranch="false"
+setup_test_cage "source27"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+echo "claude skip test" > "$WORK_DIR/skipfile.txt"
+git -C "$WORK_DIR" add skipfile.txt
+git -C "$WORK_DIR" commit -q -m "Should be skipped on active branch"
+
+oldrev=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
+
+# Source is on the same branch as the push target
+sync_output=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$oldrev" 2>&1)
+
+# Verify commit was NOT applied to source
+if [ -f "$SOURCE_PATH/skipfile.txt" ]; then
+    echo "FAIL: skipfile.txt should NOT be in source (active branch skipped)"
+    exit 1
+fi
+echo "  PASS: Commit not applied to active branch"
+
+# Verify the skip message was output
+if ! echo "$sync_output" | grep -q "active branch"; then
+    echo "FAIL: Should mention active branch in skip message"
+    echo "  Output: $sync_output"
+    exit 1
+fi
+echo "  PASS: Skip message mentions active branch"
+
+# ============================================================================
+# Test 28: syncActiveBranch=false still syncs other branches (temp-index)
+# ============================================================================
+echo ""
+echo "Test 28: syncActiveBranch=false should still sync to non-active branches"
+
+cfg_syncActiveBranch="false"
+setup_test_cage "source28"
+
+git -C "$WORK_DIR" config user.email "claude@test.com"
+git -C "$WORK_DIR" config user.name "Claude"
+
+# Create a feature branch in work and push to intermediary
+git -C "$WORK_DIR" checkout -b feature-test 2>/dev/null
+echo "feature content" > "$WORK_DIR/feature.txt"
+git -C "$WORK_DIR" add feature.txt
+git -C "$WORK_DIR" commit -q -m "Feature branch commit"
+
+git -C "$WORK_DIR" push origin feature-test 2>/dev/null
+
+# Source stays on the original branch (not feature-test)
+# So syncing feature-test should go through the temp-index path
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/feature-test" "0000000000000000000000000000000000000000" >/dev/null 2>&1
+
+# Verify the feature branch was created on source
+if ! git -C "$SOURCE_PATH" rev-parse --verify feature-test >/dev/null 2>&1; then
+    echo "FAIL: feature-test branch should exist on source"
+    exit 1
+fi
+echo "  PASS: Feature branch created on source"
+
+# Verify the commit content is there
+feature_content=$(git -C "$SOURCE_PATH" show feature-test:feature.txt 2>/dev/null)
+if [ "$feature_content" != "feature content" ]; then
+    echo "FAIL: feature.txt should be 'feature content', got '$feature_content'"
+    exit 1
+fi
+echo "  PASS: Feature branch commit applied via temp-index"
 
 echo ""
 echo "=== All git-sync tests passed! ==="

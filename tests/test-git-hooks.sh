@@ -568,14 +568,16 @@ git -C "$SOURCE_PATH" branch -D ff-feature 2>/dev/null || true
 git -C "$SOURCE_PATH" branch -D noff-feature 2>/dev/null || true
 
 echo ""
-echo "=== Testing autoSync=false (no hooks) ==="
+echo "=== Testing autoSync=false (no pipe, but source hooks installed) ==="
 echo ""
 
-echo "Test 19: No hooks when autoSync=false"
+echo "Test 19: Source hooks installed but no pipe when autoSync=false"
 # Clean up all existing state
 rm -rf "$INTERMEDIARY_DIR" "$CLAUDE_CAGE_RUNTIME"
 rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
 rm -f "$SOURCE_PATH/.git/hooks/post-commit"
+rm -rf "$SOURCE_PATH/.git/hooks/post-merge.d"
+rm -f "$SOURCE_PATH/.git/hooks/post-merge"
 rm -rf "$SOURCE_PATH/.git/hooks/pre-commit.d"
 rm -f "$SOURCE_PATH/.git/hooks/pre-commit"
 
@@ -585,20 +587,25 @@ git init --bare "$INTERMEDIARY_DIR" --quiet
 git -C "$SOURCE_PATH" fast-export HEAD 2>/dev/null \
     | git -C "$INTERMEDIARY_DIR" fast-import --quiet 2>/dev/null
 
-# When autoSync=false, setup_git_hooks should NOT be called.
-# Verify that without calling setup_git_hooks:
-# - no pipe exists
-# - no source hooks exist
-# (We test the logic path, not the full main.sh flow)
+# Source hooks are now always installed (source → intermediary sync).
+# Pipe/post-receive hooks (cage → source) are NOT installed when autoSync=false.
+setup_source_post_commit "$SOURCE_PATH" "" "$INTERMEDIARY_DIR"
+setup_source_post_merge "$SOURCE_PATH" "" "$INTERMEDIARY_DIR"
 
-PIPE_PATH_FOR_TEST=$(CLAUDE_CAGE_SESSION="$SESSION_ID" get_pipe_path "$SOURCE_PATH")
-if [ -p "$PIPE_PATH_FOR_TEST" ]; then
-    echo "FAIL: Pipe should not exist without setup_git_hooks call"
+# Verify source hooks ARE installed
+if [ ! -f "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$hook_path_hash" ]; then
+    echo "FAIL: source post-commit hook should be installed (always)"
+    exit 1
+fi
+if [ ! -f "$SOURCE_PATH/.git/hooks/post-merge.d/claude-cage-$hook_path_hash" ]; then
+    echo "FAIL: source post-merge hook should be installed (always)"
     exit 1
 fi
 
-if [ -f "$SOURCE_PATH/.git/hooks/post-commit.d/claude-cage-$hook_path_hash" ]; then
-    echo "FAIL: source post-commit hook should not exist without setup_source_post_commit call"
+# Verify pipe does NOT exist (no setup_git_hooks call)
+PIPE_PATH_FOR_TEST=$(CLAUDE_CAGE_SESSION="$SESSION_ID" get_pipe_path "$SOURCE_PATH")
+if [ -p "$PIPE_PATH_FOR_TEST" ]; then
+    echo "FAIL: Pipe should not exist without setup_git_hooks call"
     exit 1
 fi
 
@@ -612,7 +619,7 @@ if [ -d "$SOURCE_PATH/.git/hooks/pre-commit.d" ]; then
     done
 fi
 
-echo "  PASS: No pipe or source hooks created (autoSync=false path)"
+echo "  PASS: Source hooks installed, no pipe (autoSync=false path)"
 
 echo ""
 echo "=== Testing unscoped merge prevention hooks ==="

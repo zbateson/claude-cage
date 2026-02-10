@@ -15,7 +15,7 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 ## What You Get
 
 - **Real commit history** — Claude sees your actual git log (configurable depth), not a blank slate
-- **Auto-sync on push** — Claude's commits flow back to your source branch automatically
+- **Auto-sync on push** — Claude's commits on non-active branches flow back to source automatically, active branch sync is opt-in
 - **Session management** — Multiple concurrent sessions, each with isolated workspaces
 - **Runs locally** — The sandbox runs on your machine. No third-party cloud sandbox access to your filesystem.
 - **Flexible** — Bubblewrap or Docker on Linux/WSL 2, Docker on macOS
@@ -155,8 +155,10 @@ claude_cage {
     -- Sandbox mode: "bwrap" or "docker"
     mode = "bwrap",
 
-    -- EXPERIMENTAL: Auto-sync commits back to source (supports co-create)
+    -- Auto-sync non-active branches back to source in real-time
     autoSync = true,
+    -- EXPERIMENTAL: Also sync to active branch (stash/apply/pop)
+    -- syncActiveBranch = false,
 
     -- Allow sandboxing non-git directories (mounts directly, no sync)
     allowNonGit = true,
@@ -239,7 +241,7 @@ claude-cage --dry-run
 # Verbose output
 claude-cage --verbose
 
-# Manually merge Claude's changes (if autoSync is off)
+# Manually merge Claude's changes (for active branch, or if autoSync is off)
 claude-cage git-merge
 
 # Attach to an existing active session
@@ -274,9 +276,21 @@ claude-cage
 claude-cage --attach-session
 ```
 
-## Co-Create Workflow (EXPERIMENTAL)
+## Sync Architecture
 
-When `autoSync = true`, you and Claude can work on the same branch at the same time. Claude's commits are automatically synced back to your source repo — and if you've got uncommitted work in your tree, claude-cage handles it without blowin' anythin' away.
+Sync has three tiers. Source → intermediary is always on. The other two are configurable.
+
+| Tier | Direction | Config | Default | Mechanism |
+|------|-----------|--------|---------|-----------|
+| 1 | Source → intermediary | Always on | — | post-commit/post-merge hooks |
+| 2 | Cage → source (non-active branches) | `autoSync` | `true` | Pipe listener + temp-index |
+| 3 | Cage → source (active branch) | `syncActiveBranch` | `false` | Pipe listener + stash/apply/pop |
+
+With defaults, Claude's commits on branches you're *not* on land automatically via temp-index — no checkout, no conflict risk. Your active branch stays untouched until you run `claude-cage git-merge`.
+
+### Co-Create Workflow (EXPERIMENTAL)
+
+When `syncActiveBranch = true`, you and Claude can work on the same branch at the same time. Claude's commits are automatically synced back to your source repo — and if you've got uncommitted work in your tree, claude-cage handles it without blowin' anythin' away.
 
 **How it works:**
 1. When Claude pushes commits, claude-cage checks if your working tree is dirty
@@ -472,7 +486,7 @@ your-project/
 │   └── sessions/
 │       └── <timestamp>/
 │           └── work → ~/.cache/.../sessions/<timestamp>/work/<project-path>/
-└── .git/hooks/                          # Hooks added when autoSync=true
+└── .git/hooks/                          # Source hooks always added
     ├── post-commit.d/claude-cage-*      # Syncs your commits to intermediary
     └── post-merge.d/claude-cage-*       # Syncs merge commits to intermediary
 ```

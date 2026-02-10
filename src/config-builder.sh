@@ -255,14 +255,27 @@ config_builder_run() {
     echo
 
     # 5. Auto-sync
-    echo "Auto-sync pushes your sandbox commits back to source in real-time."
-    echo "Without it, you gotta run 'claude-cage git-merge' yourself."
+    echo "Auto-sync pushes Claude's commits on other branches back to your source in real-time."
+    echo "Your active branch stays untouched unless you also enable syncActiveBranch."
+    echo "Without auto-sync, ALL branches need manual 'claude-cage git-merge'."
     config_builder_prompt_yesno "Want auto-sync?" "y"
     local auto_sync=$?
     local auto_sync_str="false"
     [ $auto_sync -eq 0 ] && auto_sync_str="true"
 
     echo
+
+    # 5b. syncActiveBranch (only if autoSync enabled)
+    local sync_active_branch_str="false"
+    if [ "$auto_sync_str" = "true" ]; then
+        echo "EXPERIMENTAL: Also sync Claude's commits to the branch you're actively workin' on?"
+        echo "This stashes your work, applies Claude's changes, then pops the stash."
+        echo "Best on a dedicated branch. Can cause conflicts on shared ones."
+        if config_builder_prompt_yesno "Enable syncActiveBranch?" "n"; then
+            sync_active_branch_str="true"
+        fi
+        echo
+    fi
 
     # 6. Allow non-git directories
     echo "Normally I work with git repos so I can sync changes back and forth."
@@ -388,6 +401,7 @@ config_builder_run() {
     config_content+="\n    launch = \"$launch_cmd\","
     config_content+="\n    mode = \"$mode\","
     config_content+="\n    autoSync = $auto_sync_str,"
+    config_content+="\n    syncActiveBranch = $sync_active_branch_str,"
     config_content+="\n    allowNonGit = $allow_non_git_str,"
     config_content+="\n    createCagedDir = $create_caged_str,"
 

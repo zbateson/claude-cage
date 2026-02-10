@@ -2,7 +2,11 @@
 
 You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe more than you should be givin' out.
 
-**claude-cage** locks things down with multiple layers of security. Your filesystem, your network, your sensitive files—protected. The sandbox runs locally, not on some third-party cloud. Your secrets stay home while your code does the traveling.
+**claude-cage** puts Claude to work inside a sandbox. It uses git to clone your project — strippin' out your secrets along the way — and hands Claude that sanitized copy to work on. When Claude makes commits and pushes, those changes sync right back to your real repo. The whole thing runs on your machine, no third-party cloud involved. Your secrets stay home while your code does the travelin'.
+
+But a git clone ain't the whole story. The sandbox also locks down your filesystem and network.
+
+**[Quick Start](#quick-start)** · [Three Layers](#three-layers-of-protection) · [What You Get](#what-you-get) · [How It Works](#how-it-works) · [Prerequisites](#prerequisites) · [Configuration](#configuration) · [Usage](#usage) · [Sessions](#sessions) · [Sync Architecture](#sync-architecture) · [Network Filtering](#network-filtering) · [Docker Mode](#docker-mode) · [Direct Mount](#direct-mount-mode) · [Large Repos](#working-with-large-repos) · [File Locations](#file-locations) · [Troubleshooting](#troubleshooting)
 
 ## Three Layers of Protection
 
@@ -30,8 +34,8 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 │  (your repo)    │      │  (sanitized)    │      │  (Claude's copy)│
 └─────────────────┘      └─────────────────┘      └─────────────────┘
         │                        │                        │
-        │   Secrets excluded     │    git clone            │
-        │   via fast-export      │    (same branch name)   │
+        │   Secrets excluded     │    git clone           │
+        │   via fast-export      │    (same branch name)  │
         │   (real commit history)│                        │
         │<─────────────────────────────────────────────────
                     Claude pushes → patches applied to source
@@ -52,29 +56,24 @@ The intermediary sticks around in `~/.cache/`, shared across all your sessions. 
 | `post-commit` | Source | When you commit, syncs changes to intermediary for Claude to pull |
 | `post-merge` | Source | Syncs merge commits (fast-forward and non-fast-forward) |
 | `pre-commit` | Work | Blocks commits containing force-added gitignored files (configurable) |
+| `pre-merge-commit` | Work | Blocks merges in scoped cages (merges need the full tree) |
 
 **And network isolation if you want it** — Allowlist or blocklist mode usin' iptables. No sudo required.
 
 ## Quick Start
 
 ```bash
-# Install dependencies (Ubuntu/Debian)
-sudo apt install bubblewrap slirp4netns
+# Install dependencies (Ubuntu/Debian, bwrap mode)
+sudo apt install git lua5.4 bubblewrap iptables slirp4netns
+
+# Or use Docker mode instead (macOS/Linux/WSL 2)
+# Just need: git, lua, docker, and claude-cage itself
 
 # Install claude-cage
 curl -L https://github.com/zbateson/claude-cage/releases/latest/download/claude-cage -o ~/.local/bin/claude-cage && chmod +x ~/.local/bin/claude-cage
 
 # Or clone and build
 git clone https://github.com/zbateson/claude-cage.git && cd claude-cage && make
-```
-
-Drop a config in your project:
-
-```lua
--- ~/myproject/.claude-cage
-claude_cage {
-    exclude = { ".env", "secrets/**", "application-*.properties" }
-}
 ```
 
 Run it:
@@ -84,7 +83,7 @@ cd ~/myproject
 claude-cage
 ```
 
-First time you run it without a config, it'll walk you through creatin' one. No sweat.
+First time you run it, it'll walk you through settin' up a config. No sweat.
 
 ## Now Listen to Me Very Carefully
 
@@ -113,16 +112,23 @@ Consider yourself warned.
 
 **Platform:** Linux or Windows (WSL 2). macOS? You're gonna need Docker mode.
 
-**Dependencies:**
+**Dependencies (bwrap mode):**
 ```bash
 # Ubuntu/Debian
-sudo apt install bubblewrap
+sudo apt install git lua5.4 bubblewrap iptables
 
 # For network filtering (optional)
 sudo apt install slirp4netns
 
 # Fedora/RHEL
-sudo dnf install bubblewrap slirp4netns
+sudo dnf install git lua bubblewrap iptables slirp4netns
+```
+
+**Dependencies (Docker mode):**
+```bash
+# git, lua, and Docker
+sudo apt install git lua5.4
+# Install Docker: https://docs.docker.com/get-docker/
 ```
 
 **Kernel Requirements** (for network filtering):
@@ -277,6 +283,11 @@ claude-cage --attach-session
 ```
 
 ## Sync Architecture
+
+Quick refresher on the three repos (see [How It Works](#how-it-works)):
+- **Source** — your actual project
+- **Intermediary** — sanitized bare repo in `~/.cache/`, secrets stripped out
+- **Work** (the cage) — Claude's copy inside the sandbox
 
 Here's how the sync works. Three tiers. Source → intermediary is always runnin'. The other two? Your call.
 
@@ -445,22 +456,18 @@ git = { scoped = true }
 - Blocks merge commits inside the cage (merges need the full tree)
 - Gets cleaned up automatically when a broader-scope cage covers the same path
 
-### Exclude Large Directories
+### Exclude What Claude Doesn't Need
 
-Heavy directories like `node_modules`, `vendor`, or `build` add bulk without value. Exclude 'em:
+Directories like `node_modules`, `vendor`, or `build` are usually `.gitignore`'d, so they won't end up in the cage anyway — claude-cage only exports committed content. But if your repo has large committed directories Claude doesn't need to touch, excludin' them speeds things up:
 
 ```lua
 exclude = {
-    "node_modules",
-    "vendor",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
+    "docs/generated/**",
+    "test/fixtures/large-dataset/**",
+    "third-party/**",
+    "assets/videos/**",
 }
 ```
-
-Stick these in your user config so they apply everywhere.
 
 **Why bother?**
 - Faster cage setup — less to haul across

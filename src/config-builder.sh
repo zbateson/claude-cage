@@ -123,12 +123,14 @@ config_builder_install_completions() {
     fi
 
     if [ -z "$shell_name" ]; then
-        return 0  # Can't detect shell, skip
+        echo "Couldn't figure out your shell. Run 'claude-cage completion bash' or 'claude-cage completion zsh' to grab the script yourself."
+        return 0
     fi
 
     # Check if already installed
     if [ -f "$install_path" ]; then
-        return 0  # Already installed
+        echo "Completions already installed at $install_path — you're all set."
+        return 0
     fi
 
     echo

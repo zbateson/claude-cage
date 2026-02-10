@@ -15,7 +15,7 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 ## What You Get
 
 - **Real commit history** — Claude sees your actual git log (configurable depth), not a blank slate
-- **Auto-sync on push** — Claude's commits on non-active branches flow back to source automatically, active branch sync is opt-in
+- **Auto-sync on push** — Claude's commits flow back to source automatically (non-active branches by default, active branch opt-in)
 - **Session management** — Multiple concurrent sessions, each with isolated workspaces
 - **Runs locally** — The sandbox runs on your machine. No third-party cloud sandbox access to your filesystem.
 - **Flexible** — Bubblewrap or Docker on Linux/WSL 2, Docker on macOS

@@ -124,7 +124,7 @@ The fast-export + `:(exclude,glob)` pathspec approach avoids all of these:
 | `src/git-clone.sh` | `create_intermediary_clone()`, `build_exclude_pathspecs()` - bare repo via fast-export/fast-import with pathspec excludes |
 | `src/git-hooks.sh` | Git hooks for communication pipe and commit sync |
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
-| `src/git-sync.sh` | `sync_to_source()`, pipe listener, manual merge |
+| `src/git-sync.sh` | `sync_to_source()`, `copy_carry_files()`, pipe listener, manual merge |
 | `src/network.sh` | Network isolation via slirp4netns/iptables |
 | `src/mounts.sh` | Shared mount logic for bwrap and docker |
 | `src/bwrap.sh` | `run_in_bwrap()` - bubblewrap sandbox |
@@ -288,6 +288,7 @@ Example `.claude-cage`:
 ```lua
 claude_cage {
     exclude = { ".env", "secrets/**", "application-*.properties" },
+    carry = { "CLAUDE.md", ".cursorrules" },  -- gitignored files copied at startup/exit
     mode = "bwrap",  -- or "docker"
     autoSync = true,  -- sync non-active branches back to source in real-time
     -- syncActiveBranch = false,  -- EXPERIMENTAL: also sync active branch (stash/apply/pop)
@@ -318,7 +319,7 @@ claude_cage {
 }
 ```
 
-Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages`) merge across all config levels. Scalar options are overridden by later configs.
+Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker.packages`) merge across all config levels. Scalar options are overridden by later configs.
 
 ### Key Options
 
@@ -326,6 +327,7 @@ Array options (`exclude`, `allow`, `block`, `additionalMounts`, `docker.packages
 |--------|---------|-------------|
 | `launch` | `"claude"` | Command to run inside sandbox |
 | `exclude` | `{}` | Patterns to exclude from archive |
+| `carry` | `{}` | Gitignored files copied source→work at startup, work→source at exit |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoSync` | `true` | Enable real-time sync of non-active branches via named pipe |
 | `syncActiveBranch` | `false` | **EXPERIMENTAL** Also sync to user's active branch (stash/apply/pop co-create mode) |
@@ -778,7 +780,7 @@ bash tests/run-all.sh
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
 | test-git-hooks.sh | git-hooks.sh | 22 |
 | test-git-patches.sh | git-patches.sh | 13 |
-| test-git-sync.sh | git-sync.sh | 19 |
+| test-git-sync.sh | git-sync.sh | 26 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 18 |
@@ -786,7 +788,7 @@ bash tests/run-all.sh
 | test-direct-mount.sh | direct mount mode | 8 |
 | test-scoped.sh | scoped intermediary | 66 |
 
-**Total: ~280 assertions across 14 files**
+**Total: ~287 assertions across 14 files**
 
 Note: bwrap execution tests are skipped if user namespaces are unavailable.
 

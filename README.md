@@ -158,6 +158,10 @@ claude_cage {
         "*.key",
     },
 
+    -- Gitignored files to carry in/out of the cage (copied at startup/exit)
+    -- Git-tracked files are skipped automatically — set it globally and it just works
+    carry = { "CLAUDE.md", ".cursorrules" },
+
     -- Sandbox mode: "bwrap" or "docker"
     mode = "bwrap",
 
@@ -203,7 +207,7 @@ claude_cage {
 3. `includeIf` matches (directory-scoped configs declared in system/user config)
 4. `.claude-cage` at git root (project)
 
-Arrays like `exclude` and `additionalMounts` combine across all levels. Scalars like `mode` get overridden — closer configs win.
+Arrays like `exclude`, `carry`, and `additionalMounts` combine across all levels. Scalars like `mode` get overridden — closer configs win.
 
 **Directory-scoped config (`includeIf`):** Got a directory full of projects that share config? Use `includeIf` in your user config instead of scatterin' hidden files around:
 

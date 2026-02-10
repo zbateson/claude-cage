@@ -117,6 +117,69 @@ copy_dirty_files_to_work() {
     fi
 }
 
+# Copy carry files between source and work dir (outside git).
+# Carry files are gitignored files that should persist across sessions
+# (e.g., CLAUDE.md). Git-tracked files are skipped — git handles those.
+# Arguments:
+#   $1 - direction: "to_work" or "to_source"
+#   $2 - source_dir: The source project directory
+#   $3 - work_dir: The cage work directory
+#   $4 - scope_path: Scope path (empty for unscoped)
+#   $5 - cfg_carry: Pipe-delimited carry file paths
+copy_carry_files() {
+    local direction="$1"
+    local source_dir="$2"
+    local work_dir="$3"
+    local scope_path="$4"
+    local carry_str="$5"
+
+    [ -z "$carry_str" ] && return 0
+
+    local copied=0
+    local -a paths
+    IFS='|' read -ra paths <<< "$carry_str"
+
+    for filepath in "${paths[@]}"; do
+        [ -z "$filepath" ] && continue
+
+        # Skip git-tracked files — git handles those through the normal pipeline
+        if git -C "$source_dir" ls-files --error-unmatch "$filepath" >/dev/null 2>&1; then
+            continue
+        fi
+
+        # Scope filtering: skip files outside scope, strip prefix for work
+        local work_filepath="$filepath"
+        if [ -n "$scope_path" ]; then
+            case "$filepath" in
+                "$scope_path/"*) work_filepath="${filepath#"$scope_path/"}" ;;
+                *) continue ;;  # Outside scope, skip
+            esac
+        fi
+
+        if [ "$direction" = "to_work" ]; then
+            if [ -e "$source_dir/$filepath" ]; then
+                mkdir -p "$work_dir/$(dirname "$work_filepath")"
+                cp -a "$source_dir/$filepath" "$work_dir/$work_filepath"
+                copied=$((copied + 1))
+            fi
+        elif [ "$direction" = "to_source" ]; then
+            if [ -e "$work_dir/$work_filepath" ]; then
+                mkdir -p "$source_dir/$(dirname "$filepath")"
+                cp -a "$work_dir/$work_filepath" "$source_dir/$filepath"
+                copied=$((copied + 1))
+            fi
+        fi
+    done
+
+    if [ "$copied" -gt 0 ]; then
+        if [ "$direction" = "to_work" ]; then
+            echo "Carried $copied file(s) into the cage."
+        else
+            echo "Carried $copied file(s) back to source."
+        fi
+    fi
+}
+
 # Check if existing cage is in sync with source
 # Returns: "no_cage" | "in_sync" | "needs_work_dir" | "needs_update"
 # Arguments:

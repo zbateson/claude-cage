@@ -23,6 +23,15 @@ claude_cage {
     -- directMount = false,
 
     -- =========================================================================
+    -- CARRY FILES (copied outside git at startup/exit)
+    -- =========================================================================
+    -- Files copied source→work at startup and work→source at exit.
+    -- Useful for gitignored config files that should persist between sessions.
+    -- Git-tracked files are skipped (git handles those through normal sync).
+
+    -- carry = { "CLAUDE.md", ".cursorrules" },
+
+    -- =========================================================================
     -- ORGANIZATION-WIDE FILE EXCLUSIONS
     -- =========================================================================
     -- These are merged with user and project excludes

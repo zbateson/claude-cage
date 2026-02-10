@@ -453,6 +453,15 @@ if [ ${#cfg_mounts[@]} -gt 0 ]; then
     done
 fi
 
+if [ "$direct_mount_mode" = false ] && [ -n "${cfg_carry:-}" ]; then
+    echo ""
+    echo "Carry files (copied at startup/exit):"
+    IFS='|' read -ra _carry_display <<< "$cfg_carry"
+    for _cf in "${_carry_display[@]}"; do
+        echo "  $_cf"
+    done
+fi
+
 echo ""
 
 # Set up paths and git-related state (or skip for non-git mode)
@@ -741,6 +750,13 @@ else
         copy_dirty_files_to_work "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_exclude"
     fi
 
+    # Copy carry files (gitignored files that should persist across sessions)
+    if [ -n "$cfg_carry" ] && \
+       [ "$cli_attach_session_mode" != true ] && \
+       ! is_work_dirty "$work_dir"; then
+        copy_carry_files "to_work" "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_carry"
+    fi
+
     # Set up .caged/ symlinks if enabled
     if [ "$cfg_createCagedDir" = "true" ]; then
         setup_caged_symlinks "$cfg_source" "$scope_path"
@@ -793,6 +809,10 @@ cleanup_on_exit() {
     local exit_code=$?
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
+        # Copy carry files back to source before cleanup
+        if [ -n "${cfg_carry:-}" ] && [ -d "$work_dir" ]; then
+            copy_carry_files "to_source" "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_carry"
+        fi
         # Always unregister our session
         unregister_session "$cfg_source"
         # Deferred cleanup: if this scoped intermediary is now superseded

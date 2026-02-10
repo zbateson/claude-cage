@@ -1396,5 +1396,190 @@ cfg_git_scoped=""
 CLAUDE_CAGE_SESSION="test-session-$$"
 export CLAUDE_CAGE_SESSION
 
+# ============================================================================
+# Test 36: copy_carry_files to_work — basic copy
+# ============================================================================
+echo ""
+echo "Test 36: copy_carry_files to_work should copy gitignored file to work dir"
+
+setup_test_cage "source36"
+
+# Create a gitignored file on source
+echo "CLAUDE.md" >> "$SOURCE_PATH/.gitignore"
+git -C "$SOURCE_PATH" add .gitignore && git -C "$SOURCE_PATH" commit -q -m "Add gitignore"
+echo "my claude config" > "$SOURCE_PATH/CLAUDE.md"
+
+# Sync intermediary to pick up the .gitignore commit
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
+git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
+
+# Copy carry files to work
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md" >/dev/null
+
+if [ ! -f "$WORK_DIR/CLAUDE.md" ]; then
+    echo "FAIL: CLAUDE.md should be copied to work"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/CLAUDE.md")
+if [ "$work_content" != "my claude config" ]; then
+    echo "FAIL: CLAUDE.md content wrong: '$work_content'"
+    exit 1
+fi
+echo "  PASS: Carry file copied to work dir"
+
+# ============================================================================
+# Test 37: copy_carry_files to_source — basic copy back
+# ============================================================================
+echo "Test 37: copy_carry_files to_source should copy file back to source"
+
+# Modify the file in work
+echo "updated by claude" > "$WORK_DIR/CLAUDE.md"
+
+copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md" >/dev/null
+
+source_content=$(cat "$SOURCE_PATH/CLAUDE.md")
+if [ "$source_content" != "updated by claude" ]; then
+    echo "FAIL: CLAUDE.md should be updated on source, got: '$source_content'"
+    exit 1
+fi
+echo "  PASS: Carry file copied back to source"
+
+# ============================================================================
+# Test 38: copy_carry_files to_work — file doesn't exist
+# ============================================================================
+echo "Test 38: copy_carry_files to_work should be a no-op when file doesn't exist"
+
+setup_test_cage "source38"
+
+# Don't create nonexistent.txt on source
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "nonexistent.txt" >/dev/null
+
+if [ -f "$WORK_DIR/nonexistent.txt" ]; then
+    echo "FAIL: nonexistent.txt should not be in work"
+    exit 1
+fi
+echo "  PASS: Missing file is a no-op"
+
+# ============================================================================
+# Test 39: copy_carry_files to_work — scoped repo
+# ============================================================================
+echo "Test 39: copy_carry_files to_work should handle scoped repos"
+
+# Set up a scoped test: repo with services/api/ structure
+rm -rf "$TEST_TMP/source39"
+mkdir -p "$TEST_TMP/source39/services/api"
+cd "$TEST_TMP/source39"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "CLAUDE.md" >> .gitignore
+echo "api code" > services/api/app.txt
+git add . && git commit -q -m "Initial"
+
+SOURCE_PATH="$TEST_TMP/source39"
+local_scope="services/api"
+CLAUDE_CAGE_SESSION="test-scoped-39"
+export CLAUDE_CAGE_SESSION
+
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_PATH" "$local_scope")
+WORK_DIR=$(get_work_path "$TEST_TMP/source39/services/api")
+
+create_intermediary_clone "$TEST_TMP/source39/services/api" "$local_scope" >/dev/null 2>&1
+
+# Create carry file inside scope
+echo "scoped carry" > "$SOURCE_PATH/services/api/CLAUDE.md"
+# Create carry file outside scope
+echo "root carry" > "$SOURCE_PATH/CLAUDE.md"
+
+# Copy with scope — inside scope should work, outside should be skipped
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "$local_scope" "services/api/CLAUDE.md|CLAUDE.md" >/dev/null
+
+# In-scope: should be copied with prefix stripped
+if [ ! -f "$WORK_DIR/CLAUDE.md" ]; then
+    echo "FAIL: In-scope CLAUDE.md should be copied to work (prefix-stripped)"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/CLAUDE.md")
+if [ "$work_content" != "scoped carry" ]; then
+    echo "FAIL: Content wrong: '$work_content'"
+    exit 1
+fi
+echo "  PASS: In-scope carry file copied with prefix stripped"
+
+# Out-of-scope: CLAUDE.md at root should NOT be copied
+# (there's already a CLAUDE.md from the in-scope copy, so check content)
+if [ "$(cat "$WORK_DIR/CLAUDE.md")" = "root carry" ]; then
+    echo "FAIL: Root CLAUDE.md should not overwrite in-scope one"
+    exit 1
+fi
+echo "  PASS: Out-of-scope carry file skipped"
+
+# Reset
+CLAUDE_CAGE_SESSION="test-session-$$"
+export CLAUDE_CAGE_SESSION
+
+# ============================================================================
+# Test 40: copy_carry_files — multiple files
+# ============================================================================
+echo "Test 40: copy_carry_files should handle multiple files"
+
+setup_test_cage "source40"
+
+echo "CLAUDE.md" >> "$SOURCE_PATH/.gitignore"
+echo ".cursorrules" >> "$SOURCE_PATH/.gitignore"
+git -C "$SOURCE_PATH" add .gitignore && git -C "$SOURCE_PATH" commit -q -m "Add gitignore"
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
+git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
+
+echo "claude md" > "$SOURCE_PATH/CLAUDE.md"
+echo "cursor rules" > "$SOURCE_PATH/.cursorrules"
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|.cursorrules" >/dev/null
+
+if [ ! -f "$WORK_DIR/CLAUDE.md" ] || [ ! -f "$WORK_DIR/.cursorrules" ]; then
+    echo "FAIL: Both files should be copied"
+    exit 1
+fi
+if [ "$(cat "$WORK_DIR/CLAUDE.md")" != "claude md" ] || [ "$(cat "$WORK_DIR/.cursorrules")" != "cursor rules" ]; then
+    echo "FAIL: File contents wrong"
+    exit 1
+fi
+echo "  PASS: Multiple carry files copied"
+
+# ============================================================================
+# Test 41: copy_carry_files — empty cfg_carry is no-op
+# ============================================================================
+echo "Test 41: copy_carry_files with empty carry should be a no-op"
+
+setup_test_cage "source41"
+
+# Should not error
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "" >/dev/null
+
+echo "  PASS: Empty carry is a no-op"
+
+# ============================================================================
+# Test 42: copy_carry_files — git-tracked file skipped
+# ============================================================================
+echo "Test 42: copy_carry_files should skip git-tracked files"
+
+setup_test_cage "source42"
+
+# file.txt is already committed (git-tracked)
+original_work_content=$(cat "$WORK_DIR/file.txt")
+
+# Modify it on source (uncommitted change)
+echo "source modified" > "$SOURCE_PATH/file.txt"
+
+# Carry should skip it because it's tracked
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "file.txt" >/dev/null
+
+work_content=$(cat "$WORK_DIR/file.txt")
+if [ "$work_content" != "$original_work_content" ]; then
+    echo "FAIL: Git-tracked file should be skipped by carry, got: '$work_content'"
+    exit 1
+fi
+echo "  PASS: Git-tracked file skipped by carry"
+
 echo ""
 echo "=== All git-sync tests passed! ==="

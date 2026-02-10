@@ -8,7 +8,7 @@
 --   3. includeIf matches              (directory-scoped configs, set in system/user)
 --   4. .claude-cage                    (project settings, at git root)
 --
--- Array options (exclude, allow, block, additionalMounts, docker.packages) merge across levels.
+-- Array options (exclude, carry, allow, block, additionalMounts, docker.packages) merge across levels.
 -- Scalar options are overridden by later configs.
 --
 -- See examples/example-user-config for includeIf usage.
@@ -37,6 +37,19 @@ claude_cage {
         "config/production.yml",
         "application-*.properties",
     },
+
+    -- =========================================================================
+    -- CARRY FILES (copied outside git at startup/exit)
+    -- =========================================================================
+    -- Files listed here are copied source→work at startup and work→source
+    -- at exit, completely outside git. Useful for gitignored files like
+    -- CLAUDE.md that should persist between cage sessions.
+    --
+    -- Git-tracked files are skipped automatically (git handles those).
+    -- This means you can set carry globally and it just works: repos that
+    -- commit the file use git, repos that gitignore it use carry.
+
+    -- carry = { "CLAUDE.md", ".cursorrules", ".claude/settings.json" },
 
     -- =========================================================================
     -- SANDBOX MODE

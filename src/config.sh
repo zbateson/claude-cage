@@ -143,6 +143,11 @@ local function merge_config(base, override)
                     end
                 end
             end
+        elseif k == "carry" and type(v) == "table" then
+            result.carry = result.carry or {}
+            for _, item in ipairs(v) do
+                table.insert(result.carry, item)
+            end
         elseif k == "additionalMounts" and type(v) == "table" then
             result.additionalMounts = result.additionalMounts or {}
             for _, item in ipairs(v) do
@@ -355,6 +360,7 @@ print(tostring(git_blockForceAdd))
 print(tostring(git_historyDepth))
 print(git_defaultBranch)
 print(tostring(git_scoped))
+print(array_to_string(config.carry or {}))
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -434,6 +440,7 @@ LUAEOF
         read -r cfg_git_historyDepth
         read -r cfg_git_defaultBranch
         read -r cfg_git_scoped
+        read -r cfg_carry
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do
@@ -458,6 +465,7 @@ LUAEOF
     [ "$cfg_block_ips" = "EMPTY" ] && cfg_block_ips="" || true
     [ "$cfg_block_networks" = "EMPTY" ] && cfg_block_networks="" || true
     [ "$cfg_docker_packages" = "EMPTY" ] && cfg_docker_packages="" || true
+    [ "$cfg_carry" = "EMPTY" ] && cfg_carry="" || true
 }
 
 # Initialize config from current directory

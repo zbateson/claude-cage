@@ -1202,6 +1202,8 @@ create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
 # Simulate a cage commit by pushing to API intermediary's work dir
 CLAUDE_CAGE_SESSION="test-prop-api"
 api_work=$(get_work_path "$SOURCE_API")
+git -C "$api_work" config user.email "test@test.com"
+git -C "$api_work" config user.name "Test"
 echo "cage-change-api" > "$api_work/app.go"
 cd "$api_work"
 git add app.go && git commit -m "Cage commit in api" --quiet 2>/dev/null
@@ -1209,6 +1211,7 @@ git add app.go && git commit -m "Cage commit in api" --quiet 2>/dev/null
 # Push to intermediary (simulate cage push)
 # Set origin to local path for push (no sandbox mount)
 git remote set-url origin "$INTERMEDIARY_DIR"
+rm -f "$INTERMEDIARY_DIR/hooks/post-receive"  # avoid pipe blocking
 git push origin "$BRANCH_NAME" --quiet 2>/dev/null
 
 # Get the pushed commit
@@ -1275,10 +1278,13 @@ create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
 # Simulate cage commit
 CLAUDE_CAGE_SESSION="test-tempidx-api"
 api_work=$(get_work_path "$SOURCE_API")
+git -C "$api_work" config user.email "test@test.com"
+git -C "$api_work" config user.name "Test"
 echo "tempidx-api-change" > "$api_work/app.go"
 cd "$api_work"
 git add app.go && git commit -m "Cage commit for tempidx" --quiet 2>/dev/null
 git remote set-url origin "$INTERMEDIARY_DIR"
+rm -f "$INTERMEDIARY_DIR/hooks/post-receive"  # avoid pipe blocking
 git push origin "$BRANCH_NAME" --quiet 2>/dev/null
 
 pushed_commit=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")
@@ -1407,6 +1413,8 @@ create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
 
 # Get work dir and install pre-commit hook with scope
 MERGE_WORK=$(get_work_path "$SOURCE_API")
+git -C "$MERGE_WORK" config user.email "test@test.com"
+git -C "$MERGE_WORK" config user.name "Test"
 setup_work_pre_commit "$MERGE_WORK" "services/api"
 
 cd "$MERGE_WORK"

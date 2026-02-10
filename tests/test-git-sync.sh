@@ -74,6 +74,11 @@ setup_test_cage() {
     # Fix origin path for testing outside sandbox
     # (inside sandbox, intermediary is mounted at /run<intermediary_path>)
     git -C "$WORK_DIR" remote set-url origin "$INTERMEDIARY_DIR"
+
+    # Set git identity on work dir (clones don't inherit source's local config,
+    # and tests override HOME so global .gitconfig is absent)
+    git -C "$WORK_DIR" config user.email "test@test.com"
+    git -C "$WORK_DIR" config user.name "Test"
 }
 
 # ============================================================================

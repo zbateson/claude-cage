@@ -125,7 +125,8 @@ fi
 echo "  PASS: Default autoSync is true"
 
 echo "Test 5: Should parse mode option (bwrap vs docker)"
-cat > "$TEST_TMP/project4/.claude-cage" << 'EOF'
+if command -v docker >/dev/null 2>&1; then
+    cat > "$TEST_TMP/project4/.claude-cage" << 'EOF'
 claude_cage {
     mode = "docker",
     showBanner = false,
@@ -133,16 +134,19 @@ claude_cage {
 }
 EOF
 
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
-    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
-if ! echo "$output" | grep -q "Mode:.*docker"; then
-    echo "FAIL: Should show mode = docker"
-    echo "Output was:"
-    echo "$output"
-    exit 1
+    output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+        CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
+        bash -c 'cd "$1" && "$2" --dry-run 2>&1' _ "$TEST_TMP/project4" "$CAGE_DIR/dist/claude-cage")
+    if ! echo "$output" | grep -q "Mode:.*docker"; then
+        echo "FAIL: Should show mode = docker"
+        echo "Output was:"
+        echo "$output"
+        exit 1
+    fi
+    echo "  PASS: Parsed mode option"
+else
+    echo "  SKIP: docker not available"
 fi
-echo "  PASS: Parsed mode option"
 
 echo "Test 6: Should default mode to bwrap"
 cat > "$TEST_TMP/project4/.claude-cage" << 'EOF'

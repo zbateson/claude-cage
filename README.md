@@ -6,23 +6,23 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 
 ## Three Layers of Protection
 
-1. **File Exclusion** — Sensitive files aren't copied into the sandbox. Not blocked from reading—*never there in the first place*. No `.env`, no credentials, no git history of secrets.
+1. **File Exclusion** — Your sensitive files don't get copied into the sandbox. They're not blocked from readin' — they were *never there in the first place*. No `.env`, no credentials, no git history of secrets.
 
-2. **Filesystem Isolation** — The sandbox can't see your home directory, SSH keys, or AWS credentials. Claude works in a clean room.
+2. **Filesystem Isolation** — The sandbox can't see your home directory, SSH keys, or AWS credentials. Claude's workin' in a clean room with no windows.
 
-3. **Network Filtering** — Control what Claude can reach. Allowlist mode for lockdown. Blocklist mode to block your internal infrastructure. No sudo required.
+3. **Network Filtering** — You decide what Claude can reach. Lock it down with allowlist mode, or block your internal infrastructure with blocklist mode. No sudo required.
 
 ## What You Get
 
-- **Real commit history** — Claude sees your actual git log (configurable depth), not a blank slate
-- **Auto-sync on push** — Claude's commits flow back to source automatically (non-active branches by default, active branch opt-in)
-- **Session management** — Multiple concurrent sessions, each with isolated workspaces
-- **Runs locally** — The sandbox runs on your machine. No third-party cloud sandbox access to your filesystem.
+- **Real commit history** — Claude sees your actual git log (configurable depth), not some blank slate with no memory
+- **Auto-sync on push** — Claude's commits land on your source repo automatically. Non-active branches by default, active branch if you're feelin' brave.
+- **Session management** — Run multiple sessions at once, each in its own workspace. No steppin' on each other's toes.
+- **Runs locally** — Everythin' stays on your machine. No third-party cloud touchin' your filesystem.
 - **Flexible** — Bubblewrap or Docker on Linux/WSL 2, Docker on macOS
 
 ## How It Works
 
-**Three repositories, one purpose:**
+**Three repositories. One purpose. Keep your stuff safe:**
 
 ```
 ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
@@ -37,13 +37,13 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
                     Claude pushes → patches applied to source
 ```
 
-1. **Source** — Your actual project with full git history
-2. **Intermediary** — Persistent bare repo with real commit history (configurable depth, default 50). Excluded file content is stripped during `git fast-export` — no secrets in the object store.
-3. **Work** — Where Claude operates inside the sandbox. Pushes sync back to source.
+1. **Source** — Your actual project. The real deal, full git history and all.
+2. **Intermediary** — A persistent bare repo with real commit history (configurable depth, default 50). Your excluded files get stripped out durin' `git fast-export` — no secrets touchin' the object store.
+3. **Work** — This is Claude's playground inside the sandbox. When Claude pushes, changes sync right back to source.
 
-The intermediary is shared across sessions and persists in `~/.cache/`. It's only rebuilt when your exclude patterns change.
+The intermediary sticks around in `~/.cache/`, shared across all your sessions. It only gets rebuilt when your exclude patterns change — otherwise it's ready to go.
 
-**Git hooks keep things in sync:**
+**Git hooks do the heavy liftin':**
 
 | Hook | Location | What It Does |
 |------|----------|--------------|
@@ -53,7 +53,7 @@ The intermediary is shared across sessions and persists in `~/.cache/`. It's onl
 | `post-merge` | Source | Syncs merge commits (fast-forward and non-fast-forward) |
 | `pre-commit` | Work | Blocks commits containing force-added gitignored files (configurable) |
 
-**Plus optional network isolation** — Allowlist or blocklist mode using iptables. No sudo required.
+**And network isolation if you want it** — Allowlist or blocklist mode usin' iptables. No sudo required.
 
 ## Quick Start
 
@@ -68,7 +68,7 @@ curl -L https://github.com/zbateson/claude-cage/releases/latest/download/claude-
 git clone https://github.com/zbateson/claude-cage.git && cd claude-cage && make
 ```
 
-Create a config in your project:
+Drop a config in your project:
 
 ```lua
 -- ~/myproject/.claude-cage
@@ -111,7 +111,7 @@ Consider yourself warned.
 
 ## Prerequisites
 
-**Platform:** Linux or Windows (WSL 2). macOS requires Docker mode.
+**Platform:** Linux or Windows (WSL 2). macOS? You're gonna need Docker mode.
 
 **Dependencies:**
 ```bash
@@ -186,18 +186,18 @@ claude_cage {
 }
 ```
 
-**Note:** The `additionalMounts` for Claude Code files are required for Claude to run inside the sandbox. Put these in your user config (`~/.config/claude-cage/config`) so they apply to all projects.
+**Note:** Those `additionalMounts` for Claude Code files? Required if you want Claude to actually run inside the sandbox. Stick 'em in your user config (`~/.config/claude-cage/config`) so they apply to all your projects.
 
-**Tip:** The `launch` command can include arguments (e.g., `launch = "claude --dangerously-skip-permissions"`), or you can pass them on the command line. CLI arguments are appended to the launch command.
+**Tip:** The `launch` command can include arguments (e.g., `launch = "claude --dangerously-skip-permissions"`), or just pass 'em on the command line. CLI arguments get tacked onto whatever launch command you've set.
 
-**Config layering:** Configs are loaded and merged in order:
+**Config layering:** Configs stack up and merge in order:
 
 1. `/etc/claude-cage.conf` (system)
 2. `~/.config/claude-cage/config` (user)
 3. `includeIf` matches (directory-scoped configs declared in system/user config)
 4. `.claude-cage` at git root (project)
 
-Arrays like `exclude` and `additionalMounts` combine across all levels. Scalars like `mode` override (closer configs win).
+Arrays like `exclude` and `additionalMounts` combine across all levels. Scalars like `mode` get overridden — closer configs win.
 
 **Directory-scoped config (`includeIf`):** Got a directory full of projects that share config? Use `includeIf` in your user config instead of scatterin' hidden files around:
 
@@ -211,9 +211,9 @@ claude_cage {
 }
 ```
 
-When your CWD is under `~/Projects/public/`, the matching config is loaded. Use a visible filename like `claude-cage.config` so it's easy to spot. Same merge rules apply — arrays combine, scalars override.
+When your CWD is under `~/Projects/public/`, that config gets pulled in. Use a visible filename like `claude-cage.config` so it's easy to spot. Same merge rules — arrays combine, scalars override.
 
-**More options:** See [`.claude-cage.example`](.claude-cage.example) for project-level settings and [`examples/`](examples/) for system and user config examples including `includeIf`.
+**Want the full picture?** Check [`.claude-cage.example`](.claude-cage.example) for project-level settings and [`examples/`](examples/) for system and user config examples includin' `includeIf`.
 
 
 ## Usage
@@ -254,18 +254,18 @@ claude-cage clean 20250206143022                 # Remove specific session
 claude-cage clean --all                          # Remove all sessions
 ```
 
-**Note:** Arguments that aren't recognized by claude-cage are passed through to the launch command. So `claude-cage --resume` runs `claude --resume` inside the sandbox.
+**Note:** Anythin' claude-cage doesn't recognize gets passed straight through to the launch command. So `claude-cage --resume` runs `claude --resume` inside the sandbox.
 
-**Cleanup:** The `clean` command removes cached work/intermediary directories and `.caged/` symlinks. You'll be warned if a session has uncommitted changes, and asked to confirm before deletion.
+**Cleanup:** The `clean` command wipes out cached work/intermediary directories and `.caged/` symlinks. If a session's got uncommitted changes, you'll hear about it before anythin' gets deleted.
 
 ## Sessions
 
-Every time you run claude-cage, it creates a session identified by a timestamp (e.g., `20250206143022`). Each session gets its own work directory while sharin' the same intermediary repo.
+Every time you fire up claude-cage, it creates a session tagged with a timestamp (e.g., `20250206143022`). Each session gets its own work directory while sharin' the same intermediary repo.
 
 **What this means for you:**
-- Run multiple sessions on the same project at the same time — no conflicts
-- Inactive clean sessions are reused automatically on next startup
-- Inactive dirty sessions prompt you to pick up where you left off or start fresh
+- Run multiple sessions on the same project at the same time — they don't step on each other
+- Clean sessions that ain't doin' nothin' get reused automatically next startup
+- Dirty sessions? You'll get asked if you wanna pick up where you left off or start fresh
 - `--attach-session` lets two terminals share the same workspace
 
 ```bash
@@ -278,7 +278,7 @@ claude-cage --attach-session
 
 ## Sync Architecture
 
-Sync has three tiers. Source → intermediary is always on. The other two are configurable.
+Here's how the sync works. Three tiers. Source → intermediary is always runnin'. The other two? Your call.
 
 | Tier | Direction | Config | Default | Mechanism |
 |------|-----------|--------|---------|-----------|
@@ -286,41 +286,41 @@ Sync has three tiers. Source → intermediary is always on. The other two are co
 | 2 | Cage → source (non-active branches) | `autoSync` | `true` | Pipe listener + temp-index |
 | 3 | Cage → source (active branch) | `syncActiveBranch` | `false` | Pipe listener + stash/apply/pop |
 
-With defaults, Claude's commits on branches you're *not* on land automatically via temp-index — no checkout, no conflict risk. Your active branch stays untouched until you run `claude-cage git-merge`.
+With the defaults, Claude's commits on branches you're *not* sittin' on land automatically via temp-index — no checkout, no conflict risk. Your active branch stays clean until you say otherwise with `claude-cage git-merge`.
 
 ### Co-Create Workflow (EXPERIMENTAL)
 
-When `syncActiveBranch = true`, you and Claude can work on the same branch at the same time. Claude's commits are automatically synced back to your source repo — and if you've got uncommitted work in your tree, claude-cage handles it without blowin' anythin' away.
+When `syncActiveBranch = true`, you and Claude are workin' the same branch at the same time. Claude's commits get synced back to your source repo automatically — and if you've got uncommitted work sittin' in your tree, claude-cage handles it without blowin' anythin' away.
 
-**How it works:**
-1. When Claude pushes commits, claude-cage checks if your working tree is dirty
-2. If dirty: your changes (including untracked files) are stashed automatically
+**Here's what happens:**
+1. Claude pushes commits, and claude-cage checks if your workin' tree is dirty
+2. If it is: your changes (includin' untracked files) get stashed automatically
 3. Claude's commits are applied via `git am --3way`
-4. Your stash is popped back on top
+4. Your stash gets popped right back on top
 
 **When there's a conflict:**
-- Claude's commits still land clean on the branch (applied before stash pop)
-- Your working tree gets conflict markers — standard git conflict state
-- The stash stays put (git doesn't drop it on a failed pop)
-- Resolve with your usual tools: edit the markers, `git checkout --ours/--theirs`, `git mergetool`, etc.
-- Once resolved, run `git stash drop` to clean up the stash
+- Claude's commits still land clean on the branch (applied before the stash pop)
+- Your workin' tree gets conflict markers — standard git conflict state
+- The stash stays put (git don't drop it on a failed pop)
+- Sort it out with your usual tools: edit the markers, `git checkout --ours/--theirs`, `git mergetool`, whatever you like
+- Once you've cleaned up, run `git stash drop` to toss the stash
 
 **Recommendations:**
-- Work on a fresh branch when co-creating — keeps things clean if you need to rewind
-- Commit your work frequently to minimize what's in the stash
+- Work on a fresh branch when co-creatin' — keeps things clean if you need to rewind
+- Commit your work often so there's less sittin' in the stash
 
 **Known limitations:**
-- Staging state (what you had `git add`'d vs unstaged) is not preserved during sync — everything comes back as unstaged modifications
-- This is an experimental feature — back up important uncommitted work before relyin' on it
+- Stagin' state (what you had `git add`'d vs unstaged) ain't preserved durin' sync — everythin' comes back as unstaged modifications
+- This is experimental — back up important uncommitted work before you go trustin' it with your life
 
 ## Network Filtering
 
-Network filtering uses iptables to control what Claude can reach. Works in both modes:
+Network filterin' uses iptables to control what Claude can reach. Works in both modes:
 
 - **bwrap mode** — Uses slirp4netns to create an isolated network namespace. No sudo required.
-- **Docker mode** — Configures iptables inside the container, then drops privileges before running your command.
+- **Docker mode** — Configures iptables inside the container, then drops privileges before runnin' your command.
 
-**Allowlist mode** — Block everything except what you specify:
+**Allowlist mode** — Lock it all down. Only what you say gets through:
 ```lua
 networkMode = "allowlist",
 allow = {
@@ -329,7 +329,7 @@ allow = {
 }
 ```
 
-**Blocklist mode** — Allow everything except what you block:
+**Blocklist mode** — Everythin's open except what you nail shut:
 ```lua
 networkMode = "blocklist",
 block = {
@@ -341,7 +341,7 @@ block = {
 
 ## Docker Mode
 
-Prefer Docker, or on macOS where bwrap isn't available:
+If you prefer Docker — or you're on macOS where bwrap ain't an option:
 
 ```lua
 claude_cage {
@@ -350,13 +350,13 @@ claude_cage {
 }
 ```
 
-Network filtering works in Docker mode too — uses iptables with privilege drop after setup.
+Network filterin' works in Docker mode too — iptables with a privilege drop after setup. Same deal.
 
 ## Direct Mount Mode
 
-Not every project needs the full git sync workflow. Maybe you're workin' on open source with no secrets to hide. Maybe you just want to sandbox a directory and protect your network.
+Not every project needs the full git sync treatment. Maybe you're workin' on open source with nothin' to hide. Maybe you just want a sandbox around a directory and some network protection.
 
-**Direct mount** skips the intermediary clone and mounts your source directly:
+**Direct mount** skips the intermediary clone and mounts your source straight up:
 
 ```bash
 # One-off direct mount
@@ -369,14 +369,14 @@ claude_cage {
 ```
 
 **What you still get:**
-- Filesystem isolation (Claude can't see your home directory, SSH keys, etc.)
-- Network filtering (allowlist/blocklist mode)
-- Additional mounts you configure
+- Filesystem isolation — Claude still can't see your home directory, SSH keys, none of that
+- Network filterin' (allowlist/blocklist mode)
+- Whatever additional mounts you configure
 
-**What you skip:**
+**What you're skippin':**
 - The intermediary/work directory clone
 - Git sync and hooks
-- File exclusion (everything is mounted directly)
+- File exclusion (everythin's mounted directly)
 
 ### Use Case: Open Source Projects
 
@@ -397,7 +397,7 @@ Claude gets the files, the network is locked down, and your private stuff stays 
 
 ### Use Case: Hybrid Mode
 
-Want git workflow for your main project but also let Claude browse your other repos? Use `isolated = true` with `additionalMounts`:
+Want the full git workflow for your main project but also let Claude peek at your other repos? Use `isolated = true` with `additionalMounts`:
 
 ```lua
 claude_cage {
@@ -412,20 +412,20 @@ claude_cage {
 }
 ```
 
-Now you get:
+Now you've got:
 - Full git workflow on your main project
 - Read-only access to reference code from other projects
-- Claude can look but not touch the other repos
+- Claude can look but can't lay a finger on the other repos
 
 ## Working with Large Repos
 
-**By default, claude-cage exports your committed history** (minus excluded files) into the sandbox. For a small project, no big deal. For a massive monorepo? That's a lot of files and a lot of wait time.
+**By default, claude-cage exports your committed history** (minus excluded files) into the sandbox. Small project? No sweat. Massive monorepo? That's a whole lotta files and a whole lotta waitin'.
 
 Two ways to slim things down:
 
 ### Run from a Subdirectory (Scoped Mode)
 
-Just `cd` into the part you care about and use `--scoped`:
+Just `cd` into the part you care about and hit it with `--scoped`:
 
 ```bash
 cd ~/massive-monorepo/services/auth
@@ -440,10 +440,10 @@ git = { scoped = true }
 ```
 
 **What scoped mode does:**
-- Exports only files under the current subdirectory
-- Creates a separate scoped intermediary (doesn't interfere with full-repo cages)
+- Only exports files under the current subdirectory
+- Creates its own scoped intermediary (doesn't mess with full-repo cages)
 - Blocks merge commits inside the cage (merges need the full tree)
-- Automatically cleaned up when a broader-scope cage covers the same path
+- Gets cleaned up automatically when a broader-scope cage covers the same path
 
 ### Exclude Large Directories
 
@@ -460,16 +460,16 @@ exclude = {
 }
 ```
 
-Put these in your user config so they apply everywhere.
+Stick these in your user config so they apply everywhere.
 
-**Why this matters:**
-- Faster cage setup (less to export)
-- Smaller context for Claude to reason about
-- Keep Claude away from parts of the codebase you don't want touched
+**Why bother?**
+- Faster cage setup — less to haul across
+- Smaller context for Claude to chew on
+- Keeps Claude's hands off parts of the codebase you don't want touched
 
 ## File Locations
 
-**On your machine:**
+**Here's what lives on your machine:**
 ```
 ~/.cache/claude-cage/
 ├── intermediary/<project-path>/          # Shared bare repo (git origin)
@@ -500,9 +500,9 @@ your-project/
 
 ## Failed Patch Recovery
 
-Sometimes patches fail to apply — merge conflicts happen. No sweat. Failed patches are saved to `claude-cage-failed-patches/from-intermediary/<branch>/` in your project.
+Sometimes patches fail to apply — merge conflicts happen, ain't nobody's fault. Failed patches get saved to `claude-cage-failed-patches/from-intermediary/<branch>/` in your project.
 
-Next time you run `claude-cage`, you'll get an interactive prompt:
+Next time you fire up `claude-cage`, you'll get an interactive prompt:
 
 ```
 Hold up. You've got failed patches waitin' to be applied:
@@ -517,7 +517,7 @@ What do you wanna do?
   q) Quit
 ```
 
-If there's a conflict during apply, you get a shell to resolve it manually.
+If there's a conflict durin' the apply, you get dropped into a shell to sort it out yourself.
 
 ## Troubleshooting
 
@@ -534,7 +534,7 @@ sudo apt install slirp4netns
 
 **DNS not working inside sandbox**
 
-The sandbox uses slirp4netns DNS at 10.0.2.3. If you're filtering network access, make sure DNS is allowed (it's automatic in allowlist mode).
+The sandbox uses slirp4netns DNS at 10.0.2.3. If you're filterin' network access, make sure DNS is allowed — it's handled automatically in allowlist mode, so if it ain't workin' you probably touched somethin' you shouldn't have.
 
 
 ## Contributing

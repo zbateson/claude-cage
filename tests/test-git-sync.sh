@@ -1168,5 +1168,233 @@ if [ "$feature_content" != "feature content" ]; then
 fi
 echo "  PASS: Feature branch commit applied via temp-index"
 
+# ============================================================================
+# Test 29: copy_dirty_files_to_work - basic modified file
+# ============================================================================
+echo ""
+echo "Test 29: copy_dirty_files_to_work should copy modified files to work dir"
+
+cfg_syncActiveBranch="true"
+setup_test_cage "source29"
+
+# Dirty a file on source
+echo "user edit in progress" > "$SOURCE_PATH/file.txt"
+
+# Verify source is dirty, work is clean
+if ! source_is_dirty "$SOURCE_PATH"; then
+    echo "FAIL: Source should be dirty"
+    exit 1
+fi
+if is_work_dirty "$WORK_DIR"; then
+    echo "FAIL: Work should be clean before copy"
+    exit 1
+fi
+
+# Copy dirty files
+copy_dirty_files_to_work "$SOURCE_PATH" "$WORK_DIR" "" "" >/dev/null
+
+# Verify the edit was copied to work
+work_content=$(cat "$WORK_DIR/file.txt")
+if [ "$work_content" != "user edit in progress" ]; then
+    echo "FAIL: file.txt should be 'user edit in progress' in work, got: '$work_content'"
+    exit 1
+fi
+echo "  PASS: Modified file copied to work dir"
+
+# ============================================================================
+# Test 30: copy_dirty_files_to_work - deleted file
+# ============================================================================
+echo "Test 30: copy_dirty_files_to_work should delete removed files from work"
+
+setup_test_cage "source30"
+
+# Add a second file, commit it
+echo "extra" > "$SOURCE_PATH/extra.txt"
+git -C "$SOURCE_PATH" add extra.txt
+git -C "$SOURCE_PATH" commit -q -m "Add extra"
+# Update intermediary and work
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
+git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null
+
+# Verify work has extra.txt
+if [ ! -f "$WORK_DIR/extra.txt" ]; then
+    echo "FAIL: extra.txt should exist in work dir before test"
+    exit 1
+fi
+
+# Delete it on source (tracked delete)
+git -C "$SOURCE_PATH" rm -q extra.txt
+
+# Copy dirty files
+copy_dirty_files_to_work "$SOURCE_PATH" "$WORK_DIR" "" "" >/dev/null
+
+# Verify it's gone from work
+if [ -f "$WORK_DIR/extra.txt" ]; then
+    echo "FAIL: extra.txt should be deleted from work"
+    exit 1
+fi
+echo "  PASS: Deleted file removed from work dir"
+
+# ============================================================================
+# Test 31: copy_dirty_files_to_work - exclude filtering
+# ============================================================================
+echo "Test 31: copy_dirty_files_to_work should respect exclude patterns"
+
+setup_test_cage "source31"
+
+# Create a dirty .env file on source
+echo "SECRET=token" > "$SOURCE_PATH/.env"
+
+# Also create a non-excluded dirty file
+echo "user wip" > "$SOURCE_PATH/file.txt"
+
+# Copy with .env excluded
+copy_dirty_files_to_work "$SOURCE_PATH" "$WORK_DIR" "" ".env" >/dev/null
+
+# .env should NOT be in work
+if [ -f "$WORK_DIR/.env" ]; then
+    echo "FAIL: .env should NOT be copied (it's excluded)"
+    exit 1
+fi
+echo "  PASS: Excluded file not copied"
+
+# file.txt should be copied
+work_content=$(cat "$WORK_DIR/file.txt")
+if [ "$work_content" != "user wip" ]; then
+    echo "FAIL: Non-excluded file.txt should be copied"
+    exit 1
+fi
+echo "  PASS: Non-excluded file copied"
+
+# ============================================================================
+# Test 32: copy_dirty_files_to_work - clean source is no-op
+# ============================================================================
+echo "Test 32: copy_dirty_files_to_work on clean source should be a no-op"
+
+setup_test_cage "source32"
+
+# Source is clean after setup
+original_content=$(cat "$WORK_DIR/file.txt")
+
+copy_dirty_files_to_work "$SOURCE_PATH" "$WORK_DIR" "" "" >/dev/null
+
+# Work should be unchanged
+new_content=$(cat "$WORK_DIR/file.txt")
+if [ "$original_content" != "$new_content" ]; then
+    echo "FAIL: Work dir should be unchanged after no-op copy"
+    exit 1
+fi
+echo "  PASS: Clean source is a no-op"
+
+# ============================================================================
+# Test 33: copy_dirty_files_to_work - untracked files
+# ============================================================================
+echo "Test 33: copy_dirty_files_to_work should copy untracked files"
+
+setup_test_cage "source33"
+
+# Create an untracked file on source
+echo "brand new file" > "$SOURCE_PATH/untracked-new.txt"
+
+copy_dirty_files_to_work "$SOURCE_PATH" "$WORK_DIR" "" "" >/dev/null
+
+if [ ! -f "$WORK_DIR/untracked-new.txt" ]; then
+    echo "FAIL: Untracked file should be copied to work"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/untracked-new.txt")
+if [ "$work_content" != "brand new file" ]; then
+    echo "FAIL: Untracked file content mismatch"
+    exit 1
+fi
+echo "  PASS: Untracked file copied to work dir"
+
+# ============================================================================
+# Test 34: copy_dirty_files_to_work - rename handling
+# ============================================================================
+echo "Test 34: copy_dirty_files_to_work should handle renames"
+
+setup_test_cage "source34"
+
+# Rename file.txt to renamed.txt (staged rename)
+git -C "$SOURCE_PATH" mv file.txt renamed.txt
+
+copy_dirty_files_to_work "$SOURCE_PATH" "$WORK_DIR" "" "" >/dev/null
+
+# Old file should be gone from work
+if [ -f "$WORK_DIR/file.txt" ]; then
+    echo "FAIL: file.txt should be removed (renamed away)"
+    exit 1
+fi
+echo "  PASS: Old name removed from work"
+
+# New file should exist
+if [ ! -f "$WORK_DIR/renamed.txt" ]; then
+    echo "FAIL: renamed.txt should be in work"
+    exit 1
+fi
+echo "  PASS: New name copied to work"
+
+# ============================================================================
+# Test 35: copy_dirty_files_to_work - scoped repo
+# ============================================================================
+echo "Test 35: copy_dirty_files_to_work should handle scoped repos"
+
+# Create a scoped test setup: repo with services/api/ structure
+rm -rf "$TEST_TMP/source35"
+mkdir -p "$TEST_TMP/source35/services/api"
+cd "$TEST_TMP/source35"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "api code" > services/api/app.txt
+echo "root file" > root.txt
+git add . && git commit -q -m "Initial"
+
+SOURCE_PATH="$TEST_TMP/source35"
+
+# Create scoped cage for services/api
+cfg_exclude=""
+cfg_git_scoped="true"
+local_scope="services/api"
+CLAUDE_CAGE_SESSION="test-scoped-35"
+export CLAUDE_CAGE_SESSION
+
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_PATH" "$local_scope")
+WORK_DIR=$(get_work_path "$TEST_TMP/source35/services/api")
+
+create_intermediary_clone "$TEST_TMP/source35/services/api" "$local_scope" >/dev/null 2>&1
+
+# Dirty a file inside scope
+echo "wip api edit" > "$SOURCE_PATH/services/api/app.txt"
+# Dirty a file outside scope
+echo "wip root edit" > "$SOURCE_PATH/root.txt"
+
+copy_dirty_files_to_work "$SOURCE_PATH" "$WORK_DIR" "$local_scope" "" >/dev/null
+
+# In-scope file should be copied (with prefix stripped)
+if [ ! -f "$WORK_DIR/app.txt" ]; then
+    echo "FAIL: In-scope app.txt should be copied to work"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/app.txt")
+if [ "$work_content" != "wip api edit" ]; then
+    echo "FAIL: In-scope file content wrong: '$work_content'"
+    exit 1
+fi
+echo "  PASS: In-scope file copied with prefix stripped"
+
+# Out-of-scope file should NOT be in work
+if [ -f "$WORK_DIR/root.txt" ]; then
+    echo "FAIL: Out-of-scope root.txt should NOT be in work"
+    exit 1
+fi
+echo "  PASS: Out-of-scope file not copied"
+
+# Reset for remaining tests
+cfg_git_scoped=""
+CLAUDE_CAGE_SESSION="test-session-$$"
+export CLAUDE_CAGE_SESSION
+
 echo ""
 echo "=== All git-sync tests passed! ==="

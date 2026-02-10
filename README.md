@@ -303,7 +303,9 @@ With the defaults, Claude's commits on branches you're *not* sittin' on land aut
 
 When `syncActiveBranch = true`, you and Claude are workin' the same branch at the same time. Claude's commits get synced back to your source repo automatically — and if you've got uncommitted work sittin' in your tree, claude-cage handles it without blowin' anythin' away.
 
-**Here's what happens:**
+**Startup:** If your workin' tree has uncommitted changes when you fire up the cage, those dirty files get carried over into Claude's workspace. Modified files, new untracked files, even deletes — Claude starts with the same state you're lookin' at. Excluded files and gitignored files stay out, naturally.
+
+**Here's what happens when Claude pushes:**
 1. Claude pushes commits, and claude-cage checks if your workin' tree is dirty
 2. If it is: your changes (includin' untracked files) get stashed automatically
 3. Claude's commits are applied via `git am --3way`

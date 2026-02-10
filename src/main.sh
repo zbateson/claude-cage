@@ -733,6 +733,14 @@ else
             ;;
     esac
 
+    # Copy dirty files into the cage so Claude starts with the user's WIP
+    if [ "$cfg_syncActiveBranch" = "true" ] && \
+       [ "$cli_attach_session_mode" != true ] && \
+       source_is_dirty "$cfg_source" && \
+       ! is_work_dirty "$work_dir"; then
+        copy_dirty_files_to_work "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_exclude"
+    fi
+
     # Set up .caged/ symlinks if enabled
     if [ "$cfg_createCagedDir" = "true" ]; then
         setup_caged_symlinks "$cfg_source" "$scope_path"

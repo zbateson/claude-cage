@@ -21,6 +21,102 @@ source_is_dirty() {
     [ -n "$(git -C "$source_dir" status --porcelain 2>/dev/null)" ]
 }
 
+# Copy dirty files (modified, deleted, untracked) from source to work dir.
+# Used at startup with syncActiveBranch so Claude sees the user's in-progress edits.
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - work_dir: The cage work directory
+#   $3 - scope_path: Scope path (empty for unscoped)
+#   $4 - cfg_exclude: Pipe-delimited exclude patterns
+copy_dirty_files_to_work() {
+    local source_dir="$1"
+    local work_dir="$2"
+    local scope_path="$3"
+    local cfg_exclude="$4"
+
+    # Build exclude pathspec args
+    local -a exclude_args=()
+    if [ -n "$cfg_exclude" ]; then
+        while IFS= read -r _ea; do
+            exclude_args+=("$_ea")
+        done < <(build_exclude_pathspecs "$cfg_exclude")
+    fi
+
+    local copied=0 deleted=0
+
+    # Parse NUL-separated status entries directly from git (no command subst —
+    # bash $() strips NUL bytes). Format: XY<space>path<NUL>
+    # Renames/copies add a second NUL-separated entry for the new path.
+    while IFS= read -r -d '' entry; do
+        [ -z "$entry" ] && continue
+
+        local xy="${entry:0:2}"
+        local filepath="${entry:3}"
+
+        # Renames/copies: filepath is the NEW name, next NUL entry is the OLD name
+        if [[ "$xy" == R* ]] || [[ "$xy" == C* ]]; then
+            local oldpath=""
+            IFS= read -r -d '' oldpath || true
+
+            # For scoped repos: skip files outside scope, strip prefix
+            local dest_old="$oldpath"
+            local dest_new="$filepath"
+            if [ -n "$scope_path" ]; then
+                case "$oldpath" in
+                    "$scope_path/"*) dest_old="${oldpath#"$scope_path/"}" ;;
+                    *) dest_old="" ;;
+                esac
+                case "$filepath" in
+                    "$scope_path/"*) dest_new="${filepath#"$scope_path/"}" ;;
+                    *) dest_new="" ;;
+                esac
+            fi
+
+            # Delete old path from work if it was in scope
+            if [ -n "$dest_old" ] && [ -f "$work_dir/$dest_old" ]; then
+                rm -f "$work_dir/$dest_old"
+                deleted=$((deleted + 1))
+            fi
+
+            # Copy new path to work if it was in scope and exists on disk
+            if [ -n "$dest_new" ] && [ -e "$source_dir/$filepath" ]; then
+                mkdir -p "$work_dir/$(dirname "$dest_new")"
+                cp -a "$source_dir/$filepath" "$work_dir/$dest_new"
+                copied=$((copied + 1))
+            fi
+            continue
+        fi
+
+        # For scoped repos: skip files outside scope, strip prefix
+        local dest="$filepath"
+        if [ -n "$scope_path" ]; then
+            case "$filepath" in
+                "$scope_path/"*) dest="${filepath#"$scope_path/"}" ;;
+                *) continue ;;
+            esac
+        fi
+
+        # Check if file was deleted
+        if [ ! -e "$source_dir/$filepath" ]; then
+            if [ -e "$work_dir/$dest" ]; then
+                rm -f "$work_dir/$dest"
+                deleted=$((deleted + 1))
+            fi
+            continue
+        fi
+
+        # Copy file to work dir
+        mkdir -p "$work_dir/$(dirname "$dest")"
+        cp -a "$source_dir/$filepath" "$work_dir/$dest"
+        copied=$((copied + 1))
+    done < <(git -C "$source_dir" status --porcelain -z -- . ${exclude_args:+"${exclude_args[@]}"} 2>/dev/null)
+
+    local total=$((copied + deleted))
+    if [ "$total" -gt 0 ]; then
+        echo "Carried over $copied file(s) from your workin' tree${deleted:+, removed $deleted}."
+    fi
+}
+
 # Check if existing cage is in sync with source
 # Returns: "no_cage" | "in_sync" | "needs_work_dir" | "needs_update"
 # Arguments:

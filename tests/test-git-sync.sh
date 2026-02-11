@@ -193,10 +193,10 @@ fi
 echo "  PASS: Already-mapped commits skipped (loop prevention)"
 
 # ============================================================================
-# Test 6: Manual git merge works
+# Test 6: manual_git_merge works
 # ============================================================================
 echo ""
-echo "Test 6: manual_git_merge should add remote and fetch"
+echo "Test 6: manual_git_merge should sync unmerged commits"
 
 setup_test_cage "source6"
 
@@ -211,17 +211,16 @@ git -C "$WORK_DIR" push origin "$BRANCH_NAME" 2>/dev/null
 # Run manual_git_merge
 manual_git_merge "$SOURCE_PATH" >/dev/null 2>&1
 
-# Check that intermediary remote exists and has been fetched
-if ! git -C "$SOURCE_PATH" remote | grep -q "^intermediary$"; then
-    echo "FAIL: intermediary remote not added to source"
+# Check that the commit was synced to source
+if [ ! -f "$SOURCE_PATH/merge.txt" ]; then
+    echo "FAIL: merge.txt not found on source after manual_git_merge"
     exit 1
 fi
-if ! git -C "$SOURCE_PATH" branch -r | grep -q "intermediary/$BRANCH_NAME"; then
-    echo "FAIL: intermediary/$BRANCH_NAME remote branch not found after fetch"
-    git -C "$SOURCE_PATH" branch -r
+if [ "$(cat "$SOURCE_PATH/merge.txt")" != "merge test" ]; then
+    echo "FAIL: merge.txt has wrong content on source"
     exit 1
 fi
-echo "  PASS: manual_git_merge added remote and fetched"
+echo "  PASS: manual_git_merge synced commits to source"
 
 # ============================================================================
 # Test 7: check_cage_state returns no_cage

@@ -89,6 +89,20 @@ if [ "$clean_mode" = true ] && [ ${#passthrough_args[@]} -gt 0 ]; then
     passthrough_args=()
 fi
 
+# If in git-merge mode, treat passthrough args as branch name
+git_merge_branch=""
+git_merge_all=false
+if [ "$git_merge_mode" = true ]; then
+    if [ "$clean_all" = true ]; then
+        git_merge_all=true
+        clean_all=false  # don't let it bleed into clean mode
+    fi
+    if [ ${#passthrough_args[@]} -gt 0 ]; then
+        git_merge_branch="${passthrough_args[0]}"
+        passthrough_args=()
+    fi
+fi
+
 # Initialize and parse config
 init_config "$@"
 
@@ -148,13 +162,13 @@ if [ -n "$scope_path" ] && check_broader_intermediary_exists "$cfg_source" "$sco
     exit 1
 fi
 
-# Handle --git-merge early (doesn't need sandbox)
+# Handle git-merge early (doesn't need sandbox)
 if [ "$git_merge_mode" = true ]; then
     if [ "$direct_mount_mode" = true ]; then
         echo "Can't do git-merge in direct mount mode. Nothin' to merge."
         exit 1
     fi
-    manual_git_merge "$cfg_source" "$scope_path"
+    manual_git_merge "$cfg_source" "$scope_path" "$git_merge_branch" "$git_merge_all"
     exit 0
 fi
 

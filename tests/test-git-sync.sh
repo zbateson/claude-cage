@@ -1586,5 +1586,105 @@ if [ "$work_content" != "$original_work_content" ]; then
 fi
 echo "  PASS: Git-tracked file skipped by carry"
 
+# ============================================================================
+# Test 43: copy_carry_files — directory to_work
+# ============================================================================
+echo "Test 43: copy_carry_files should carry directories to work"
+
+setup_test_cage "source43"
+
+# Create a gitignored directory on source
+echo ".mydir/" >> "$SOURCE_PATH/.gitignore"
+git -C "$SOURCE_PATH" add .gitignore && git -C "$SOURCE_PATH" commit -q -m "Add gitignore"
+mkdir -p "$SOURCE_PATH/.mydir/sub"
+echo "config" > "$SOURCE_PATH/.mydir/settings.json"
+echo "nested" > "$SOURCE_PATH/.mydir/sub/data.txt"
+
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
+git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+
+if [ ! -f "$WORK_DIR/.mydir/settings.json" ]; then
+    echo "FAIL: .mydir/settings.json should be copied to work"
+    exit 1
+fi
+if [ ! -f "$WORK_DIR/.mydir/sub/data.txt" ]; then
+    echo "FAIL: .mydir/sub/data.txt should be copied to work"
+    exit 1
+fi
+echo "  PASS: Directory carried to work"
+
+# ============================================================================
+# Test 44: copy_carry_files — directory to_work doesn't nest when dest exists
+# ============================================================================
+echo "Test 44: copy_carry_files should merge into existing dir, not nest"
+
+# .mydir already exists in work from test 43. Carry again — should merge,
+# not create .mydir/.mydir/
+echo "updated" > "$SOURCE_PATH/.mydir/settings.json"
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+
+if [ -e "$WORK_DIR/.mydir/.mydir" ]; then
+    echo "FAIL: Directory was nested (.mydir/.mydir exists)"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/.mydir/settings.json")
+if [ "$work_content" != "updated" ]; then
+    echo "FAIL: .mydir/settings.json should be updated, got: '$work_content'"
+    exit 1
+fi
+echo "  PASS: Directory merged without nesting"
+
+# ============================================================================
+# Test 45: copy_carry_files — directory to_source
+# ============================================================================
+echo "Test 45: copy_carry_files should carry directory back to source"
+
+echo "from cage" > "$WORK_DIR/.mydir/settings.json"
+echo "new file" > "$WORK_DIR/.mydir/extra.txt"
+
+copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+
+source_content=$(cat "$SOURCE_PATH/.mydir/settings.json")
+if [ "$source_content" != "from cage" ]; then
+    echo "FAIL: .mydir/settings.json should be updated on source, got: '$source_content'"
+    exit 1
+fi
+if [ ! -f "$SOURCE_PATH/.mydir/extra.txt" ]; then
+    echo "FAIL: .mydir/extra.txt should be carried back to source"
+    exit 1
+fi
+if [ -e "$SOURCE_PATH/.mydir/.mydir" ]; then
+    echo "FAIL: Directory was nested on source (.mydir/.mydir exists)"
+    exit 1
+fi
+echo "  PASS: Directory carried back to source without nesting"
+
+# ============================================================================
+# Test 46: copy_carry_files — directory with some tracked files is not skipped
+# ============================================================================
+echo "Test 46: copy_carry_files should carry directory even if some files inside are tracked"
+
+setup_test_cage "source46"
+
+# Create a directory with a tracked file and an untracked file
+mkdir -p "$SOURCE_PATH/.mydir"
+echo "tracked" > "$SOURCE_PATH/.mydir/tracked.txt"
+git -C "$SOURCE_PATH" add .mydir/tracked.txt && git -C "$SOURCE_PATH" commit -q -m "Add tracked file"
+echo "untracked" > "$SOURCE_PATH/.mydir/untracked.txt"
+
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
+git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+
+if [ ! -f "$WORK_DIR/.mydir/untracked.txt" ]; then
+    echo "FAIL: .mydir/untracked.txt should be carried to work"
+    exit 1
+fi
+echo "  PASS: Directory with mixed tracked/untracked files is carried"
+
 echo ""
 echo "=== All git-sync tests passed! ==="

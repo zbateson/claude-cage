@@ -142,8 +142,11 @@ copy_carry_files() {
     for filepath in "${paths[@]}"; do
         [ -z "$filepath" ] && continue
 
-        # Skip git-tracked files — git handles those through the normal pipeline
-        if git -C "$source_dir" ls-files --error-unmatch "$filepath" >/dev/null 2>&1; then
+        # Skip git-tracked files — git handles those through the normal pipeline.
+        # Directories may contain a mix of tracked/untracked files, so always
+        # carry them (tracked files are identical in both repos anyway).
+        if [ ! -d "$source_dir/$filepath" ] && \
+           git -C "$source_dir" ls-files --error-unmatch "$filepath" >/dev/null 2>&1; then
             continue
         fi
 
@@ -158,14 +161,25 @@ copy_carry_files() {
 
         if [ "$direction" = "to_work" ]; then
             if [ -e "$source_dir/$filepath" ]; then
-                mkdir -p "$work_dir/$(dirname "$work_filepath")"
-                cp -a "$source_dir/$filepath" "$work_dir/$work_filepath"
+                if [ -d "$source_dir/$filepath" ]; then
+                    # Use /. to merge contents, not nest inside existing dir
+                    mkdir -p "$work_dir/$work_filepath"
+                    cp -a "$source_dir/$filepath/." "$work_dir/$work_filepath/"
+                else
+                    mkdir -p "$work_dir/$(dirname "$work_filepath")"
+                    cp -a "$source_dir/$filepath" "$work_dir/$work_filepath"
+                fi
                 copied=$((copied + 1))
             fi
         elif [ "$direction" = "to_source" ]; then
             if [ -e "$work_dir/$work_filepath" ]; then
-                mkdir -p "$source_dir/$(dirname "$filepath")"
-                cp -a "$work_dir/$work_filepath" "$source_dir/$filepath"
+                if [ -d "$work_dir/$work_filepath" ]; then
+                    mkdir -p "$source_dir/$filepath"
+                    cp -a "$work_dir/$work_filepath/." "$source_dir/$filepath/"
+                else
+                    mkdir -p "$source_dir/$(dirname "$filepath")"
+                    cp -a "$work_dir/$work_filepath" "$source_dir/$filepath"
+                fi
                 copied=$((copied + 1))
             fi
         fi

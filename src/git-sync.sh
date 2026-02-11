@@ -137,8 +137,7 @@ copy_carry_files() {
 
     [ -z "$carry_str" ] && return 0
 
-    local copied=0
-    local -a paths
+    local -a paths carried_names=()
     IFS='|' read -ra paths <<< "$carry_str"
 
     for filepath in "${paths[@]}"; do
@@ -182,15 +181,17 @@ copy_carry_files() {
                 [ -f "$to_path" ] && chmod u+w "$to_path" 2>/dev/null || true
                 cp -a "$from_path" "$to_path"
             fi
-            copied=$((copied + 1))
+            carried_names+=("$filepath")
         fi
     done
 
-    if [ "$copied" -gt 0 ]; then
+    if [ ${#carried_names[@]} -gt 0 ]; then
+        local names_str
+        names_str=$(IFS=', '; echo "${carried_names[*]}")
         if [ "$direction" = "to_work" ]; then
-            echo "Carried $copied file(s) into the cage."
+            echo "Carried $names_str into the cage."
         else
-            echo "Carried $copied file(s) back to source."
+            echo "Carried $names_str back to source."
         fi
     fi
 }

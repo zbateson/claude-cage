@@ -81,7 +81,8 @@ copy_dirty_files_to_work() {
             # Copy new path to work if it was in scope and exists on disk
             if [ -n "$dest_new" ] && [ -e "$source_dir/$filepath" ]; then
                 mkdir -p "$work_dir/$(dirname "$dest_new")"
-                cp -af "$source_dir/$filepath" "$work_dir/$dest_new"
+                [ -f "$work_dir/$dest_new" ] && chmod u+w "$work_dir/$dest_new" 2>/dev/null || true
+                cp -a "$source_dir/$filepath" "$work_dir/$dest_new"
                 copied=$((copied + 1))
             fi
             continue
@@ -107,7 +108,8 @@ copy_dirty_files_to_work() {
 
         # Copy file to work dir
         mkdir -p "$work_dir/$(dirname "$dest")"
-        cp -af "$source_dir/$filepath" "$work_dir/$dest"
+        [ -f "$work_dir/$dest" ] && chmod u+w "$work_dir/$dest" 2>/dev/null || true
+        cp -a "$source_dir/$filepath" "$work_dir/$dest"
         copied=$((copied + 1))
     done < <(git -C "$source_dir" status --porcelain -z -- . ${exclude_args:+"${exclude_args[@]}"} 2>/dev/null)
 
@@ -159,29 +161,28 @@ copy_carry_files() {
             esac
         fi
 
+        local from_path to_path
         if [ "$direction" = "to_work" ]; then
-            if [ -e "$source_dir/$filepath" ]; then
-                if [ -d "$source_dir/$filepath" ]; then
-                    # Use /. to merge contents, not nest inside existing dir
-                    mkdir -p "$work_dir/$work_filepath"
-                    cp -af "$source_dir/$filepath/." "$work_dir/$work_filepath/"
-                else
-                    mkdir -p "$work_dir/$(dirname "$work_filepath")"
-                    cp -af "$source_dir/$filepath" "$work_dir/$work_filepath"
-                fi
-                copied=$((copied + 1))
+            from_path="$source_dir/$filepath"
+            to_path="$work_dir/$work_filepath"
+        else
+            from_path="$work_dir/$work_filepath"
+            to_path="$source_dir/$filepath"
+        fi
+
+        if [ -e "$from_path" ]; then
+            if [ -d "$from_path" ]; then
+                # Use /. to merge contents, not nest inside existing dir
+                mkdir -p "$to_path"
+                # Ensure existing dest files are writable (handles r--r--r-- files)
+                [ -d "$to_path" ] && chmod -R u+w "$to_path" 2>/dev/null || true
+                cp -a "$from_path/." "$to_path/"
+            else
+                mkdir -p "$(dirname "$to_path")"
+                [ -f "$to_path" ] && chmod u+w "$to_path" 2>/dev/null || true
+                cp -a "$from_path" "$to_path"
             fi
-        elif [ "$direction" = "to_source" ]; then
-            if [ -e "$work_dir/$work_filepath" ]; then
-                if [ -d "$work_dir/$work_filepath" ]; then
-                    mkdir -p "$source_dir/$filepath"
-                    cp -af "$work_dir/$work_filepath/." "$source_dir/$filepath/"
-                else
-                    mkdir -p "$source_dir/$(dirname "$filepath")"
-                    cp -af "$work_dir/$work_filepath" "$source_dir/$filepath"
-                fi
-                copied=$((copied + 1))
-            fi
+            copied=$((copied + 1))
         fi
     done
 

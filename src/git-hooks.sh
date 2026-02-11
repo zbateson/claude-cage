@@ -601,15 +601,23 @@ EOF
     cat >> "$hook_path" << 'HOOKEOF'
 
 # Block force-added gitignored files (breaks patch-based sync)
+# Only catches files newly added to the index (--diff-filter=A) that are ignored,
+# i.e. files that required "git add -f". Already-tracked files that happen to match
+# a gitignore pattern are fine — they were inherited from the source repo.
 # Override: CLAUDE_CAGE_ALLOW_IGNORED=1 git commit
 if [ "${CLAUDE_CAGE_ALLOW_IGNORED:-}" != "1" ]; then
-    IGNORED=$(git ls-files -ic --exclude-standard 2>/dev/null)
-    if [ -n "$IGNORED" ]; then
+    NEWLY_ADDED=$(git diff --cached --name-only --diff-filter=A 2>/dev/null)
+    if [ -n "$NEWLY_ADDED" ]; then
+        FORCE_ADDED=$(echo "$NEWLY_ADDED" | git check-ignore --stdin 2>/dev/null || true)
+    else
+        FORCE_ADDED=""
+    fi
+    if [ -n "$FORCE_ADDED" ]; then
         echo "Hold on there. You've got gitignored files force-added to this commit."
         echo "That's gonna break the sync back to source."
         echo ""
         echo "Files:"
-        echo "$IGNORED" | sed 's/^/  /'
+        echo "$FORCE_ADDED" | sed 's/^/  /'
         echo ""
         echo "To unstage 'em:"
         echo "  git reset HEAD <file>"

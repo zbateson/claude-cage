@@ -902,37 +902,149 @@ stop_pipe_listener() {
     fi
 }
 
-# Manual git merge from intermediary (for --git-merge option)
+# Find the last mapped intermediary commit on a branch.
+# Walks first-parent chain backwards from branch HEAD until a mapped commit is found.
+# Outputs the mapped commit hash, or empty string if none found.
+# Arguments:
+#   $1 - intermediary_dir
+#   $2 - branch name
+#   $3 - commit_map_path
+_find_last_mapped_on_branch() {
+    local intermediary_dir="$1"
+    local branch="$2"
+    local commit_map_path="$3"
+
+    [ ! -f "$commit_map_path" ] && return 0
+
+    local ancestor
+    for ancestor in $(git -C "$intermediary_dir" rev-list --first-parent "$branch" 2>/dev/null); do
+        if grep -q "^${ancestor} " "$commit_map_path" 2>/dev/null; then
+            echo "$ancestor"
+            return 0
+        fi
+    done
+}
+
+# Check if an intermediary branch has unmerged commits.
+# Returns 0 (true) if there are unmerged commits, 1 (false) if fully synced.
+# Arguments:
+#   $1 - intermediary_dir
+#   $2 - branch name
+#   $3 - commit_map_path
+_branch_has_unmerged() {
+    local intermediary_dir="$1"
+    local branch="$2"
+    local commit_map_path="$3"
+
+    local branch_head
+    branch_head=$(git -C "$intermediary_dir" rev-parse "$branch" 2>/dev/null) || return 1
+
+    if [ -f "$commit_map_path" ] && grep -q "^${branch_head} " "$commit_map_path" 2>/dev/null; then
+        return 1  # fully mapped
+    fi
+    return 0  # has unmerged commits
+}
+
+# Sync a single intermediary branch to source via sync_to_source.
+# Arguments:
+#   $1 - source_dir
+#   $2 - intermediary_dir
+#   $3 - branch name
+#   $4 - commit_map_path
+_sync_branch_to_source() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local branch="$3"
+    local commit_map_path="$4"
+
+    local oldrev
+    oldrev=$(_find_last_mapped_on_branch "$intermediary_dir" "$branch" "$commit_map_path")
+    [ -z "$oldrev" ] && oldrev="0000000000000000000000000000000000000000"
+
+    # Force syncActiveBranch so sync_to_source doesn't skip the active branch.
+    # The user explicitly asked for this merge.
+    local saved_sync_active="${cfg_syncActiveBranch:-}"
+    cfg_syncActiveBranch="true"
+    sync_to_source "$source_dir" "$intermediary_dir" "refs/heads/$branch" "$oldrev"
+    cfg_syncActiveBranch="$saved_sync_active"
+}
+
+# Manual sync from intermediary to source (for git-merge subcommand).
 # Arguments:
 #   $1 - source_dir: The original source directory
+#   $2 - scope_path: (optional) scope path for scoped intermediaries
+#   $3 - target_branch: (optional) specific branch to merge, empty for current
+#   $4 - all_flag: "true" to sync all branches
 manual_git_merge() {
     local source_dir="$1"
     local scope_path="${2:-}"
+    local target_branch="${3:-}"
+    local all_flag="${4:-false}"
 
     local intermediary_dir
     intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$scope_path")
 
     if [ ! -d "$intermediary_dir" ]; then
-        echo "Nothin' to merge. No intermediary found."
+        echo "No intermediary found — nothin' to merge."
         echo "Were you on a different branch when you started the cage?"
         exit 1
     fi
 
-    # Add or update intermediary remote
-    if git -C "$source_dir" remote | grep -q "^intermediary$"; then
-        run git -C "$source_dir" remote set-url intermediary "$intermediary_dir"
-    else
-        run git -C "$source_dir" remote add intermediary "$intermediary_dir"
+    local commit_map_path
+    commit_map_path=$(get_commit_map_path "$intermediary_dir")
+
+    if [ "$all_flag" = true ]; then
+        # Sync all branches
+        local synced_any=false
+        local branch
+        while IFS= read -r branch; do
+            if _branch_has_unmerged "$intermediary_dir" "$branch" "$commit_map_path"; then
+                synced_any=true
+                _sync_branch_to_source "$source_dir" "$intermediary_dir" "$branch" "$commit_map_path"
+            fi
+        done < <(git -C "$intermediary_dir" for-each-ref --format='%(refname:short)' refs/heads/)
+
+        if [ "$synced_any" = false ]; then
+            echo "Everything's already in sync — nothin' to merge."
+        fi
+        return 0
     fi
 
-    echo "Grabbin' what Claude's been workin' on..."
-    run git -C "$source_dir" fetch intermediary
+    # Determine target branch
+    if [ -z "$target_branch" ]; then
+        target_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null) || true
+        if [ -z "$target_branch" ]; then
+            echo "Can't figure out which branch you're on. Pass a branch name:"
+            echo "  claude-cage git-merge <branch>"
+            exit 1
+        fi
+    fi
 
-    echo ""
-    echo "Here's what's waitin' for ya:"
-    git -C "$source_dir" branch -r 2>/dev/null | grep -E "^\\s*intermediary/" | sed 's/^/  /' || echo "  (none yet)"
+    # Check branch exists in intermediary
+    if ! git -C "$intermediary_dir" rev-parse --verify "$target_branch" >/dev/null 2>&1; then
+        echo "Branch '$target_branch' don't exist in the intermediary."
+        echo ""
+        echo "Available branches:"
+        git -C "$intermediary_dir" for-each-ref --format='  %(refname:short)' refs/heads/
+        exit 1
+    fi
 
-    echo ""
-    echo "When you're ready, just run:"
-    echo "  git merge intermediary/<branch>"
+    # Check if there's anything to merge
+    if ! _branch_has_unmerged "$intermediary_dir" "$target_branch" "$commit_map_path"; then
+        echo "Branch '$target_branch' is already in sync — nothin' to merge."
+        return 0
+    fi
+
+    # Refuse if merging current branch and tree is dirty
+    local current_branch
+    current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null) || true
+    if [ "$current_branch" = "$target_branch" ] && source_is_dirty "$source_dir"; then
+        echo "Your workin' tree's dirty. Stash or commit your changes first:"
+        echo "  git stash"
+        echo "  claude-cage git-merge"
+        echo "  git stash pop"
+        exit 1
+    fi
+
+    _sync_branch_to_source "$source_dir" "$intermediary_dir" "$target_branch" "$commit_map_path"
 }

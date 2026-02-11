@@ -102,7 +102,8 @@ claude-cage - A sandboxed git workflow for Claude Code
 Usage: claude-cage [options] [subcommand] [-- args...]
 
 Subcommands:
-  git-merge               Fetch refs from intermediary for manual merge
+  git-merge [BRANCH]      Sync unmerged intermediary commits to source (default: current branch)
+  git-merge --all         Sync all branches with unmerged commits
   clean [ID...]           Remove cached session(s) (interactive if no ID given)
   clean --all             Remove all cached sessions for this project
   completion SHELL        Output shell completion script (bash or zsh)
@@ -136,7 +137,9 @@ Examples:
   claude-cage clean                  Interactively select session cache(s) to remove
   claude-cage clean 20250206143022   Remove cache for specific session
   claude-cage clean --all            Remove all cached sessions for this project
-  claude-cage git-merge              Fetch intermediary refs for manual merge
+  claude-cage git-merge              Sync current branch from intermediary
+  claude-cage git-merge feature      Sync specific branch from intermediary
+  claude-cage git-merge --all        Sync all branches from intermediary
 
 For more info, see: https://github.com/zbateson/claude-cage
 EOF
@@ -200,7 +203,7 @@ _claude_cage() {
     local -a subcommands flags
 
     subcommands=(
-        'git-merge:Fetch refs from intermediary for manual merge'
+        'git-merge:Sync unmerged intermediary commits to source'
         'clean:Remove cached session(s) (interactive if no ID given)'
         'completion:Output shell completion script'
         'install-completions:Install shell completions for current shell'

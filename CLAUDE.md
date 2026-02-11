@@ -149,7 +149,7 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 ./claude-cage --resume                             # Pass args to launch command
 ./claude-cage --test                               # Shell inside sandbox
 ./claude-cage --direct-mount                       # Skip git sync
-./claude-cage git-merge                            # Manual merge from intermediary
+./claude-cage git-merge [<branch>|--all]            # Sync intermediary commits to source
 ./claude-cage --attach-session [<timestamp>]       # Share active session
 ./claude-cage clean [<id>|--all]                   # Clean cached sessions
 ./claude-cage completion bash|zsh                  # Output completion script

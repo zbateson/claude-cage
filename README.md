@@ -251,8 +251,10 @@ claude-cage --dry-run
 # Verbose output
 claude-cage --verbose
 
-# Manually merge Claude's changes (for active branch, or if autoSync is off)
+# Sync Claude's changes manually (current branch, specific branch, or all)
 claude-cage git-merge
+claude-cage git-merge feature-branch
+claude-cage git-merge --all
 
 # Attach to an existing active session
 claude-cage --attach-session                     # Auto-select or prompt
@@ -302,6 +304,30 @@ Here's how the sync works. Three tiers. Source → intermediary is always runnin
 | 3 | Cage → source (active branch) | `syncActiveBranch` | `false` | Pipe listener + stash/apply/pop |
 
 With the defaults, Claude's commits on branches you're *not* sittin' on land automatically via temp-index — no checkout, no conflict risk. Your active branch stays clean until you say otherwise with `claude-cage git-merge`.
+
+### Manual Sync
+
+When `autoSync` is off — or when you just want to control exactly when Claude's work comes home — `git-merge` is your friend. It uses the same format-patch/git-am pipeline as auto-sync, so commits get properly mapped and hooks stay out of the way.
+
+```bash
+# Sync current branch (refuses if your tree is dirty)
+claude-cage git-merge
+
+# Sync a specific branch
+claude-cage git-merge feature-branch
+
+# Sync everything at once
+claude-cage git-merge --all
+```
+
+**How it works:** `git-merge` walks the intermediary branch, finds what hasn't been synced yet, and applies those commits to your source repo one at a time via `git am --3way`. Same mechanism as auto-sync — just triggered when *you* say so.
+
+**Dirty tree?** If you're mergin' to your current branch and there are uncommitted changes, claude-cage won't touch it. Stash or commit first, then run it again.
+
+**When to use it:**
+- `autoSync = false` — You want full control over all branches
+- Active branch with `syncActiveBranch = false` (the default) — Auto-sync handles other branches, but your active branch waits for you
+- After reviewin' Claude's work — Check the diff first, merge when you're satisfied
 
 ### Co-Create Workflow (EXPERIMENTAL)
 

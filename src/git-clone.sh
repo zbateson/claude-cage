@@ -1760,7 +1760,11 @@ while read oldrev newrev refname; do
     if [ "\${CAGE_DEBUG:-}" = "1" ]; then
         echo "claude-cage post-receive: \$refname \$oldrev -> \$newrev" >&2
     fi
-    echo "\$refname \$newrev \$oldrev" > "$mounted_pipe_path"
+    if [ -p "$mounted_pipe_path" ]; then
+        echo "\$refname \$newrev \$oldrev" > "$mounted_pipe_path"
+    else
+        echo "claude-cage runnin' in manual sync mode — to bring changes back to source, run: claude-cage git-merge" >&2
+    fi
 done
 EOF
     chmod +x "$hooks_dir/post-receive"

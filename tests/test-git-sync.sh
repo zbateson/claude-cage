@@ -1637,9 +1637,36 @@ fi
 echo "  PASS: Directory merged without nesting"
 
 # ============================================================================
-# Test 45: copy_carry_files — directory to_source
+# Test 45: copy_carry_files — read-only files in carried dir can be overwritten
 # ============================================================================
-echo "Test 45: copy_carry_files should carry directory back to source"
+echo "Test 45: copy_carry_files should overwrite read-only files in work dir"
+
+# Make files in work dir read-only (simulates e.g. .claude/settings.json at 444)
+chmod 444 "$WORK_DIR/.mydir/settings.json"
+chmod 444 "$WORK_DIR/.mydir/sub/data.txt"
+
+# Update source files
+echo "overwritten" > "$SOURCE_PATH/.mydir/settings.json"
+echo "also overwritten" > "$SOURCE_PATH/.mydir/sub/data.txt"
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+
+work_content=$(cat "$WORK_DIR/.mydir/settings.json")
+if [ "$work_content" != "overwritten" ]; then
+    echo "FAIL: Read-only .mydir/settings.json should be overwritten, got: '$work_content'"
+    exit 1
+fi
+work_content2=$(cat "$WORK_DIR/.mydir/sub/data.txt")
+if [ "$work_content2" != "also overwritten" ]; then
+    echo "FAIL: Read-only .mydir/sub/data.txt should be overwritten, got: '$work_content2'"
+    exit 1
+fi
+echo "  PASS: Read-only files overwritten in work dir"
+
+# ============================================================================
+# Test 46: copy_carry_files — directory to_source (no nesting)
+# ============================================================================
+echo "Test 46: copy_carry_files should carry directory back to source"
 
 echo "from cage" > "$WORK_DIR/.mydir/settings.json"
 echo "new file" > "$WORK_DIR/.mydir/extra.txt"
@@ -1662,9 +1689,9 @@ fi
 echo "  PASS: Directory carried back to source without nesting"
 
 # ============================================================================
-# Test 46: copy_carry_files — directory with some tracked files is not skipped
+# Test 47: copy_carry_files — directory with some tracked files is not skipped
 # ============================================================================
-echo "Test 46: copy_carry_files should carry directory even if some files inside are tracked"
+echo "Test 47: copy_carry_files should carry directory even if some files inside are tracked"
 
 setup_test_cage "source46"
 

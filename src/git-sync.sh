@@ -81,7 +81,7 @@ copy_dirty_files_to_work() {
             # Copy new path to work if it was in scope and exists on disk
             if [ -n "$dest_new" ] && [ -e "$source_dir/$filepath" ]; then
                 mkdir -p "$work_dir/$(dirname "$dest_new")"
-                cp -a "$source_dir/$filepath" "$work_dir/$dest_new"
+                cp -af "$source_dir/$filepath" "$work_dir/$dest_new"
                 copied=$((copied + 1))
             fi
             continue
@@ -107,7 +107,7 @@ copy_dirty_files_to_work() {
 
         # Copy file to work dir
         mkdir -p "$work_dir/$(dirname "$dest")"
-        cp -a "$source_dir/$filepath" "$work_dir/$dest"
+        cp -af "$source_dir/$filepath" "$work_dir/$dest"
         copied=$((copied + 1))
     done < <(git -C "$source_dir" status --porcelain -z -- . ${exclude_args:+"${exclude_args[@]}"} 2>/dev/null)
 
@@ -164,10 +164,10 @@ copy_carry_files() {
                 if [ -d "$source_dir/$filepath" ]; then
                     # Use /. to merge contents, not nest inside existing dir
                     mkdir -p "$work_dir/$work_filepath"
-                    cp -a "$source_dir/$filepath/." "$work_dir/$work_filepath/"
+                    cp -af "$source_dir/$filepath/." "$work_dir/$work_filepath/"
                 else
                     mkdir -p "$work_dir/$(dirname "$work_filepath")"
-                    cp -a "$source_dir/$filepath" "$work_dir/$work_filepath"
+                    cp -af "$source_dir/$filepath" "$work_dir/$work_filepath"
                 fi
                 copied=$((copied + 1))
             fi
@@ -175,10 +175,10 @@ copy_carry_files() {
             if [ -e "$work_dir/$work_filepath" ]; then
                 if [ -d "$work_dir/$work_filepath" ]; then
                     mkdir -p "$source_dir/$filepath"
-                    cp -a "$work_dir/$work_filepath/." "$source_dir/$filepath/"
+                    cp -af "$work_dir/$work_filepath/." "$source_dir/$filepath/"
                 else
                     mkdir -p "$source_dir/$(dirname "$filepath")"
-                    cp -a "$work_dir/$work_filepath" "$source_dir/$filepath"
+                    cp -af "$work_dir/$work_filepath" "$source_dir/$filepath"
                 fi
                 copied=$((copied + 1))
             fi

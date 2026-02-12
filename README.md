@@ -6,7 +6,7 @@ You're lettin' an AI agent loose on your codebase. That's a lot of trust. Maybe 
 
 But a git clone ain't the whole story. The sandbox also locks down your filesystem and network.
 
-**[Quick Start](#quick-start)** · [Three Layers](#three-layers-of-protection) · [What You Get](#what-you-get) · [How It Works](#how-it-works) · [Prerequisites](#prerequisites) · [Configuration](#configuration) · [Usage](#usage) · [Sessions](#sessions) · [Sync Architecture](#sync-architecture) · [Network Filtering](#network-filtering) · [Docker Mode](#docker-mode) · [Direct Mount](#direct-mount-mode) · [Large Repos](#working-with-large-repos) · [File Locations](#file-locations) · [Troubleshooting](#troubleshooting)
+**[Quick Start](#quick-start)** · [Three Layers](#three-layers-of-protection) · [What You Get](#what-you-get) · [How It Works](#how-it-works) · [Prerequisites](#prerequisites) · [Configuration](#configuration) · [Usage](#usage) · [Sessions](#sessions) · [Sync Architecture](#sync-architecture) · [Network Filtering](#network-filtering) · [Docker Mode](#docker-mode) · [Direct Mount](#direct-mount-mode) · [Large Repos](#working-with-large-repos) · [File Locations](#file-locations) · [Recovering Session Work](#recovering-session-work) · [Troubleshooting](#troubleshooting)
 
 ## Three Layers of Protection
 
@@ -557,6 +557,72 @@ What do you wanna do?
 ```
 
 If there's a conflict durin' the apply, you get dropped into a shell to sort it out yourself.
+
+## Recovering Session Work
+
+So Claude did the work, made the commits, but the session ended before anythin' got synced back to your source repo. Maybe the pipe wasn't runnin'. Maybe auto-sync was off. Maybe life happened. Point is — the work's still sittin' there in the session cache. You just gotta go get it.
+
+### Option 1: Attach to the Session
+
+Easiest way. If the session still exists, fire up a new cage attached to it:
+
+```bash
+claude-cage --attach-session
+```
+
+This drops you right into the same work directory Claude was usin'. From there, Claude (or you) can push the commits, and the sync pipeline picks 'em up like nothin' happened. If there's more than one session lyin' around, you'll get a list to pick from. You can also pass the timestamp directly:
+
+```bash
+claude-cage --attach-session 20250206143022
+```
+
+### Option 2: Shell Into It Yourself
+
+If you'd rather handle things personally, `--test` drops you into a shell inside the sandbox instead of launchin' Claude:
+
+```bash
+claude-cage --attach-session 20250206143022 --test
+```
+
+Now you're standin' in Claude's workspace with full git access. Push what needs pushin', inspect what needs inspectin'.
+
+### Option 3: Manual Recovery
+
+Don't want to fire up the cage at all? Fine. The work directory's still on disk — you just need to find it and push to the intermediary yourself.
+
+**Finding the work directory:**
+
+If you've got `createCagedDir = true` in your config, the symlinks are right there in your project:
+
+```
+your-project/.caged/sessions/<timestamp>/work → ~/.cache/.../work/<project-path>/
+```
+
+If not, go straight to the cache:
+
+```
+~/.cache/claude-cage/sessions/<timestamp>/work/<your-project-path>/
+```
+
+**Pushing the commits:**
+
+The work directory is a regular git repo. Its remote points at the intermediary. So:
+
+```bash
+cd ~/.cache/claude-cage/sessions/20250206143022/work/home/you/your-project/
+git log --oneline  # See what's there
+git push origin <branch>
+```
+
+That gets the commits into the intermediary. Now bring 'em home:
+
+```bash
+cd ~/your-project
+claude-cage git-merge            # Sync current branch
+claude-cage git-merge --all      # Or sync everything
+```
+
+`git-merge` walks the intermediary, finds what hasn't been synced, and applies it to your source repo via `git am --3way`. Same mechanism as auto-sync — just on your schedule.
 
 ## Troubleshooting
 

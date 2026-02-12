@@ -464,9 +464,119 @@ fi
 echo "  PASS: Default git.scoped is false"
 
 echo ""
+echo "=== Testing bwrap config table ==="
+
+echo "Test 19: Should use default bwrap.systemMounts when not set"
+setup_git_repo "$TEST_TMP/bwrap-defaults-test"
+cat > "$TEST_TMP/bwrap-defaults-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+cd "$TEST_TMP/bwrap-defaults-test"
+parse_config "bwrap-defaults-test" "$TEST_TMP/bwrap-defaults-test" "$TEST_TMP/bwrap-defaults-test/.claude-cage"
+
+if [ ${#cfg_bwrap_system_mounts[@]} -ne 6 ]; then
+    echo "FAIL: bwrap.systemMounts should default to 6 entries, got ${#cfg_bwrap_system_mounts[@]}"
+    exit 1
+fi
+if [ "${cfg_bwrap_system_mounts[0]}" != "/etc" ]; then
+    echo "FAIL: First systemMount should be '/etc', got '${cfg_bwrap_system_mounts[0]}'"
+    exit 1
+fi
+echo "  PASS: Default bwrap.systemMounts"
+
+echo "Test 20: Should use default bwrap.maskPaths when not set"
+if [ ${#cfg_bwrap_mask_paths[@]} -ne 20 ]; then
+    echo "FAIL: bwrap.maskPaths should default to 20 entries, got ${#cfg_bwrap_mask_paths[@]}"
+    exit 1
+fi
+if [ "${cfg_bwrap_mask_paths[0]}" != "/etc/shadow" ]; then
+    echo "FAIL: First maskPath should be '/etc/shadow', got '${cfg_bwrap_mask_paths[0]}'"
+    exit 1
+fi
+echo "  PASS: Default bwrap.maskPaths"
+
+echo "Test 21: Should parse custom bwrap.systemMounts"
+setup_git_repo "$TEST_TMP/bwrap-custom-test"
+cat > "$TEST_TMP/bwrap-custom-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    bwrap = {
+        systemMounts = { "/etc", "/usr" },
+        maskPaths = { "/etc/shadow", "/etc/gshadow" },
+    }
+}
+EOF
+
+cd "$TEST_TMP/bwrap-custom-test"
+parse_config "bwrap-custom-test" "$TEST_TMP/bwrap-custom-test" "$TEST_TMP/bwrap-custom-test/.claude-cage"
+
+if [ ${#cfg_bwrap_system_mounts[@]} -ne 2 ]; then
+    echo "FAIL: bwrap.systemMounts should have 2 entries, got ${#cfg_bwrap_system_mounts[@]}"
+    exit 1
+fi
+if [ "${cfg_bwrap_system_mounts[1]}" != "/usr" ]; then
+    echo "FAIL: Second systemMount should be '/usr', got '${cfg_bwrap_system_mounts[1]}'"
+    exit 1
+fi
+echo "  PASS: Parsed custom bwrap.systemMounts"
+
+echo "Test 22: Should parse custom bwrap.maskPaths"
+if [ ${#cfg_bwrap_mask_paths[@]} -ne 2 ]; then
+    echo "FAIL: bwrap.maskPaths should have 2 entries, got ${#cfg_bwrap_mask_paths[@]}"
+    exit 1
+fi
+if [ "${cfg_bwrap_mask_paths[1]}" != "/etc/gshadow" ]; then
+    echo "FAIL: Second maskPath should be '/etc/gshadow', got '${cfg_bwrap_mask_paths[1]}'"
+    exit 1
+fi
+echo "  PASS: Parsed custom bwrap.maskPaths"
+
+echo "Test 23: Should merge bwrap arrays across config levels"
+setup_git_repo "$TEST_TMP/bwrap-merge-test"
+mkdir -p "$TEST_TMP/.config/claude-cage"
+cat > "$TEST_TMP/.config/claude-cage/config" << 'EOF'
+claude_cage {
+    bwrap = {
+        maskPaths = { "/etc/shadow" }
+    }
+}
+EOF
+cat > "$TEST_TMP/bwrap-merge-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    bwrap = {
+        maskPaths = { "/etc/gshadow" }
+    }
+}
+EOF
+
+cd "$TEST_TMP/bwrap-merge-test"
+parse_config "bwrap-merge-test" "$TEST_TMP/bwrap-merge-test" "$TEST_TMP/.config/claude-cage/config" "$TEST_TMP/bwrap-merge-test/.claude-cage"
+
+if [ ${#cfg_bwrap_mask_paths[@]} -ne 2 ]; then
+    echo "FAIL: Merged bwrap.maskPaths should have 2 entries, got ${#cfg_bwrap_mask_paths[@]}"
+    printf "  Entries: %s\n" "${cfg_bwrap_mask_paths[*]}"
+    exit 1
+fi
+if [ "${cfg_bwrap_mask_paths[0]}" != "/etc/shadow" ] || [ "${cfg_bwrap_mask_paths[1]}" != "/etc/gshadow" ]; then
+    echo "FAIL: Merged maskPaths should be '/etc/shadow' then '/etc/gshadow', got '${cfg_bwrap_mask_paths[*]}'"
+    exit 1
+fi
+echo "  PASS: Merged bwrap arrays across config levels"
+
+# Clean up user config so it doesn't affect remaining tests
+rm -f "$TEST_TMP/.config/claude-cage/config"
+
+echo ""
 echo "=== Testing syncActiveBranch config ==="
 
-echo "Test 18: Should parse syncActiveBranch = true"
+echo "Test 24: Should parse syncActiveBranch = true"
 setup_git_repo "$TEST_TMP/syncactive-test"
 cat > "$TEST_TMP/syncactive-test/.claude-cage" << 'EOF'
 claude_cage {
@@ -485,7 +595,7 @@ if [ "$cfg_syncActiveBranch" != "true" ]; then
 fi
 echo "  PASS: Parsed syncActiveBranch = true"
 
-echo "Test 18b: Should default syncActiveBranch to false"
+echo "Test 24b: Should default syncActiveBranch to false"
 setup_git_repo "$TEST_TMP/syncactive-default-test"
 cat > "$TEST_TMP/syncactive-default-test/.claude-cage" << 'EOF'
 claude_cage {

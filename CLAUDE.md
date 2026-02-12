@@ -108,6 +108,18 @@ claude_cage {
         blockForceAdd = true,
     },
 
+    bwrap = {
+        systemMounts = { "/etc", "/usr", "/bin", "/lib", "/lib64", "/sbin" },
+        maskPaths = {
+            "/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/sudoers.d",
+            "/etc/ssl/private", "/etc/pki/tls/private", "/etc/pki/nssdb",
+            "/etc/letsencrypt", "/etc/security",
+            "/etc/openvpn", "/etc/wireguard", "/etc/ipsec.d", "/etc/ipsec.secrets",
+            "/etc/NetworkManager/system-connections", "/etc/wpa_supplicant", "/etc/ppp",
+            "/etc/docker", "/etc/samba", "/etc/krb5.keytab", "/etc/machine-id",
+        },
+    },
+
     additionalMounts = {
         "~/.gitconfig",
         { source = "~/.claude", mode = "rw" },
@@ -134,13 +146,15 @@ claude_cage {
 | `additionalMounts` | `{}` | Extra mounts (`source`, `as`/`dest`, `mode: "ro"/"rw"`) |
 | `networkMode` | `"disabled"` | `"disabled"`, `"allowlist"`, or `"blocklist"` |
 | `allow` / `block` | `{}` | Network destinations (domains, ips, networks with optional ports) |
+| `bwrap.systemMounts` | `{"/etc", "/usr", "/bin", "/lib", "/lib64", "/sbin"}` | Host dirs mounted read-only in bwrap mode |
+| `bwrap.maskPaths` | *(see below)* | Sensitive host paths masked (dirs→tmpfs, files→/dev/null) |
 | `docker.image` | `"node:lts-slim"` | Docker image (docker mode only) |
 | `docker.packages` | `{"curl", "iputils-ping"}` | Packages to install in Docker container |
 | `git.historyDepth` | `50` | First-parent depth on default branch |
 | `git.defaultBranch` | `"auto"` | Branch for history anchoring |
 | `git.blockForceAdd` | `true` | Block commits with force-added gitignored files |
 
-Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker.packages`) merge across config levels. Scalar options are overridden by later configs.
+Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker.packages`, `bwrap.systemMounts`, `bwrap.maskPaths`) merge across config levels. Scalar options are overridden by later configs.
 
 ## CLI Usage
 

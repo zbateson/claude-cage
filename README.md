@@ -382,6 +382,47 @@ block = {
 ```
 
 
+## Sandbox Security
+
+Under the hood, the sandbox locks down what the AI can see on your host. The two modes handle it differently — because they're built on different foundations.
+
+### Bwrap Mode
+
+Your host system directories (`/etc`, `/usr`, `/bin`, `/lib`, `/lib64`, `/sbin`) are mounted read-only into the sandbox so tools and libraries work. On top of that, sensitive paths get masked — directories become empty tmpfs overlays, files become `/dev/null`. None of the good stuff leaks through.
+
+**Default masked paths:**
+
+| Path | What It Protects |
+|------|-----------------|
+| `/etc/shadow`, `/etc/gshadow` | Hashed user and group passwords |
+| `/etc/sudoers`, `/etc/sudoers.d` | Sudo rules and configuration |
+| `/etc/ssl/private` | SSL/TLS private keys (Debian/Ubuntu/Arch) |
+| `/etc/pki/tls/private`, `/etc/pki/nssdb` | SSL/TLS private keys and NSS database (RHEL/Fedora) |
+| `/etc/letsencrypt` | Let's Encrypt certificates and private keys |
+| `/etc/security` | PAM security configuration |
+| `/etc/openvpn`, `/etc/wireguard`, `/etc/ipsec.d`, `/etc/ipsec.secrets` | VPN configs, keys, and pre-shared secrets |
+| `/etc/NetworkManager/system-connections`, `/etc/wpa_supplicant`, `/etc/ppp` | WiFi passwords and network credentials |
+| `/etc/docker` | Docker daemon config and registry auth |
+| `/etc/samba` | Samba configuration and credentials |
+| `/etc/krb5.keytab` | Kerberos keytab |
+| `/etc/machine-id` | Unique machine fingerprint |
+
+Both lists are fully configurable via `bwrap.systemMounts` and `bwrap.maskPaths` in your config. Defaults are written out on first run by the config builder, and arrays merge across config levels — so a system admin can set a base list and you can add more.
+
+```lua
+bwrap = {
+    systemMounts = { "/etc", "/usr", "/bin", "/lib", "/lib64", "/sbin" },
+    maskPaths = {
+        "/etc/shadow", "/etc/gshadow",
+        -- add your own paths here
+    },
+},
+```
+
+### Docker Mode
+
+Docker containers use the image's own `/etc`, `/usr`, and friends — your host's sensitive files ain't exposed in the first place. Host paths only enter the container through explicit `additionalMounts`. So there's no equivalent `bwrap` config needed for Docker mode.
+
 ## Docker Mode
 
 If you prefer Docker — or you're on macOS where bwrap ain't an option:

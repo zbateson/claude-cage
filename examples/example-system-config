@@ -51,6 +51,28 @@ claude_cage {
     },
 
     -- =========================================================================
+    -- BWRAP SANDBOX MOUNTS & MASKS
+    -- =========================================================================
+    -- System directories mounted read-only and sensitive paths masked in bwrap
+    -- mode. Set org-wide defaults here — users and projects can add more via
+    -- their own configs (arrays merge across levels).
+    --
+    -- Sensible defaults are built in when the keys are absent. Uncomment to
+    -- enforce specific org-wide masks (e.g., add internal credential paths).
+
+    -- bwrap = {
+    --     systemMounts = { "/etc", "/usr", "/bin", "/lib", "/lib64", "/sbin" },
+    --     maskPaths = {
+    --         "/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/sudoers.d",
+    --         "/etc/ssl/private", "/etc/pki/tls/private", "/etc/pki/nssdb",
+    --         "/etc/letsencrypt", "/etc/security",
+    --         "/etc/openvpn", "/etc/wireguard", "/etc/ipsec.d", "/etc/ipsec.secrets",
+    --         "/etc/NetworkManager/system-connections", "/etc/wpa_supplicant", "/etc/ppp",
+    --         "/etc/docker", "/etc/samba", "/etc/krb5.keytab", "/etc/machine-id",
+    --     },
+    -- },
+
+    -- =========================================================================
     -- CLAUDE CODE MOUNTS
     -- =========================================================================
     -- These files are needed for Claude Code to run inside the cage.

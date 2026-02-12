@@ -165,6 +165,18 @@ local function merge_config(base, override)
                     result.docker[subkey] = subval
                 end
             end
+        elseif k == "bwrap" and type(v) == "table" then
+            result.bwrap = result.bwrap or {}
+            for subkey, subval in pairs(v) do
+                if type(subval) == "table" then
+                    result.bwrap[subkey] = result.bwrap[subkey] or {}
+                    for _, item in ipairs(subval) do
+                        table.insert(result.bwrap[subkey], item)
+                    end
+                else
+                    result.bwrap[subkey] = subval
+                end
+            end
         elseif k == "git" and type(v) == "table" then
             result.git = result.git or {}
             for subkey, subval in pairs(v) do
@@ -374,6 +386,22 @@ for _, line in ipairs(display_lines) do
     print(line)
 end
 
+-- Bwrap options
+local bwrap = config.bwrap or {}
+local bwrap_system_mounts = bwrap.systemMounts or {"/etc", "/usr", "/bin", "/lib", "/lib64", "/sbin"}
+local bwrap_mask_paths = bwrap.maskPaths or {
+    "/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/sudoers.d",
+    "/etc/ssl/private", "/etc/pki/tls/private", "/etc/pki/nssdb",
+    "/etc/letsencrypt", "/etc/security",
+    "/etc/openvpn", "/etc/wireguard", "/etc/ipsec.d", "/etc/ipsec.secrets",
+    "/etc/NetworkManager/system-connections", "/etc/wpa_supplicant", "/etc/ppp",
+    "/etc/docker", "/etc/samba", "/etc/krb5.keytab", "/etc/machine-id",
+}
+print(#bwrap_system_mounts)
+for _, entry in ipairs(bwrap_system_mounts) do print(entry) end
+print(#bwrap_mask_paths)
+for _, entry in ipairs(bwrap_mask_paths) do print(entry) end
+
 -- Process additionalMounts
 local mounts = config.additionalMounts or {}
 local mount_entries = {}
@@ -446,6 +474,18 @@ LUAEOF
         for ((i=0; i<cfg_display_line_count; i++)); do
             read -r line
             cfg_display_lines+=("$line")
+        done
+        read -r cfg_bwrap_system_mount_count
+        cfg_bwrap_system_mounts=()
+        for ((i=0; i<cfg_bwrap_system_mount_count; i++)); do
+            read -r line
+            cfg_bwrap_system_mounts+=("$line")
+        done
+        read -r cfg_bwrap_mask_path_count
+        cfg_bwrap_mask_paths=()
+        for ((i=0; i<cfg_bwrap_mask_path_count; i++)); do
+            read -r line
+            cfg_bwrap_mask_paths+=("$line")
         done
         read -r cfg_mount_count
         cfg_mounts=()

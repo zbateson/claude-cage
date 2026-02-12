@@ -397,6 +397,10 @@ config_builder_run() {
     fi
 
     echo
+    echo "System directories like /etc and /usr are mounted read-only in bwrap mode,"
+    echo "and sensitive paths like /etc/shadow are masked by default. You can customize"
+    echo "'bwrap.systemMounts' and 'bwrap.maskPaths' in your config."
+    echo
 
     # Build config content
     local config_content="claude_cage {"
@@ -412,6 +416,18 @@ config_builder_run() {
         excludes_str=$(IFS=', '; echo "${exclude_patterns[*]}")
         config_content+="\n    exclude = { $excludes_str },"
     fi
+
+    config_content+="\n    bwrap = {"
+    config_content+="\n        systemMounts = { \"/etc\", \"/usr\", \"/bin\", \"/lib\", \"/lib64\", \"/sbin\" },"
+    config_content+="\n        maskPaths = {"
+    config_content+="\n            \"/etc/shadow\", \"/etc/gshadow\", \"/etc/sudoers\", \"/etc/sudoers.d\","
+    config_content+="\n            \"/etc/ssl/private\", \"/etc/pki/tls/private\", \"/etc/pki/nssdb\","
+    config_content+="\n            \"/etc/letsencrypt\", \"/etc/security\","
+    config_content+="\n            \"/etc/openvpn\", \"/etc/wireguard\", \"/etc/ipsec.d\", \"/etc/ipsec.secrets\","
+    config_content+="\n            \"/etc/NetworkManager/system-connections\", \"/etc/wpa_supplicant\", \"/etc/ppp\","
+    config_content+="\n            \"/etc/docker\", \"/etc/samba\", \"/etc/krb5.keytab\", \"/etc/machine-id\","
+    config_content+="\n        },"
+    config_content+="\n    },"
 
     if [ ${#additional_mounts[@]} -gt 0 ]; then
         config_content+="\n    additionalMounts = {"

@@ -69,14 +69,16 @@ if ! echo "$output" | grep -q "bwrap"; then
 fi
 echo "  PASS: Shows bwrap command"
 
-echo "Test 2: Should include --ro-bind for system directories"
-if ! echo "$output" | grep -q "\-\-ro-bind.*/usr"; then
-    echo "FAIL: Should bind /usr read-only"
-    echo "Output was:"
-    echo "$output"
-    exit 1
-fi
-echo "  PASS: Binds /usr read-only"
+echo "Test 2: Should include --ro-bind for system directories from config"
+for sysdir in /usr /bin /etc; do
+    if ! echo "$output" | grep -q "\-\-ro-bind.*$sysdir $sysdir"; then
+        echo "FAIL: Should bind $sysdir read-only"
+        echo "Output was:"
+        echo "$output"
+        exit 1
+    fi
+done
+echo "  PASS: Binds system directories read-only (from config defaults)"
 
 echo "Test 3: Should include --bind for intermediary at /run path"
 if ! echo "$output" | grep -q "\-\-bind.*/run.*source"; then
@@ -131,6 +133,64 @@ if ! echo "$output" | grep -q "\-\-die-with-parent"; then
     exit 1
 fi
 echo "  PASS: Includes --die-with-parent"
+
+echo "Test 8b: Should include mask paths from config"
+if echo "$output" | grep -q "\-\-tmpfs.*/etc/shadow"; then
+    echo "FAIL: /etc/shadow should be masked as file (--ro-bind /dev/null), not tmpfs"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+# /etc/sudoers.d is a directory on most systems
+if [ -d /etc/sudoers.d ] && ! echo "$output" | grep -q "\-\-tmpfs.*/etc/sudoers.d"; then
+    echo "FAIL: /etc/sudoers.d should be masked with tmpfs"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Mask paths applied from config"
+
+echo "Test 8c: Should use custom bwrap.systemMounts from config"
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "bwrap",
+    isolated = true,
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    bwrap = {
+        systemMounts = { "/etc", "/usr" },
+        maskPaths = {},
+    }
+}
+EOF
+
+custom_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
+
+if echo "$custom_output" | grep -q "\-\-ro-bind.*/bin /bin"; then
+    echo "FAIL: /bin should NOT be mounted when not in custom systemMounts"
+    echo "Output was:"
+    echo "$custom_output"
+    exit 1
+fi
+if ! echo "$custom_output" | grep -q "\-\-ro-bind.*/usr /usr"; then
+    echo "FAIL: /usr should still be mounted from custom systemMounts"
+    echo "Output was:"
+    echo "$custom_output"
+    exit 1
+fi
+echo "  PASS: Custom bwrap.systemMounts respected"
+
+# Restore original config for remaining tests
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "bwrap",
+    isolated = true,
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
 
 echo ""
 echo "=== Testing bwrap with additionalMounts ==="

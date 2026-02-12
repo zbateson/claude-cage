@@ -100,6 +100,28 @@ claude_cage {
     -- isolated = false,
 
     -- =========================================================================
+    -- BWRAP SANDBOX MOUNTS & MASKS
+    -- =========================================================================
+    -- System directories mounted read-only and sensitive paths masked in bwrap
+    -- mode. Docker mode doesn't need this — the container image provides its
+    -- own isolated filesystem.
+    --
+    -- Dirs in maskPaths get an empty tmpfs overlay; files get /dev/null.
+    -- Arrays merge across config levels (system + user + project).
+
+    bwrap = {
+        systemMounts = { "/etc", "/usr", "/bin", "/lib", "/lib64", "/sbin" },
+        maskPaths = {
+            "/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/sudoers.d",
+            "/etc/ssl/private", "/etc/pki/tls/private", "/etc/pki/nssdb",
+            "/etc/letsencrypt", "/etc/security",
+            "/etc/openvpn", "/etc/wireguard", "/etc/ipsec.d", "/etc/ipsec.secrets",
+            "/etc/NetworkManager/system-connections", "/etc/wpa_supplicant", "/etc/ppp",
+            "/etc/docker", "/etc/samba", "/etc/krb5.keytab", "/etc/machine-id",
+        },
+    },
+
+    -- =========================================================================
     -- ADDITIONAL MOUNTS
     -- =========================================================================
     -- Extra read-only mounts for the sandbox. Useful for config files

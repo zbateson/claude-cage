@@ -823,6 +823,8 @@ cleanup_on_exit() {
     local exit_code=$?
     # Restore terminal settings if interrupted during confirmation prompt
     [ -n "${saved_tty:-}" ] && stty "$saved_tty" </dev/tty 2>/dev/null || true
+    # Skip cleanup if sandbox never launched (user quit at confirmation)
+    [ "${sandbox_launched:-false}" = false ] && exit $exit_code
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
         # Copy carry files back to source before cleanup
@@ -901,6 +903,7 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
     fi
 fi
 
+sandbox_launched=true
 if [ "$cfg_mode" = "docker" ]; then
     run_in_docker "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
 else

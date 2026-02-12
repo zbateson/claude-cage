@@ -14,7 +14,7 @@ But a git clone ain't the whole story. The sandbox also locks down your filesyst
 
 2. **Filesystem Isolation** — The sandbox can't see your home directory, SSH keys, or AWS credentials. Claude's workin' in a clean room with no windows.
 
-3. **Network Filtering** — You decide what Claude can reach. Lock it down with allowlist mode, or block your internal infrastructure with blocklist mode. No sudo required.
+3. **Network Filtering** — You decide what Claude can reach. Lock it down with allowlist mode, or block your internal infrastructure with blocklist mode.
 
 ## What You Get
 

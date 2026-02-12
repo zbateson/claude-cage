@@ -156,10 +156,11 @@ _claude_cage() {
     local subcommands="git-merge clean completion install-completions"
     local flags="--test --direct-mount --scoped --attach-session --all --dry-run --verbose -v --debug --help -h --version"
 
-    # Check if 'clean' subcommand is present in the command line
-    local has_clean=false
+    # Check if a subcommand is present in the command line
+    local has_clean=false has_git_merge=false
     for word in "${words[@]}"; do
         [ "$word" = "clean" ] && has_clean=true
+        [ "$word" = "git-merge" ] && has_git_merge=true
     done
 
     case "$prev" in
@@ -185,6 +186,26 @@ _claude_cage() {
             return
             ;;
     esac
+
+    # After 'git-merge', complete branch names and --all
+    if [ "$has_git_merge" = true ]; then
+        local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+        local git_root
+        git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return
+        local intermediary="$cache_dir/intermediary$git_root"
+        if [ ! -d "$intermediary" ]; then
+            # Try scoped intermediary based on CWD
+            local scope_path="${PWD#"$git_root"}"
+            scope_path="${scope_path#/}"
+            [ -n "$scope_path" ] && intermediary="$cache_dir/scoped$git_root/$scope_path/.bare"
+        fi
+        local branches=""
+        if [ -d "$intermediary" ]; then
+            branches=$(git -C "$intermediary" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+        fi
+        COMPREPLY=($(compgen -W "$branches --all" -- "$cur"))
+        return
+    fi
 
     # After 'clean', complete session IDs and --all
     if [ "$has_clean" = true ]; then
@@ -248,11 +269,33 @@ _claude_cage() {
         command) _describe -t subcommands 'subcommand' subcommands ;;
         args)
             case "${words[1]}" in
+                git-merge) _claude_cage_branches ;;
                 clean) _claude_cage_sessions ;;
                 completion) _values 'shell' bash zsh ;;
             esac
             ;;
     esac
+}
+
+_claude_cage_branches() {
+    local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+    local git_root
+    git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return
+    local intermediary="$cache_dir/intermediary$git_root"
+    if [ ! -d "$intermediary" ]; then
+        # Try scoped intermediary based on CWD
+        local scope_path="${PWD#"$git_root"}"
+        scope_path="${scope_path#/}"
+        [ -n "$scope_path" ] && intermediary="$cache_dir/scoped$git_root/$scope_path/.bare"
+    fi
+    if [ -d "$intermediary" ]; then
+        local -a branches=()
+        while IFS= read -r branch; do
+            [ -n "$branch" ] && branches+=("$branch")
+        done < <(git -C "$intermediary" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+        branches+=('--all:Sync all branches with unmerged commits')
+        _describe -t branches 'branch' branches
+    fi
 }
 
 _claude_cage_sessions() {

@@ -632,11 +632,6 @@ claude-cage git-merge --all      # Or sync everything
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-**"slirp4netns not found"**
-```bash
-sudo apt install slirp4netns
-```
-
 **DNS not working inside sandbox**
 
 The sandbox uses slirp4netns DNS at 10.0.2.3. If you're filterin' network access, make sure DNS is allowed — it's handled automatically in allowlist mode, so if it ain't workin' you probably touched somethin' you shouldn't have.

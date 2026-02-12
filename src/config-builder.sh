@@ -417,6 +417,10 @@ config_builder_run() {
         config_content+="\n    exclude = { $excludes_str },"
     fi
 
+    config_content+="\n    docker = {"
+    config_content+="\n        image = \"node:lts-slim\","
+    config_content+="\n        packages = { \"curl\", \"iputils-ping\" },"
+    config_content+="\n    },"
     config_content+="\n    bwrap = {"
     config_content+="\n        systemMounts = { \"/etc\", \"/usr\", \"/bin\", \"/lib\", \"/lib64\", \"/sbin\" },"
     config_content+="\n        maskPaths = {"

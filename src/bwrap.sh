@@ -63,22 +63,6 @@ run_in_bwrap() {
         fi
     done
 
-    # Override resolv.conf for slirp4netns network namespace (DNS at 10.0.2.3)
-    # When /etc is mounted as a whole directory, /etc/resolv.conf may be a symlink
-    # (e.g., → /run/systemd/resolve/stub-resolv.conf). We resolve the symlink and
-    # mount at the real target so bwrap doesn't fail following a dangling symlink.
-    if [ "${SLIRP_NETWORK:-}" = "1" ]; then
-        local slirp_resolv
-        slirp_resolv=$(mktemp)
-        echo "nameserver 10.0.2.3" > "$slirp_resolv"
-        local resolv_real
-        resolv_real=$(realpath /etc/resolv.conf 2>/dev/null) || resolv_real="/etc/resolv.conf"
-        if [ "$resolv_real" != "/etc/resolv.conf" ]; then
-            bwrap_args+=(--dir "$(dirname "$resolv_real")")
-        fi
-        bwrap_args+=(--ro-bind "$slirp_resolv" "$resolv_real")
-    fi
-
     # Mask sensitive paths from config (dirs → tmpfs, files → /dev/null)
     local _p
     for _p in "${cfg_bwrap_mask_paths[@]}"; do
@@ -119,6 +103,23 @@ run_in_bwrap() {
                 ;;
         esac
     done
+
+    # Override resolv.conf for slirp4netns network namespace (DNS at 10.0.2.3)
+    # Must come AFTER CAGE_MOUNTS (which creates tmpfs at /run).
+    # When /etc is mounted as a whole directory, /etc/resolv.conf may be a symlink
+    # (e.g., → /run/systemd/resolve/stub-resolv.conf). We resolve the symlink and
+    # mount at the real target inside the already-created /run tmpfs.
+    if [ "${SLIRP_NETWORK:-}" = "1" ]; then
+        local slirp_resolv
+        slirp_resolv=$(mktemp)
+        echo "nameserver 10.0.2.3" > "$slirp_resolv"
+        local resolv_real
+        resolv_real=$(realpath /etc/resolv.conf 2>/dev/null) || resolv_real="/etc/resolv.conf"
+        if [ "$resolv_real" != "/etc/resolv.conf" ]; then
+            bwrap_args+=(--dir "$(dirname "$resolv_real")")
+        fi
+        bwrap_args+=(--ro-bind "$slirp_resolv" "$resolv_real")
+    fi
 
     # Special filesystems
     bwrap_args+=(--proc /proc)

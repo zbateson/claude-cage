@@ -165,8 +165,18 @@ _claude_cage() {
     case "$prev" in
         --attach-session)
             local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+            local git_root
+            git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return
             if [ -d "$cache_dir/sessions" ]; then
-                COMPREPLY=($(compgen -W "$(ls -1 "$cache_dir/sessions" 2>/dev/null)" -- "$cur"))
+                local sessions=""
+                for d in "$cache_dir/sessions"/*/; do
+                    [ -d "$d" ] || continue
+                    [ -d "$d/work$git_root" ] || continue
+                    local ts
+                    ts=$(basename "$d")
+                    sessions="$sessions $ts"
+                done
+                COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
             fi
             return
             ;;
@@ -179,8 +189,18 @@ _claude_cage() {
     # After 'clean', complete session IDs and --all
     if [ "$has_clean" = true ]; then
         local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
+        local git_root
+        git_root=$(git rev-parse --show-toplevel 2>/dev/null) || { COMPREPLY=($(compgen -W "--all" -- "$cur")); return; }
         local sessions=""
-        [ -d "$cache_dir/sessions" ] && sessions=$(ls -1 "$cache_dir/sessions" 2>/dev/null)
+        if [ -d "$cache_dir/sessions" ]; then
+            for d in "$cache_dir/sessions"/*/; do
+                [ -d "$d" ] || continue
+                [ -d "$d/work$git_root" ] || continue
+                local ts
+                ts=$(basename "$d")
+                sessions="$sessions $ts"
+            done
+        fi
         COMPREPLY=($(compgen -W "$sessions --all" -- "$cur"))
         return
     fi
@@ -237,7 +257,20 @@ _claude_cage() {
 
 _claude_cage_sessions() {
     local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
-    [ -d "$cache_dir/sessions" ] && _describe -t sessions 'session' $(ls -1 "$cache_dir/sessions" 2>/dev/null)
+    local git_root
+    git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return
+    if [ -d "$cache_dir/sessions" ]; then
+        local -a sessions=()
+        for d in "$cache_dir/sessions"/*/; do
+            [ -d "$d" ] || continue
+            [ -d "$d/work$git_root" ] || continue
+            local ts
+            ts=${d%/}
+            ts=${ts##*/}
+            sessions+=("$ts")
+        done
+        [ ${#sessions[@]} -gt 0 ] && _describe -t sessions 'session' sessions
+    fi
 }
 
 _claude_cage "$@"

@@ -821,6 +821,8 @@ fi
 # Set up cleanup handler for signals
 cleanup_on_exit() {
     local exit_code=$?
+    # Restore terminal settings if interrupted during confirmation prompt
+    [ -n "${saved_tty:-}" ] && stty "$saved_tty" </dev/tty 2>/dev/null || true
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
         # Copy carry files back to source before cleanup
@@ -888,7 +890,10 @@ fi
 if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
     echo ""
     echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
+    saved_tty=$(stty -g </dev/tty 2>/dev/null) || true
     read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true
+    [ -n "${saved_tty:-}" ] && stty "$saved_tty" </dev/tty 2>/dev/null || true
+    unset saved_tty
     echo ""
 fi
 

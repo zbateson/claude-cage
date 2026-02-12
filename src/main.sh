@@ -891,10 +891,14 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
     echo ""
     echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
     saved_tty=$(stty -g </dev/tty 2>/dev/null) || true
-    read -n 1 -s -r -p "Press any key to continue..." </dev/tty || true
+    read -n 1 -s -r -p "Press any key to continue (q/Esc to quit)..." key </dev/tty || true
     [ -n "${saved_tty:-}" ] && stty "$saved_tty" </dev/tty 2>/dev/null || true
     unset saved_tty
     echo ""
+    if [ "$key" = "q" ] || [ "$key" = "Q" ] || [ "$key" = $'\x1b' ]; then
+        echo "Alright, puttin' the bird back in the hangar."
+        exit 0
+    fi
 fi
 
 if [ "$cfg_mode" = "docker" ]; then

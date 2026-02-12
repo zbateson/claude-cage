@@ -197,7 +197,7 @@ test_output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     bash -c 'cd "$1" && echo "echo INSIDE_CAGE; exit" | "$2" --test 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage") || true
 
 # Check if bwrap failed due to namespace restrictions
-if echo "$test_output" | grep -q "No permissions to create new namespace"; then
+if echo "$test_output" | grep -qE "No permissions to create new namespace|setting up uid map: Permission denied"; then
     echo "  SKIP: User namespaces not available (kernel restriction)"
     echo ""
     echo "=== All bwrap tests passed (execution tests skipped)! ==="

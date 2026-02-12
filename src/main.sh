@@ -821,8 +821,8 @@ fi
 # Set up cleanup handler for signals
 cleanup_on_exit() {
     local exit_code=$?
-    # Restore terminal settings if interrupted during confirmation prompt
-    [ -n "${saved_tty:-}" ] && stty "$saved_tty" </dev/tty 2>/dev/null || true
+    # Ensure terminal is usable if interrupted during confirmation prompt
+    stty echo icanon </dev/tty 2>/dev/null || true
     # Skip cleanup if sandbox never launched (user quit at confirmation)
     [ "${sandbox_launched:-false}" = false ] && exit $exit_code
     # Only run cleanup for git mode
@@ -893,11 +893,7 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
     echo ""
     echo "To skip this prompt, set hideConfirmationPrompt = true in your config."
     printf "Press any key to continue (q/Esc to quit)..." >/dev/tty
-    saved_tty=$(stty -g </dev/tty 2>/dev/null) || true
-    stty -echo -icanon </dev/tty 2>/dev/null || true
-    key=$(dd bs=1 count=1 </dev/tty 2>/dev/null) || true
-    [ -n "${saved_tty:-}" ] && stty "$saved_tty" </dev/tty 2>/dev/null || true
-    unset saved_tty
+    key=$(bash -c 'read -n 1 -s -r k </dev/tty; printf "%s" "$k"') || true
     echo "" >/dev/tty
     if [ "$key" = "q" ] || [ "$key" = "Q" ] || [ "$key" = $'\x1b' ]; then
         echo "Alright, puttin' the bird back in the hangar."

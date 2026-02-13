@@ -258,11 +258,11 @@ claude-cage git-merge --all
 
 # Attach to an existing active session
 claude-cage --attach-session                     # Auto-select or prompt
-claude-cage --attach-session 20250206143022      # Specific session
+claude-cage --attach-session 2025-02-06_14-30-22      # Specific session
 
 # Clean up cached sessions for this project
 claude-cage clean                                # Interactive selection
-claude-cage clean 20250206143022                 # Remove specific session
+claude-cage clean 2025-02-06_14-30-22                 # Remove specific session
 claude-cage clean --all                          # Remove all sessions
 ```
 
@@ -272,7 +272,7 @@ claude-cage clean --all                          # Remove all sessions
 
 ## Sessions
 
-Every time you fire up claude-cage, it creates a session tagged with a timestamp (e.g., `20250206143022`). Each session gets its own work directory while sharin' the same intermediary repo.
+Every time you fire up claude-cage, it creates a session tagged with a timestamp (e.g., `2025-02-06_14-30-22`). Each session gets its own work directory while sharin' the same intermediary repo.
 
 **What this means for you:**
 - Run multiple sessions on the same project at the same time — they don't step on each other
@@ -555,7 +555,7 @@ exclude = {
 ├── intermediary/<project-path>/          # Shared bare repo (git origin)
 ├── scoped/<git-root>/<scope>/.bare/      # Scoped bare repo (subdirectory only)
 └── sessions/
-    └── <timestamp>/                      # One per session (e.g., 20250206143022)
+    └── <timestamp>/                      # One per session (e.g., 2025-02-06_14-30-22)
         └── work/<project-path>/          # Claude's working copy
 
 your-project/
@@ -614,7 +614,7 @@ claude-cage --attach-session
 This drops you right into the same work directory Claude was usin'. From there, Claude (or you) can push the commits, and the sync pipeline picks 'em up like nothin' happened. If there's more than one session lyin' around, you'll get a list to pick from. You can also pass the timestamp directly:
 
 ```bash
-claude-cage --attach-session 20250206143022
+claude-cage --attach-session 2025-02-06_14-30-22
 ```
 
 ### Option 2: Shell Into It Yourself
@@ -622,7 +622,7 @@ claude-cage --attach-session 20250206143022
 If you'd rather handle things personally, `--test` drops you into a shell inside the sandbox instead of launchin' Claude:
 
 ```bash
-claude-cage --attach-session 20250206143022 --test
+claude-cage --attach-session 2025-02-06_14-30-22 --test
 ```
 
 Now you're standin' in Claude's workspace with full git access. Push what needs pushin', inspect what needs inspectin'.
@@ -650,7 +650,7 @@ If not, go straight to the cache:
 The work directory is a regular git repo. Its remote points at the intermediary. So:
 
 ```bash
-cd ~/.cache/claude-cage/sessions/20250206143022/work/home/you/your-project/
+cd ~/.cache/claude-cage/sessions/2025-02-06_14-30-22/work/home/you/your-project/
 git log --oneline  # See what's there
 git push origin <branch>
 ```

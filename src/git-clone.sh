@@ -643,15 +643,34 @@ reuse_or_create_session() {
             [ "$csource" = "$source_dir" ] && echo "$csid $cbranch $csource $cscope"
         done <<< "$REUSE_CLEAN_SESSIONS")
         if [ -n "$same_source" ]; then
-            CLAUDE_CAGE_SESSION=$(echo "$same_source" | head -1 | awk '{print $1}')
-            echo "Reusin' clean session $CLAUDE_CAGE_SESSION."
-            return
+            local old_session_id
+            old_session_id=$(echo "$same_source" | head -1 | awk '{print $1}')
+            local new_session_id
+            new_session_id=$(date +%Y-%m-%d_%H-%M-%S)
+            if [ -d "$CLAUDE_CAGE_CACHE/sessions/$new_session_id" ]; then
+                sleep 1
+                new_session_id=$(date +%Y-%m-%d_%H-%M-%S)
+            fi
+            local old_session_dir="$CLAUDE_CAGE_CACHE/sessions/$old_session_id"
+            local new_session_dir="$CLAUDE_CAGE_CACHE/sessions/$new_session_id"
+            if mv "$old_session_dir" "$new_session_dir" 2>/dev/null; then
+                # Remove old .caged symlink if it exists (setup_caged_symlinks recreates it)
+                local git_root
+                git_root=$(get_git_root "$source_dir") || true
+                if [ -n "$git_root" ] && [ -d "$git_root/.caged/sessions/$old_session_id" ]; then
+                    rm -rf "$git_root/.caged/sessions/$old_session_id"
+                fi
+                CLAUDE_CAGE_SESSION="$new_session_id"
+                echo "Reusin' clean session (was $old_session_id, now $new_session_id)."
+                return
+            fi
+            # mv failed (race condition) — fall through to create fresh
         fi
     fi
-    CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+    CLAUDE_CAGE_SESSION=$(date +%Y-%m-%d_%H-%M-%S)
     if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$source_dir" ]; then
         sleep 1
-        CLAUDE_CAGE_SESSION=$(date +%Y%m%d%H%M%S)
+        CLAUDE_CAGE_SESSION=$(date +%Y-%m-%d_%H-%M-%S)
     fi
 }
 

@@ -135,7 +135,7 @@ Examples:
   claude-cage --resume               Pass --resume to the launch command
   claude-cage --attach-session       Attach to an active session
   claude-cage clean                  Interactively select session cache(s) to remove
-  claude-cage clean 20250206143022   Remove cache for specific session
+  claude-cage clean 2025-02-06_14-30-22   Remove cache for specific session
   claude-cage clean --all            Remove all cached sessions for this project
   claude-cage git-merge              Sync current branch from intermediary
   claude-cage git-merge feature      Sync specific branch from intermediary

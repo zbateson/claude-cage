@@ -21,8 +21,11 @@ export CLAUDE_CAGE_MOUNTED_PIPE="$TEST_TMP/.runtime/claude-cage/test-pipe"
 export HOME="$TEST_TMP"
 
 cleanup() {
+    # Kill any background processes we started
+    kill $OTHER_PID 2>/dev/null || true
     rm -rf "$TEST_TMP"
 }
+OTHER_PID=""
 trap cleanup EXIT
 
 echo "=== Testing clean commands ==="
@@ -152,7 +155,7 @@ SESSION_ID=$(ls -1 "$CLAUDE_CAGE_CACHE/sessions/" 2>/dev/null | head -1)
 WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$SESSION_ID/work$SOURCE_PATH"
 
 # Simulate a second session's work directory (as if cage was started in another session)
-FEATURE_SESSION_ID="20250101120000"
+FEATURE_SESSION_ID="2025-01-01_12-00-00"
 FEATURE_WORK_DIR="$CLAUDE_CAGE_CACHE/sessions/$FEATURE_SESSION_ID/work$SOURCE_PATH"
 mkdir -p "$FEATURE_WORK_DIR/.git"
 
@@ -286,6 +289,178 @@ fi
 echo "  PASS: clean --all shows dirty warning"
 
 echo ""
+echo "=== Testing rename on reuse ==="
+echo ""
+
+# Clean up for a fresh start
+rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_CACHE/intermediary" "$CLAUDE_CAGE_CACHE/scoped"
+
+# Re-source to get fresh function definitions
+export CLAUDE_CAGE_SOURCING=1
+source "$CAGE_DIR/dist/claude-cage"
+unset CLAUDE_CAGE_SOURCING
+dry_run=false
+verbose=false
+
+echo "Test 12: Rename on reuse gives session a fresh timestamp"
+# Create a session with an old-format ID to simulate an existing inactive clean session
+OLD_SID="2024-06-15_08-30-00"
+OLD_SESSION_DIR="$CLAUDE_CAGE_CACHE/sessions/$OLD_SID"
+mkdir -p "$OLD_SESSION_DIR/work$SOURCE_PATH"
+# Clone the intermediary into the old work dir so it looks like a real session
+env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
+    GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="test@test.com" \
+    GIT_COMMITTER_NAME="Test" GIT_COMMITTER_EMAIL="test@test.com" \
+    bash -c 'cd "$1" && echo "exit" | "$2" --test' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage" >/dev/null 2>&1 || true
+
+# Rebuild the intermediary so we have something to work with
+cfg_exclude=""
+cfg_git_historyDepth=50
+cfg_git_defaultBranch="auto"
+INTERMEDIARY_DIR="$CLAUDE_CAGE_CACHE/intermediary$SOURCE_PATH"
+if [ ! -d "$INTERMEDIARY_DIR" ]; then
+    CLAUDE_CAGE_SESSION="$OLD_SID"
+    create_intermediary_clone "$SOURCE_PATH" "" >/dev/null 2>&1
+fi
+
+# Make sure old session dir has a proper work dir (re-clone from intermediary)
+rm -rf "$OLD_SESSION_DIR"
+mkdir -p "$OLD_SESSION_DIR/work$SOURCE_PATH"
+git clone -q "$INTERMEDIARY_DIR" "$OLD_SESSION_DIR/work$SOURCE_PATH"
+
+# Set up REUSE_CLEAN_SESSIONS as find_reusable_session would
+BRANCH_NAME=$(git -C "$SOURCE_PATH" branch --show-current)
+REUSE_CLEAN_SESSIONS="$OLD_SID $BRANCH_NAME $SOURCE_PATH "
+
+# Call reuse_or_create_session
+reuse_or_create_session "$SOURCE_PATH" >/dev/null
+
+# Verify old dir is gone
+if [ -d "$OLD_SESSION_DIR" ]; then
+    echo "FAIL: Old session dir should be renamed away"
+    exit 1
+fi
+
+# Verify new session ID has the new date format (YYYY-MM-DD_HH-MM-SS)
+if ! [[ "$CLAUDE_CAGE_SESSION" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "FAIL: New session ID '$CLAUDE_CAGE_SESSION' doesn't match YYYY-MM-DD_HH-MM-SS format"
+    exit 1
+fi
+
+# Verify new dir exists
+NEW_SESSION_DIR="$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION"
+if [ ! -d "$NEW_SESSION_DIR/work$SOURCE_PATH" ]; then
+    echo "FAIL: Renamed session dir should exist at $NEW_SESSION_DIR"
+    exit 1
+fi
+echo "  PASS: Session renamed from $OLD_SID to $CLAUDE_CAGE_SESSION"
+
+echo ""
+echo "=== Testing proactive exit cleanup ==="
+echo ""
+
+echo "Test 13: Clean session removed on exit when other sessions active"
+# Clean up
+rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_RUNTIME/sessions"
+
+# Start a background process to act as "another session"
+sleep 300 &
+OTHER_PID=$!
+
+# Create two session work dirs
+SID_A="2025-01-01_10-00-00"
+SID_B="2025-01-01_11-00-00"
+WORK_A="$CLAUDE_CAGE_CACHE/sessions/$SID_A/work$SOURCE_PATH"
+WORK_B="$CLAUDE_CAGE_CACHE/sessions/$SID_B/work$SOURCE_PATH"
+mkdir -p "$WORK_A" "$WORK_B"
+git clone -q "$INTERMEDIARY_DIR" "$WORK_A"
+git clone -q "$INTERMEDIARY_DIR" "$WORK_B"
+
+# Register session A as "us" (current PID)
+CLAUDE_CAGE_SESSION="$SID_A"
+register_session "$SOURCE_PATH"
+
+# Register session B as the other live process
+SESSION_DIR=$(get_session_dir "$SOURCE_PATH")
+echo "$SID_B" > "$SESSION_DIR/$OTHER_PID"
+
+# Verify has_other_sessions sees session B
+if ! has_other_sessions "$SOURCE_PATH"; then
+    kill $OTHER_PID 2>/dev/null || true
+    echo "FAIL: Should detect other active session"
+    exit 1
+fi
+
+# Simulate cleanup: unregister our session, then do the proactive cleanup logic
+unregister_session "$SOURCE_PATH"
+
+# Now the proactive cleanup check (mirrors cleanup_on_exit logic)
+work_dir="$WORK_A"
+if has_other_sessions "$SOURCE_PATH" && [ -d "$work_dir/.git" ] \
+    && ! is_work_dirty "$work_dir" && ! work_has_unpushed "$work_dir"; then
+    session_cache="$CLAUDE_CAGE_CACHE/sessions/$SID_A"
+    rm -rf "$work_dir"
+    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+    if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
+        rm -rf "$session_cache/work"
+    fi
+    if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
+        rm -rf "$session_cache"
+    fi
+fi
+
+if [ -d "$WORK_A" ]; then
+    kill $OTHER_PID 2>/dev/null || true
+    echo "FAIL: Clean session work dir should be removed on exit"
+    exit 1
+fi
+echo "  PASS: Clean session removed when other sessions active"
+
+echo "Test 14: Dirty session kept on exit when other sessions active"
+# Clean up
+rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_RUNTIME/sessions"
+
+# Create two sessions again
+SID_C="2025-01-01_12-00-00"
+SID_D="2025-01-01_13-00-00"
+WORK_C="$CLAUDE_CAGE_CACHE/sessions/$SID_C/work$SOURCE_PATH"
+WORK_D="$CLAUDE_CAGE_CACHE/sessions/$SID_D/work$SOURCE_PATH"
+mkdir -p "$WORK_C" "$WORK_D"
+git clone -q "$INTERMEDIARY_DIR" "$WORK_C"
+git clone -q "$INTERMEDIARY_DIR" "$WORK_D"
+
+# Make session C dirty
+echo "dirty" >> "$WORK_C/file.txt"
+
+# Register sessions
+CLAUDE_CAGE_SESSION="$SID_C"
+register_session "$SOURCE_PATH"
+SESSION_DIR=$(get_session_dir "$SOURCE_PATH")
+echo "$SID_D" > "$SESSION_DIR/$OTHER_PID"
+
+# Unregister ours
+unregister_session "$SOURCE_PATH"
+
+# Proactive cleanup check — should NOT remove because dirty
+work_dir="$WORK_C"
+if has_other_sessions "$SOURCE_PATH" && [ -d "$work_dir/.git" ] \
+    && ! is_work_dirty "$work_dir" && ! work_has_unpushed "$work_dir"; then
+    rm -rf "$work_dir"
+fi
+
+if [ ! -d "$WORK_C" ]; then
+    kill $OTHER_PID 2>/dev/null || true
+    echo "FAIL: Dirty session should NOT be removed on exit"
+    exit 1
+fi
+echo "  PASS: Dirty session kept on exit"
+
+# Clean up background process and fake PID files
+kill $OTHER_PID 2>/dev/null || true
+rm -f "$SESSION_DIR/$OTHER_PID"
+
+echo ""
 echo "=== Testing scoped session cleanup ==="
 echo ""
 
@@ -299,7 +474,7 @@ unset CLAUDE_CAGE_SOURCING
 dry_run=false
 verbose=false
 
-echo "Test 12: Scoped session shows scope in list_cached_sessions output"
+echo "Test 15: Scoped session shows scope in list_cached_sessions output"
 # Create a monorepo structure
 mkdir -p "$TEST_TMP/monorepo/services/api"
 cd "$TEST_TMP/monorepo"
@@ -336,7 +511,7 @@ if ! echo "$sessions" | grep -q "services/api"; then
 fi
 echo "  PASS: Scoped session shows scope in listing"
 
-echo "Test 13: Cross-scope session visible from git root"
+echo "Test 16: Cross-scope session visible from git root"
 if ! echo "$sessions" | grep -q "scoped-test-session"; then
     echo "FAIL: Scoped session not found when listing from git root"
     echo "  Sessions:"
@@ -345,7 +520,7 @@ if ! echo "$sessions" | grep -q "scoped-test-session"; then
 fi
 echo "  PASS: Cross-scope session visible from git root"
 
-echo "Test 14: clean_session_cache for scoped session removes scoped/ when empty"
+echo "Test 17: clean_session_cache for scoped session removes scoped/ when empty"
 # Clean the scoped session
 clean_session_cache "$API_PATH" "scoped-test-session"
 

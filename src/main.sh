@@ -68,7 +68,7 @@ for i in "$@"; do
             found_next=false
             for j in "$@"; do
                 if [ "$found_next" = true ]; then
-                    if [[ "$j" =~ ^[0-9]{14}$ ]]; then
+                    if [[ "$j" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]]; then
                         cli_attach_session="$j"
                         skip_next=true
                     fi
@@ -833,6 +833,26 @@ cleanup_on_exit() {
         fi
         # Always unregister our session
         unregister_session "$cfg_source"
+        # Proactive cleanup: if other sessions are still active and ours is clean, remove it
+        if has_other_sessions "$cfg_source" && [ -d "$work_dir/.git" ] \
+            && ! is_work_dirty "$work_dir" && ! work_has_unpushed "$work_dir"; then
+            local session_cache="$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION"
+            rm -rf "$work_dir"
+            cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+            # Clean empty session dir
+            if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
+                rm -rf "$session_cache/work"
+            fi
+            if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
+                rm -rf "$session_cache"
+            fi
+            # Remove .caged session symlink
+            local _git_root
+            _git_root=$(get_git_root "$cfg_source") || true
+            if [ -n "$_git_root" ] && [ -d "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ]; then
+                rm -rf "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
+            fi
+        fi
         # Deferred cleanup: if this scoped intermediary is now superseded
         if [ -n "${scope_path:-}" ]; then
             maybe_cleanup_superseded_intermediary "$cfg_source" "$scope_path"

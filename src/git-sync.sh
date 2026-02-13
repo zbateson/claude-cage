@@ -9,8 +9,11 @@ sync_log() {
     local commit_short="$2"
     local direction="$3"
     local msg="$4"
-    if [ -n "$log_file" ]; then
-        printf '[%s] %s %-14s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$commit_short" "$direction" "$msg" >> "$log_file"
+    local line
+    line=$(printf '[%s] %s %-14s %s' "$(date '+%Y-%m-%d %H:%M:%S')" "$commit_short" "$direction" "$msg")
+    [ -n "$log_file" ] && printf '%s\n' "$line" >> "$log_file"
+    if [ -n "${CLAUDE_CAGE_SESSION_LOG:-}" ] && [ -f "$CLAUDE_CAGE_SESSION_LOG" ]; then
+        printf '[sync] %s\n' "$line" >> "$CLAUDE_CAGE_SESSION_LOG"
     fi
 }
 

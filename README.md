@@ -288,6 +288,19 @@ claude-cage
 claude-cage --attach-session
 ```
 
+### Session Logs
+
+Every session keeps a log — a little black box of what went down on the way into the cage and what happened behind the scenes while you were in there. You'll find it at `~/.cache/claude-cage/logs/<session-id>.log`.
+
+What's in the log:
+- Config and setup output (what got loaded, which session was picked)
+- Sync activity — every commit that came or went gets a `[sync]` line
+- Sandbox launch and exit markers (with exit code)
+
+What ain't in there: the interactive session itself. Once the sandbox door opens, the log steps aside. It don't record what Claude does inside the cage.
+
+Logs get cleaned up automatically when you run `claude-cage clean`. If you've got `createCagedDir = true`, there's a handy symlink at `.caged/sessions/<session-id>/log` pointin' right at it.
+
 ## Sync Architecture
 
 Quick refresher on the three repos (see [How It Works](#how-it-works)):
@@ -554,6 +567,7 @@ exclude = {
 ~/.cache/claude-cage/
 ├── intermediary/<project-path>/          # Shared bare repo (git origin)
 ├── scoped/<git-root>/<scope>/.bare/      # Scoped bare repo (subdirectory only)
+├── logs/<session-id>.log                 # Per-session operational log
 └── sessions/
     └── <timestamp>/                      # One per session (e.g., 2025-02-06_14-30-22)
         └── work/<project-path>/          # Claude's working copy
@@ -565,7 +579,8 @@ your-project/
 │   ├── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
 │   └── sessions/
 │       └── <timestamp>/
-│           └── work → ~/.cache/.../sessions/<timestamp>/work/<project-path>/
+│           ├── work → ~/.cache/.../sessions/<timestamp>/work/<project-path>/
+│           └── log  → ~/.cache/.../logs/<session-id>.log
 └── .git/hooks/                          # Source hooks always added
     ├── post-commit.d/claude-cage-*      # Syncs your commits to intermediary
     └── post-merge.d/claude-cage-*       # Syncs merge commits to intermediary

@@ -409,6 +409,9 @@ if [ "$cfg_showBanner" = "true" ]; then
     print_banner
 fi
 
+# Start session logging (captures config display, setup, and sync activity)
+start_session_log "$CLAUDE_CAGE_CACHE/logs"
+
 # Display parsed config - show config sources
 echo "Configuration loaded from:"
 for cfg in "${config_files[@]}"; do
@@ -496,6 +499,10 @@ if [ "$direct_mount_mode" = true ]; then
     # Use source path directly - no intermediary or work dir needed
     work_dir="$cfg_source"
     session_work_root=$(dirname "$cfg_source")
+
+    # Finalize session log with a session ID
+    [ -z "$CLAUDE_CAGE_SESSION" ] && CLAUDE_CAGE_SESSION=$(date +%Y-%m-%d_%H-%M-%S)
+    finalize_session_log "$CLAUDE_CAGE_SESSION"
 
 else
     # Git mode: full cage setup with intermediary and work directories
@@ -705,6 +712,9 @@ else
 
     export CLAUDE_CAGE_SESSION
 
+    # Finalize session log with the selected session ID
+    finalize_session_log "$CLAUDE_CAGE_SESSION"
+
     # Clean up inactive clean sessions we're not using
     cleanup_stale_sessions "$cfg_source"
 
@@ -852,6 +862,9 @@ cleanup_on_exit() {
             if [ -n "$_git_root" ] && [ -d "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ]; then
                 rm -rf "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
             fi
+            # Remove session log
+            local _log_file="$CLAUDE_CAGE_CACHE/logs/$CLAUDE_CAGE_SESSION.log"
+            [ -f "$_log_file" ] && rm -f "$_log_file"
         fi
         # Deferred cleanup: if this scoped intermediary is now superseded
         if [ -n "${scope_path:-}" ]; then
@@ -863,6 +876,8 @@ cleanup_on_exit() {
         fi
         cleanup_source_hooks "$cfg_source"
     fi
+    append_session_log ""
+    append_session_log "=== Session ended at $(date '+%Y-%m-%d %H:%M:%S') (exit code: $exit_code) ==="
     exit $exit_code
 }
 trap cleanup_on_exit EXIT INT TERM
@@ -920,6 +935,11 @@ if [ "$cfg_hideConfirmationPrompt" != "true" ]; then
         exit 0
     fi
 fi
+
+# Restore original fds so sandbox TUI doesn't go through tee
+restore_original_fds
+append_session_log ""
+append_session_log "=== Sandbox launched at $(date '+%Y-%m-%d %H:%M:%S') ==="
 
 sandbox_launched=true
 if [ "$cfg_mode" = "docker" ]; then

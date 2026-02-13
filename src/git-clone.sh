@@ -703,6 +703,10 @@ cleanup_stale_sessions() {
         local caged_link="$source_dir/.caged/sessions/$csid"
         [ -d "$caged_link" ] && rm -rf "$caged_link"
 
+        # Remove session log
+        local stale_log="$CLAUDE_CAGE_CACHE/logs/$csid.log"
+        [ -f "$stale_log" ] && rm -f "$stale_log"
+
         cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
 
         # Clean empty session dir
@@ -790,6 +794,13 @@ clean_session_cache() {
         echo "Removed work directory: $work_dir"
     fi
 
+    # Remove session log
+    local log_file="$CLAUDE_CAGE_CACHE/logs/$session_id.log"
+    if [ -f "$log_file" ]; then
+        run rm -f "$log_file"
+        echo "Removed session log: $log_file"
+    fi
+
     # Remove .caged symlink for this session
     if [ -d "$caged_link" ]; then
         run rm -rf "$caged_link"
@@ -857,6 +868,11 @@ clean_session_cache() {
             run rm -rf "$caged_dir"
             echo "Removed empty .caged directory"
         fi
+    fi
+
+    # Clean up empty logs directory
+    if [ -d "$CLAUDE_CAGE_CACHE/logs" ] && [ -z "$(ls -A "$CLAUDE_CAGE_CACHE/logs" 2>/dev/null)" ]; then
+        run rm -rf "$CLAUDE_CAGE_CACHE/logs"
     fi
 }
 
@@ -1905,6 +1921,17 @@ setup_caged_symlinks() {
     else
         rm -f "$work_symlink"
         ln -s "$work_target" "$work_symlink"
+    fi
+
+    # Session log symlink
+    if [ -n "${CLAUDE_CAGE_SESSION_LOG:-}" ] && [ -f "$CLAUDE_CAGE_SESSION_LOG" ]; then
+        local log_symlink="$session_dir/log"
+        if [ "$dry_run" = true ]; then
+            echo "[dry-run] ln -sf $CLAUDE_CAGE_SESSION_LOG $log_symlink"
+        else
+            rm -f "$log_symlink"
+            ln -s "$CLAUDE_CAGE_SESSION_LOG" "$log_symlink"
+        fi
     fi
 
     verbose_log "  Created .caged/ symlinks (session: $session_id)"

@@ -185,6 +185,7 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 │   ├── claude-cage-source-branches       # Source branch names (pre-receive guard)
 │   ├── claude-cage-exclude-hash          # Rebuild detection
 │   └── sync.log
+├── logs/<session-id>.log                 # Per-session operational log
 └── sessions/<timestamp>/work/<project>/  # Claude's working directory
 
 $XDG_RUNTIME_DIR/claude-cage/
@@ -224,8 +225,9 @@ bash tests/run-all.sh
 | test-clean.sh | clean commands | 14 |
 | test-direct-mount.sh | direct mount mode | 8 |
 | test-scoped.sh | scoped intermediary | 66 |
+| test-session-log.sh | per-session logging | 15 |
 
-**~287 assertions across 14 files.** bwrap tests skipped if user namespaces unavailable.
+**~302 assertions across 15 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## TODO
 

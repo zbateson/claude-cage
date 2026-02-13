@@ -76,6 +76,67 @@ verbose_log() {
     fi
 }
 
+# ============================================================================
+# Per-session logging
+# ============================================================================
+
+# Path to the current session's log file (empty until start_session_log is called)
+CLAUDE_CAGE_SESSION_LOG=""
+
+# Start session logging: creates a temp log file and redirects stdout/stderr through tee.
+# Arguments: $1 = log directory (e.g. $CLAUDE_CAGE_CACHE/logs)
+start_session_log() {
+    local log_dir="$1"
+    [ "$dry_run" = true ] && return 0
+
+    mkdir -p "$log_dir"
+    CLAUDE_CAGE_SESSION_LOG="$log_dir/.tmp-$$.log"
+
+    # Write header
+    printf '=== claude-cage session log ===\n' > "$CLAUDE_CAGE_SESSION_LOG"
+    printf 'Started: %s  PID: %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" >> "$CLAUDE_CAGE_SESSION_LOG"
+
+    # Save original stdout/stderr so we can restore them before sandbox launch
+    exec 5>&1 6>&2
+
+    # Redirect stdout+stderr through tee (appends to log file)
+    exec > >(tee -a "$CLAUDE_CAGE_SESSION_LOG") 2>&1
+}
+
+# Rename the temp log to its final name once the session ID is known.
+# The tee process holds an open fd so the rename is transparent (same-filesystem inode rename).
+# Arguments: $1 = session_id
+finalize_session_log() {
+    local session_id="$1"
+    [ -z "$CLAUDE_CAGE_SESSION_LOG" ] && return 0
+    [ ! -f "$CLAUDE_CAGE_SESSION_LOG" ] && return 0
+
+    local log_dir
+    log_dir=$(dirname "$CLAUDE_CAGE_SESSION_LOG")
+    local final_path="$log_dir/$session_id.log"
+
+    mv "$CLAUDE_CAGE_SESSION_LOG" "$final_path" 2>/dev/null || return 0
+    CLAUDE_CAGE_SESSION_LOG="$final_path"
+}
+
+# Restore original stdout/stderr from saved fd 5/6, then close them.
+# Called before sandbox launch so the interactive TUI doesn't go through tee.
+restore_original_fds() {
+    [ -z "$CLAUDE_CAGE_SESSION_LOG" ] && return 0
+
+    exec 1>&5 2>&6
+    exec 5>&- 6>&-
+}
+
+# Append a message directly to the session log file, bypassing tee.
+# Used after fds are restored (cleanup markers, sandbox launch/exit).
+append_session_log() {
+    local msg="$1"
+    [ -z "$CLAUDE_CAGE_SESSION_LOG" ] && return 0
+    [ ! -f "$CLAUDE_CAGE_SESSION_LOG" ] && return 0
+    printf '%s\n' "$msg" >> "$CLAUDE_CAGE_SESSION_LOG"
+}
+
 # Wrapper for commands that should be silent in normal mode
 # In verbose mode, prints the command before executing
 # In debug mode, shows command output instead of suppressing it

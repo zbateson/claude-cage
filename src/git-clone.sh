@@ -941,6 +941,28 @@ if [ -z "$current_branch" ]; then
     current_branch=$(git branch --contains "$COMMIT_HASH" 2>/dev/null | head -1 | sed 's/^[ *]*//')
 fi
 
+# For merge commits, ensure all parents have marks in source-marks before fast-export.
+# If a parent was synced via sync_to_source (git-am path), its mark may be missing from
+# source-marks. Without it, fast-export misattributes the from line (uses the second
+# parent) and the merge topology is lost, causing non-fast-forward errors on import.
+if git rev-parse --verify "${COMMIT_HASH}^2" >/dev/null 2>&1; then
+    for _PARENT_HASH in $(git rev-list --parents -1 "$COMMIT_HASH" | cut -d' ' -f2-); do
+        if [ -f "$SOURCE_MARKS" ] && grep -q " ${_PARENT_HASH}$" "$SOURCE_MARKS" 2>/dev/null; then
+            continue
+        fi
+        # Parent not in source-marks — look up its intermediary hash from commit map
+        _INT_PARENT=$(awk -v sh="$_PARENT_HASH" '$2 == sh && $1 != "0" { print $1; exit }' "$COMMIT_MAP" 2>/dev/null)
+        if [ -n "$_INT_PARENT" ] && [ -f "$SOURCE_MARKS" ] && [ -f "$IMPORT_MARKS" ]; then
+            _MAX_MARK=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
+                "$SOURCE_MARKS" "$IMPORT_MARKS" 2>/dev/null)
+            _NEW_MARK=$((_MAX_MARK + 1))
+            echo ":$_NEW_MARK $_PARENT_HASH" >> "$SOURCE_MARKS"
+            echo ":$_NEW_MARK $_INT_PARENT" >> "$IMPORT_MARKS"
+            _sync_log "$COMMIT_SHORT" ">>intermediary" "added missing parent mark :$_NEW_MARK for ${_PARENT_HASH:0:8}"
+        fi
+    done
+fi
+
 # Export to temp file first so we can detect excluded-only commits before fast-import.
 # git fast-export --export-marks only writes commit marks (blobs are ignored per docs).
 # This means incremental exports lose blob marks from source-marks. For excluded-only
@@ -1005,7 +1027,7 @@ if ! grep -q '^from ' "$EXPORT_OUT"; then
     _INT_HEAD=$(git -C "$INTERMEDIARY" rev-parse "$current_branch" 2>/dev/null)
     if [ -n "$_INT_HEAD" ]; then
         _sync_log "$COMMIT_SHORT" ">>intermediary" "marks gap: injecting parent ${_INT_HEAD:0:8}"
-        awk -v parent="$_INT_HEAD" '/^deleteall$/ && !done { print "from " parent; done=1 } { print }' \
+        awk -v parent="$_INT_HEAD" '/^(merge |deleteall$)/ && !done { print "from " parent; done=1 } { print }' \
             "$EXPORT_OUT" > "$EXPORT_OUT.fix" && mv "$EXPORT_OUT.fix" "$EXPORT_OUT"
     else
         echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
@@ -1026,7 +1048,9 @@ IMPORT_RC=$?
 if [ "$IMPORT_RC" -ne 0 ]; then
     _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=$IMPORT_RC"
     [ -s "$IMPORT_ERR" ] && _sync_log "$COMMIT_SHORT" ">>intermediary" "import stderr: $(cat "$IMPORT_ERR")"
-    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL (import=$IMPORT_RC)"
+    _IMPORT_MSG="Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL (import=$IMPORT_RC)"
+    [ -s "$IMPORT_ERR" ] && _IMPORT_MSG="$_IMPORT_MSG: $(cat "$IMPORT_ERR")"
+    echo -e "\033[1;31mclaude-cage:\033[0m $_IMPORT_MSG"
     rm -f "$EXPORT_ERR" "$IMPORT_ERR" "$EXPORT_OUT"
     exit 1
 fi

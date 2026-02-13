@@ -540,7 +540,90 @@ else
     echo "  PASS: Merge synced (intermediary updated)"
 fi
 
-echo "Test 17: Post-merge hook skips squash merges"
+echo "Test 17: Merge commit with marks-gap first parent syncs correctly"
+# When a merge commit's first parent is NOT in source-marks (marks gap),
+# fast-export misattributes the 'from' line to the second parent, losing
+# merge topology and causing non-fast-forward errors. The fix patches marks
+# for missing parents before fast-export, using the commit map to look up
+# their intermediary hashes.
+
+# Save current master head — this is known to marks
+marks_gap_base=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+# Create a feature branch from this known-good state
+git -C "$SOURCE_PATH" checkout -b marks-gap-feature --quiet
+echo "marks-gap feature" > "$SOURCE_PATH/marks-gap-feature.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Marks-gap feature commit" --quiet
+
+# Verify feature commit synced to intermediary
+mg_feature_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if ! grep -q " ${mg_feature_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "FAIL: Feature commit not synced before marks-gap merge test"
+    exit 1
+fi
+
+# Switch to master and make a commit that we'll remove from source-marks
+# to simulate a marks gap (e.g. from a sync_to_source git-am operation)
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+echo "marks-gap master content" > "$SOURCE_PATH/marks-gap-master.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Marks-gap master commit" --quiet
+
+mg_master_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+# The post-commit hook synced this commit — remove it from source-marks
+# to simulate the marks gap that happens after sync_to_source git-am
+sed -i "/ ${mg_master_head}$/d" "$local_source_marks"
+
+# Now merge the feature branch — creates a merge commit whose first parent
+# (mg_master_head) is NOT in source-marks → triggers marks gap code path
+git -C "$SOURCE_PATH" merge marks-gap-feature --no-edit --quiet
+
+mg_merge_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+# Verify the merge commit was synced (not mapped to 0)
+if grep -q "^0 ${mg_merge_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "FAIL: Merge commit mapped to 0 (marks gap injection failed)"
+    echo "  merge HEAD: $mg_merge_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+if ! grep -q " ${mg_merge_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "FAIL: Merge commit not in commit map at all"
+    echo "  merge HEAD: $mg_merge_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+
+# Verify intermediary master was updated
+int_mg_head=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME" 2>/dev/null)
+if ! grep -q "^${int_mg_head} ${mg_merge_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "FAIL: Intermediary master doesn't point to mapped merge commit"
+    echo "  intermediary HEAD: $int_mg_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+
+# Verify a subsequent commit on master syncs correctly (not a non-FF error)
+echo "post-merge-gap content" > "$SOURCE_PATH/post-merge-gap.txt"
+git -C "$SOURCE_PATH" add -A && git -C "$SOURCE_PATH" commit -m "Post merge-gap commit" --quiet
+
+post_mg_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if ! grep -q " ${post_mg_head}$" "$local_commit_map" 2>/dev/null; then
+    echo "FAIL: Commit after marks-gap merge not synced"
+    echo "  post merge-gap HEAD: $post_mg_head"
+    echo "  commit map:"
+    cat "$local_commit_map"
+    exit 1
+fi
+echo "  PASS: Merge commit with marks-gap parent synced, subsequent commits work"
+
+# Clean up the marks-gap feature branch
+git -C "$SOURCE_PATH" branch -D marks-gap-feature 2>/dev/null || true
+
+echo "Test 18: Post-merge hook skips squash merges"
 # Squash merges pass $1=1 to post-merge hook. The hook should skip and let
 # post-commit handle the eventual commit.
 if ! grep -q '"\${1:-0}" = "1"' "$post_merge_hook"; then
@@ -550,7 +633,7 @@ if ! grep -q '"\${1:-0}" = "1"' "$post_merge_hook"; then
 fi
 echo "  PASS: post-merge hook checks for squash merge flag"
 
-echo "Test 18: Post-merge hook cleanup removes post-merge hooks"
+echo "Test 19: Post-merge hook cleanup removes post-merge hooks"
 cleanup_source_hooks "$SOURCE_PATH"
 if [ -f "$post_merge_hook" ]; then
     echo "FAIL: post-merge hook should have been removed by cleanup_source_hooks"
@@ -571,7 +654,7 @@ echo ""
 echo "=== Testing autoSync=false (no pipe, but source hooks installed) ==="
 echo ""
 
-echo "Test 19: Source hooks installed but no pipe when autoSync=false"
+echo "Test 20: Source hooks installed but no pipe when autoSync=false"
 # Clean up all existing state
 rm -rf "$INTERMEDIARY_DIR" "$CLAUDE_CAGE_RUNTIME"
 rm -rf "$SOURCE_PATH/.git/hooks/post-commit.d"
@@ -625,7 +708,7 @@ echo ""
 echo "=== Testing unscoped merge prevention hooks ==="
 echo ""
 
-echo "Test 20: Unscoped work dir gets pre-merge-commit hook requiring pushed branches"
+echo "Test 21: Unscoped work dir gets pre-merge-commit hook requiring pushed branches"
 
 # Create a fresh work dir (unscoped = no scope_path)
 MERGE_WORK="$TEST_TMP/merge-work"
@@ -661,7 +744,7 @@ if ! grep -q "git branch -r --contains" "$MERGE_WORK/.git/hooks/pre-merge-commit
 fi
 echo "  PASS: Hook checks for pushed branches (not total block)"
 
-echo "Test 21: Unscoped hook blocks merge of unpushed branch"
+echo "Test 22: Unscoped hook blocks merge of unpushed branch"
 
 # Create a local-only branch (not pushed to remote)
 git -C "$MERGE_WORK" checkout -q -b local-feature
@@ -695,7 +778,7 @@ echo "  PASS: Error message mentions unpushed branch"
 # Clean up the blocked merge state
 git -C "$MERGE_WORK" merge --abort 2>/dev/null || true
 
-echo "Test 22: Unscoped hook allows merge of pushed branch"
+echo "Test 23: Unscoped hook allows merge of pushed branch"
 
 # Push the feature branch to remote
 git -C "$MERGE_WORK" push -q origin local-feature 2>/dev/null

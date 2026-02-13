@@ -325,6 +325,26 @@ apply_source_to_intermediary() {
     subject=$(git -C "$source_dir" log -1 --format=%s HEAD 2>/dev/null | head -c 50)
     sync_log "$log_file" "$source_short" ">>intermediary" "applying: $subject"
 
+    # For merge commits, ensure all parents have marks in source-marks before fast-export.
+    # See comment in claude-cage-sync-commit for full explanation.
+    if git -C "$source_dir" rev-parse --verify "HEAD^2" >/dev/null 2>&1; then
+        local _parent_hash _int_parent _max_mark _new_mark
+        for _parent_hash in $(git -C "$source_dir" rev-list --parents -1 HEAD | cut -d' ' -f2-); do
+            if [ -f "$source_marks_path" ] && grep -q " ${_parent_hash}$" "$source_marks_path" 2>/dev/null; then
+                continue
+            fi
+            _int_parent=$(awk -v sh="$_parent_hash" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path" 2>/dev/null)
+            if [ -n "$_int_parent" ] && [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
+                _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
+                    "$source_marks_path" "$import_marks_path" 2>/dev/null)
+                _new_mark=$((_max_mark + 1))
+                echo ":$_new_mark $_parent_hash" >> "$source_marks_path"
+                echo ":$_new_mark $_int_parent" >> "$import_marks_path"
+                sync_log "$log_file" "$source_short" ">>intermediary" "added missing parent mark :$_new_mark for ${_parent_hash:0:8}"
+            fi
+        done
+    fi
+
     # Export to temp file first so we can detect excluded-only commits before
     # fast-import. See comment in post-commit hook for full explanation.
     local export_err export_out
@@ -387,7 +407,7 @@ apply_source_to_intermediary() {
         fi
         if [ -n "$_int_head" ]; then
             sync_log "$log_file" "$source_short" ">>intermediary" "marks gap: injecting parent ${_int_head:0:8}"
-            awk -v parent="$_int_head" '/^deleteall$/ && !done { print "from " parent; done=1 } { print }' \
+            awk -v parent="$_int_head" '/^(merge |deleteall$)/ && !done { print "from " parent; done=1 } { print }' \
                 "$export_out" > "$export_out.fix" && mv "$export_out.fix" "$export_out"
         else
             echo "0 $source_head" >> "$commit_map_path"
@@ -408,6 +428,9 @@ apply_source_to_intermediary() {
     if [ "$import_rc" -ne 0 ]; then
         sync_log "$log_file" "$source_short" ">>intermediary" "fast-import FAILED rc=$import_rc"
         [ -s "$import_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "import stderr: $(cat "$import_err")"
+        local _import_msg="fast-import failed for $source_short (rc=$import_rc)"
+        [ -s "$import_err" ] && _import_msg="$_import_msg: $(cat "$import_err")"
+        echo -e "\033[1;31mclaude-cage:\033[0m $_import_msg" >&2
         rm -f "$export_err" "$import_err" "$export_out"
         return 1
     fi

@@ -63,7 +63,7 @@ The intermediary sticks around in `~/.cache/`, shared across all your sessions. 
 ## Quick Start
 
 ```bash
-# Install dependencies (Ubuntu/Debian, bwrap mode)
+# Install dependencies (Ubuntu/Debian/WSL 2, bwrap mode)
 sudo apt install git lua5.4 bubblewrap iptables slirp4netns
 
 # Or use Docker mode instead (macOS/Linux/WSL 2)
@@ -114,7 +114,7 @@ Consider yourself warned.
 
 **Dependencies (bwrap mode):**
 ```bash
-# Ubuntu/Debian
+# Ubuntu/Debian/WSL 2
 sudo apt install git lua5.4 bubblewrap iptables
 
 # For network filtering (optional)

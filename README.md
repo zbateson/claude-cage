@@ -278,7 +278,7 @@ Every time you fire up claude-cage, it creates a session tagged with a timestamp
 
 Here's how it decides what to do when you run `claude-cage`:
 
-1. **Join an active session** — If another project's already runnin' in a session, claude-cage joins it. Your project gets its own work directory inside the same session, and both projects are mounted in the sandbox.
+1. **Join an active session** (if `isolated = false`) — If another project's already runnin' in a session, claude-cage joins it. Your project gets its own work directory inside the same session, and both projects are mounted in the sandbox.
 2. **Reuse a clean session** — If there's an inactive session lyin' around with no uncommitted changes, claude-cage takes it over. No sense lettin' it collect dust.
 3. **Prompt on dirty sessions** — If the only available session has uncommitted work, you get asked: pick it up, wipe it clean, or start fresh.
 4. **Create a new session** — If none of the above apply, a fresh session gets spun up.

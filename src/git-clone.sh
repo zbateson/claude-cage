@@ -235,7 +235,7 @@ repos_list_remove() {
     local repos_file
     repos_file=$(get_repos_list_path "$source_dir")
 
-    [ -f "$repos_file" ] || return
+    [ -f "$repos_file" ] || return 0
 
     # Remove the matching line (exact match)
     local tmp
@@ -300,7 +300,7 @@ repos_list_clean_orphans() {
     local git_root
     git_root=$(get_git_root "$source_dir")
 
-    [ -f "$repos_file" ] || return
+    [ -f "$repos_file" ] || return 0
 
     local tmp
     tmp=$(mktemp)
@@ -364,7 +364,7 @@ cleanup_child_intermediaries() {
     git_root=$(get_git_root "$source_dir")
     local repos_file
     repos_file=$(get_repos_list_path "$source_dir")
-    [ -f "$repos_file" ] || return
+    [ -f "$repos_file" ] || return 0
 
     local children_to_remove=()
     while IFS= read -r _existing_scope; do
@@ -442,7 +442,7 @@ build_cross_scope_source_dirs() {
     [ -z "$git_root" ] && return
     local repos_file
     repos_file=$(get_repos_list_path "$source_dir")
-    [ -f "$repos_file" ] || return
+    [ -f "$repos_file" ] || return 0
     while IFS= read -r _scope; do
         local _sd
         if [ -z "$_scope" ]; then _sd="$git_root"; else _sd="$git_root/$_scope"; fi
@@ -525,6 +525,8 @@ get_work_branch() {
 }
 
 # Find a reusable session for a source directory
+# When cfg_isolated=false: scans ALL sessions (cross-project sharing).
+# When cfg_isolated=true: scans only sessions matching our source_dir.
 # Discovers sessions across all scopes in the same git root via repos.list.
 # Sets globals:
 #   REUSE_SESSION_ID      - session ID (or empty)
@@ -535,6 +537,7 @@ get_work_branch() {
 #   REUSE_ACTIVE_SESSIONS - newline-separated list of "session_id branch source_dir scope" for active sessions
 #   REUSE_CLEAN_SESSIONS  - newline-separated list of "session_id branch source_dir scope" for inactive clean sessions
 #   REUSE_DIRTY_SESSIONS  - newline-separated list of "session_id branch dirty_type source_dir scope" for inactive dirty sessions
+#   REUSE_JOINABLE_SESSIONS - newline-separated list of "session_id" for active sessions we can join (non-isolated)
 find_reusable_session() {
     local source_dir="$1"
 
@@ -546,6 +549,7 @@ find_reusable_session() {
     REUSE_ACTIVE_SESSIONS=""
     REUSE_DIRTY_SESSIONS=""
     REUSE_CLEAN_SESSIONS=""
+    REUSE_JOINABLE_SESSIONS=""
 
     if [ ! -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
         return
@@ -558,24 +562,68 @@ find_reusable_session() {
     local -a active_sessions=()
     local -a inactive_clean=()
     local -a inactive_dirty=()
+    local -a joinable_sessions=()
+
+    # Track which session IDs we've already seen (to avoid duplicates)
+    local -A seen_session_ids=()
 
     # Scan sessions newest first, across all source_dirs
     local session_id session_dir sd work branch scope
     for session_dir in $(ls -1dr "$CLAUDE_CAGE_CACHE/sessions"/* 2>/dev/null); do
         [ -d "$session_dir" ] || continue
         session_id=$(basename "$session_dir")
+
+        # Cross-project session sharing: when not isolated, consider all sessions
+        if [ "${cfg_isolated:-}" != "true" ]; then
+            # Skip isolated sessions that belong to a different source_dir
+            if is_session_isolated "$session_id"; then
+                local iso_source
+                iso_source=$(get_isolated_session_source "$session_id")
+                local _is_our_source=false
+                for sd in "${source_dirs[@]}"; do
+                    [ "$sd" = "$iso_source" ] && _is_our_source=true && break
+                done
+                [ "$_is_our_source" = false ] && continue
+            fi
+
+            # Check if this is an active session we can join (no work dir for us yet, or clean)
+            if [ -z "${seen_session_ids[$session_id]+_}" ] && session_is_active "$session_id"; then
+                # Check if our work dir exists in this session
+                local our_work="$session_dir/work$source_dir"
+                if [ ! -d "$our_work/.git" ] || ! is_work_dirty "$our_work"; then
+                    joinable_sessions+=("$session_id")
+                fi
+            fi
+        else
+            # Isolated mode: skip sessions that aren't isolated for our source
+            # Also skip shared (non-isolated) sessions
+            if is_session_isolated "$session_id"; then
+                local iso_source
+                iso_source=$(get_isolated_session_source "$session_id")
+                local _is_our_source=false
+                for sd in "${source_dirs[@]}"; do
+                    [ "$sd" = "$iso_source" ] && _is_our_source=true && break
+                done
+                [ "$_is_our_source" = false ] && continue
+            fi
+            # In isolated mode, non-isolated sessions are still scanned for our work dirs
+        fi
+
+        # Scan for work dirs matching our source_dirs
+        local _found_any=false
         for sd in "${source_dirs[@]}"; do
             work="$session_dir/work$sd"
             # Must have .git to be a real work dir (not just a parent of a scoped work dir)
             [ -d "$work/.git" ] || continue
+            _found_any=true
 
             branch=$(get_work_branch "$work")
             scope=""
             [ -f "$work/.git/claude-cage-scope-path" ] && \
                 scope=$(cat "$work/.git/claude-cage-scope-path")
 
-            # Check if session has a live PID (using correct source_dir for this work dir)
-            if session_is_active "$sd" "$session_id"; then
+            # Check if session has a live PID for this source_dir
+            if session_is_active_for_source "$session_id" "$sd"; then
                 active_sessions+=("$session_id $branch $sd $scope")
             else
                 local has_uncommitted=false has_unpushed=false dirty_type=""
@@ -595,6 +643,46 @@ find_reusable_session() {
                 fi
             fi
         done
+
+        # Non-isolated: also scan for other projects' work dirs in this session
+        # so we can discover clean sessions from other projects for reuse
+        if [ "$_found_any" = false ] && [ "${cfg_isolated:-}" != "true" ] && \
+           [ -d "$session_dir/work" ]; then
+            # Find any .git dir in this session's work tree
+            local _other_git
+            _other_git=$(find "$session_dir/work" -name ".git" -type d -print -quit 2>/dev/null)
+            if [ -n "$_other_git" ]; then
+                local _other_work="${_other_git%/.git}"
+                local _other_sd="${_other_work#"$session_dir/work"}"
+                local _other_branch
+                _other_branch=$(get_work_branch "$_other_work")
+                local _other_scope=""
+                [ -f "$_other_work/.git/claude-cage-scope-path" ] && \
+                    _other_scope=$(cat "$_other_work/.git/claude-cage-scope-path")
+
+                if session_is_active "$session_id"; then
+                    active_sessions+=("$session_id $_other_branch $_other_sd $_other_scope")
+                else
+                    local _has_uncommitted=false _has_unpushed=false _dirty_type=""
+                    is_work_dirty "$_other_work" && _has_uncommitted=true
+                    work_has_unpushed "$_other_work" && _has_unpushed=true
+                    if [ "$_has_uncommitted" = true ] && [ "$_has_unpushed" = true ]; then
+                        _dirty_type="uncommitted+unpushed"
+                    elif [ "$_has_uncommitted" = true ]; then
+                        _dirty_type="uncommitted"
+                    elif [ "$_has_unpushed" = true ]; then
+                        _dirty_type="unpushed"
+                    fi
+                    if [ -n "$_dirty_type" ]; then
+                        inactive_dirty+=("$session_id $_other_branch $_dirty_type $_other_sd $_other_scope")
+                    else
+                        inactive_clean+=("$session_id $_other_branch $_other_sd $_other_scope")
+                    fi
+                fi
+            fi
+        fi
+
+        seen_session_ids["$session_id"]=1
     done
 
     # Build active sessions list
@@ -610,6 +698,11 @@ find_reusable_session() {
     # Build clean sessions list
     if [ ${#inactive_clean[@]} -gt 0 ]; then
         REUSE_CLEAN_SESSIONS=$(printf '%s\n' "${inactive_clean[@]}")
+    fi
+
+    # Build joinable sessions list
+    if [ ${#joinable_sessions[@]} -gt 0 ]; then
+        REUSE_JOINABLE_SESSIONS=$(printf '%s\n' "${joinable_sessions[@]}")
     fi
 
     # Priority: active > inactive dirty > inactive clean
@@ -630,21 +723,39 @@ find_reusable_session() {
 }
 
 # Reuse an inactive clean session or create a new one
-# Only reuses sessions matching the current source_dir (same-scope only).
+# When cfg_isolated=false: can reuse clean sessions from any project.
+# When cfg_isolated=true: same-source only.
 # Arguments: $1 = source_dir
-# Uses globals: REUSE_CLEAN_SESSIONS, CLAUDE_CAGE_CACHE
+# Uses globals: REUSE_CLEAN_SESSIONS, REUSE_JOINABLE_SESSIONS, CLAUDE_CAGE_CACHE, cfg_isolated
 # Sets: CLAUDE_CAGE_SESSION
 reuse_or_create_session() {
     local source_dir="$1"
+
+    # When not isolated, check for joinable active sessions first
+    if [ "${cfg_isolated:-}" != "true" ] && [ -n "${REUSE_JOINABLE_SESSIONS:-}" ]; then
+        local joinable_id
+        joinable_id=$(echo "$REUSE_JOINABLE_SESSIONS" | head -1)
+        if [ -n "$joinable_id" ] && session_is_active "$joinable_id"; then
+            CLAUDE_CAGE_SESSION="$joinable_id"
+            echo "Joinin' session $joinable_id — another project's already runnin' in it."
+            return
+        fi
+    fi
+
     if [ -n "${REUSE_CLEAN_SESSIONS:-}" ]; then
-        # Filter to same-source entries only (skip cross-scope clean sessions)
-        local same_source csid cbranch csource cscope
-        same_source=$(while IFS=' ' read -r csid cbranch csource cscope; do
-            [ "$csource" = "$source_dir" ] && echo "$csid $cbranch $csource $cscope"
-        done <<< "$REUSE_CLEAN_SESSIONS")
-        if [ -n "$same_source" ]; then
+        local filter_source csid cbranch csource cscope
+        if [ "${cfg_isolated:-}" = "true" ]; then
+            # Isolated: same-source only
+            filter_source=$(while IFS=' ' read -r csid cbranch csource cscope; do
+                [ "$csource" = "$source_dir" ] && echo "$csid $cbranch $csource $cscope"
+            done <<< "$REUSE_CLEAN_SESSIONS")
+        else
+            # Non-isolated: any clean session is eligible
+            filter_source="$REUSE_CLEAN_SESSIONS"
+        fi
+        if [ -n "$filter_source" ]; then
             local old_session_id
-            old_session_id=$(echo "$same_source" | head -1 | awk '{print $1}')
+            old_session_id=$(echo "$filter_source" | head -1 | awk '{print $1}')
             local new_session_id
             new_session_id=$(date +%Y-%m-%d_%H-%M-%S)
             if [ -d "$CLAUDE_CAGE_CACHE/sessions/$new_session_id" ]; then
@@ -675,9 +786,8 @@ reuse_or_create_session() {
 }
 
 # Clean up inactive clean sessions we're not using
-# Only cleans sessions matching the current source_dir (same-scope only).
-# Removes work dirs and empty parent/session dirs for all inactive clean
-# sessions except the one currently selected (CLAUDE_CAGE_SESSION).
+# Only removes THIS project's work dir from clean sessions.
+# Removes session dir only if empty after cleanup.
 # Arguments: $1 = source_dir
 # Uses globals: REUSE_CLEAN_SESSIONS, CLAUDE_CAGE_SESSION, CLAUDE_CAGE_CACHE
 cleanup_stale_sessions() {
@@ -690,31 +800,30 @@ cleanup_stale_sessions() {
     while IFS=' ' read -r csid cbranch csource cscope; do
         [ -z "$csid" ] && continue
         [ "$csid" = "$CLAUDE_CAGE_SESSION" ] && continue
-        [ "$csource" != "$source_dir" ] && continue  # Skip cross-scope
+        [ "$csource" != "$source_dir" ] && continue  # Only clean our own source
 
         local session_cache="$CLAUDE_CAGE_CACHE/sessions/$csid"
         local work_dir="$session_cache/work$source_dir"
         [ -d "$work_dir" ] || continue
 
         rm -rf "$work_dir"
-        ((count++))
+        count=$((count + 1))
 
         # Remove .caged symlink for this session
         local caged_link="$source_dir/.caged/sessions/$csid"
         [ -d "$caged_link" ] && rm -rf "$caged_link"
 
-        # Remove session log
-        local stale_log="$CLAUDE_CAGE_CACHE/logs/$csid.log"
-        [ -f "$stale_log" ] && rm -f "$stale_log"
-
         cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
 
-        # Clean empty session dir
+        # Clean empty session dir (only if no other work dirs or markers remain)
         if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
             rm -rf "$session_cache/work"
         fi
         if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
             rm -rf "$session_cache"
+            # Also remove session log when session dir is fully gone
+            local stale_log="$CLAUDE_CAGE_CACHE/logs/$csid.log"
+            [ -f "$stale_log" ] && rm -f "$stale_log"
         fi
     done <<< "$REUSE_CLEAN_SESSIONS"
 
@@ -723,14 +832,11 @@ cleanup_stale_sessions() {
     fi
 }
 
-# Check if a specific session has a live PID for a project
-# Arguments: $1 = source_dir, $2 = session_id
+# Check if a specific session has any live PID (any project)
+# Arguments: $1 = session_id
 session_is_active() {
-    local source_dir="$1"
-    local session_id="$2"
-    local _ph
-    _ph=$(path_hash "$source_dir")
-    local session_dir="$CLAUDE_CAGE_RUNTIME/sessions/$_ph"
+    local session_id="$1"
+    local session_dir="$CLAUDE_CAGE_RUNTIME/sessions/$session_id"
 
     [ -d "$session_dir" ] || return 1
 
@@ -738,17 +844,63 @@ session_is_active() {
         [ -f "$pidfile" ] || continue
         local pid
         pid=$(basename "$pidfile")
-        # Read session ID from file content
-        local file_session
-        file_session=$(cat "$pidfile" 2>/dev/null)
-        if [ "$file_session" = "$session_id" ] && kill -0 "$pid" 2>/dev/null; then
+        if kill -0 "$pid" 2>/dev/null; then
             return 0
         fi
     done
     return 1
 }
 
+# Check if a specific session has a live PID for a specific source_dir
+# Arguments: $1 = session_id, $2 = source_dir
+session_is_active_for_source() {
+    local session_id="$1"
+    local source_dir="$2"
+    local session_dir="$CLAUDE_CAGE_RUNTIME/sessions/$session_id"
+
+    [ -d "$session_dir" ] || return 1
+
+    for pidfile in "$session_dir"/*; do
+        [ -f "$pidfile" ] || continue
+        local pid
+        pid=$(basename "$pidfile")
+        local file_source
+        file_source=$(cat "$pidfile" 2>/dev/null)
+        if [ "$file_source" = "$source_dir" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Mark a session as isolated (only reusable by same source_dir with isolated=true)
+# Arguments: $1 = session_id, $2 = source_dir
+mark_session_isolated() {
+    local session_id="$1"
+    local source_dir="$2"
+    local session_cache="$CLAUDE_CAGE_CACHE/sessions/$session_id"
+    mkdir -p "$session_cache"
+    echo "$source_dir" > "$session_cache/.claude-cage-isolated"
+}
+
+# Check if a session is marked isolated
+# Arguments: $1 = session_id
+is_session_isolated() {
+    local session_id="$1"
+    [ -f "$CLAUDE_CAGE_CACHE/sessions/$session_id/.claude-cage-isolated" ]
+}
+
+# Get the source_dir from an isolated session marker
+# Arguments: $1 = session_id
+get_isolated_session_source() {
+    local session_id="$1"
+    local marker="$CLAUDE_CAGE_CACHE/sessions/$session_id/.claude-cage-isolated"
+    [ -f "$marker" ] && cat "$marker"
+}
+
 # Clean up cache for a specific session
+# Only removes this project's work dir from the session.
+# Removes session dir only if empty after cleanup.
 # Arguments: $1 = source directory, $2 = session_id (timestamp)
 clean_session_cache() {
     local source_dir="$1"
@@ -794,13 +946,6 @@ clean_session_cache() {
         echo "Removed work directory: $work_dir"
     fi
 
-    # Remove session log
-    local log_file="$CLAUDE_CAGE_CACHE/logs/$session_id.log"
-    if [ -f "$log_file" ]; then
-        run rm -f "$log_file"
-        echo "Removed session log: $log_file"
-    fi
-
     # Remove .caged symlink for this session
     if [ -d "$caged_link" ]; then
         run rm -rf "$caged_link"
@@ -817,6 +962,15 @@ clean_session_cache() {
     if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
         run rm -rf "$session_cache"
         echo "Removed empty session cache: $session_cache"
+    fi
+
+    # Remove session log only if session dir is fully gone
+    if [ ! -d "$session_cache" ]; then
+        local log_file="$CLAUDE_CAGE_CACHE/logs/$session_id.log"
+        if [ -f "$log_file" ]; then
+            run rm -f "$log_file"
+            echo "Removed session log: $log_file"
+        fi
     fi
 
     # Check if shared intermediary should be removed

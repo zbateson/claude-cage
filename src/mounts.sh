@@ -3,6 +3,7 @@
 # ============================================================================
 
 # Enumerate project directories for mounting
+# Scans session work root for .git dirs to discover cross-project work dirs.
 # Populates global arrays: CAGE_WORK_PROJECTS and CAGE_INTERMEDIARY_PROJECTS
 # Each entry is "source_path|container_path"
 #
@@ -60,41 +61,38 @@ enumerate_projects() {
     local -A seen_mount_dests=()
     seen_mount_dests["$mount_dest"]=1
 
-    # Find other projects by scanning intermediaries and looking up their latest session work dir
-    while IFS= read -r head_file; do
-        local bare_dir="${head_file%/HEAD}"
-
-        # Derive source path from metadata (handles scoped intermediaries with @scoped/ dirs)
-        local other_sp=""
-        local other_gr=""
-        local other_scope_file="$bare_dir/claude-cage-scope-path"
-        local other_gr_file="$bare_dir/claude-cage-git-root"
-        if [ -f "$other_scope_file" ]; then
-            other_sp=$(cat "$other_scope_file")
-        fi
-        if [ -f "$other_gr_file" ]; then
-            other_gr=$(cat "$other_gr_file")
-        fi
-
-        # Compute source dir from metadata (or fall back to path stripping)
-        local orig_path
-        if [ -n "$other_gr" ]; then
-            if [ -n "$other_sp" ]; then
-                orig_path="$other_gr/$other_sp"
-            else
-                orig_path="$other_gr"
-            fi
-        else
-            orig_path="${bare_dir#"$intermediary_root"}"
-        fi
+    # Find other projects by scanning session work root for .git dirs
+    [ -d "$session_work_root" ] || return 0
+    while IFS= read -r git_dir; do
+        local other_work="${git_dir%/.git}"
+        # Derive source path by stripping session_work_root prefix
+        local orig_path="${other_work#"$session_work_root"}"
         [ "$orig_path" = "$project_path" ] && continue
+
+        # Get the intermediary dir from work dir's remote.origin.url
+        local remote_url
+        remote_url=$(git -C "$other_work" config --get remote.origin.url 2>/dev/null) || continue
+        # Strip /run prefix (intermediaries are mounted at /run<intermediary_path>)
+        local other_bare="${remote_url#/run}"
+
+        # Read scope metadata from the work dir
+        local other_sp=""
+        [ -f "$other_work/.git/claude-cage-scope-path" ] && \
+            other_sp=$(cat "$other_work/.git/claude-cage-scope-path")
 
         # Determine mount destination (scope-aware: mount at git root)
         local other_mount_dest="$orig_path"
         local other_mount_src="$session_work_root$orig_path"
-        if [ -n "$other_sp" ] && [ -n "$other_gr" ]; then
-            other_mount_dest="$other_gr"
-            other_mount_src="$session_work_root$other_gr"
+        if [ -n "$other_sp" ]; then
+            local other_gr=""
+            if [ -d "$other_bare" ]; then
+                local other_gr_file="$other_bare/claude-cage-git-root"
+                [ -f "$other_gr_file" ] && other_gr=$(cat "$other_gr_file")
+            fi
+            if [ -n "$other_gr" ]; then
+                other_mount_dest="$other_gr"
+                other_mount_src="$session_work_root$other_gr"
+            fi
         fi
 
         # Skip if we'd duplicate a mount destination
@@ -103,21 +101,11 @@ enumerate_projects() {
         fi
         seen_mount_dests["$other_mount_dest"]=1
 
-        # Look for this project's work dir in our session
-        local other_work="$session_work_root$orig_path"
-        if [ -d "$other_work/.git" ]; then
-            CAGE_WORK_PROJECTS+=("$other_mount_src|$other_mount_dest")
+        CAGE_WORK_PROJECTS+=("$other_mount_src|$other_mount_dest")
+        if [ -d "$other_bare/objects" ]; then
+            CAGE_INTERMEDIARY_PROJECTS+=("$other_bare|$other_mount_dest")
         fi
-        CAGE_INTERMEDIARY_PROJECTS+=("$bare_dir|$other_mount_dest")
-    done < <({
-        find "$intermediary_root" -name "HEAD" -type f -print0 2>/dev/null
-        local scoped_root="$CLAUDE_CAGE_CACHE/scoped"
-        [ -d "$scoped_root" ] && find "$scoped_root" -name "HEAD" -type f -print0 2>/dev/null
-    } | while IFS= read -r -d '' f; do
-        # Only include if it looks like a bare repo (has objects/ dir)
-        local d="${f%/HEAD}"
-        [ -d "$d/objects" ] && printf '%s\n' "$f"
-    done)
+    done < <(find "$session_work_root" -name ".git" -type d 2>/dev/null)
 }
 
 # Build mount specifications for the sandbox

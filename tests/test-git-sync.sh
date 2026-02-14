@@ -305,9 +305,10 @@ setup_test_cage "source11"
 sleep 300 &
 fake_session_pid=$!
 
-session_dir=$(get_session_dir "$SOURCE_PATH")
+# New registration: $RUNTIME/sessions/<session_id>/<pid> with source_dir as content
+session_dir=$(get_session_dir "other-session-11")
 mkdir -p "$session_dir"
-echo "$fake_session_pid" > "$session_dir/$fake_session_pid"
+echo "$SOURCE_PATH" > "$session_dir/$fake_session_pid"
 
 if ! has_other_sessions "$SOURCE_PATH"; then
     kill "$fake_session_pid" 2>/dev/null
@@ -325,15 +326,15 @@ wait "$fake_session_pid" 2>/dev/null || true
 # ============================================================================
 echo "Test 12: has_other_sessions should clean stale PIDs"
 
-# Create a stale PID file (PID that definitely doesn't exist)
-session_dir=$(get_session_dir "$SOURCE_PATH")
+# Create a stale PID file (PID that definitely doesn't exist) with source_dir as content
+session_dir=$(get_session_dir "stale-session-12")
 mkdir -p "$session_dir"
-echo "999999999" > "$session_dir/999999999"
+echo "$SOURCE_PATH" > "$session_dir/999999999"
 
 # Also add a live process so has_other_sessions is exercised
 sleep 300 &
 live_pid=$!
-echo "$live_pid" > "$session_dir/$live_pid"
+echo "$SOURCE_PATH" > "$session_dir/$live_pid"
 
 # has_other_sessions should clean up stale PID and still find our sleep process
 if ! has_other_sessions "$SOURCE_PATH"; then

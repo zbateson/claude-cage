@@ -903,10 +903,10 @@ if [ ! -d "$NARROW_IDIR" ]; then
 fi
 
 # Simulate active session for the narrower source_dir by creating a PID file
-path_hash=$(echo -n "$SOURCE_API" | md5sum | cut -c1-12)
-session_pid_dir="$CLAUDE_CAGE_RUNTIME/sessions/$path_hash"
+# New format: $RUNTIME/sessions/<session_id>/<pid> with source_dir as content
+session_pid_dir="$CLAUDE_CAGE_RUNTIME/sessions/test-active-child"
 mkdir -p "$session_pid_dir"
-echo "test-active-child" > "$session_pid_dir/$$"
+echo "$SOURCE_API" > "$session_pid_dir/$$"
 
 # Now create broader scope (root) — should skip the child due to active session
 CLAUDE_CAGE_SESSION="test-active-broad"
@@ -1344,10 +1344,11 @@ INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
 create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
 
 # Register a fake session for services/api
-session_dir=$(get_session_dir "$SOURCE_API")
+# New format: $RUNTIME/sessions/<session_id>/<pid> with source_dir as content
+session_dir=$(get_session_dir "$CLAUDE_CAGE_SESSION")
 mkdir -p "$session_dir"
 # Use a fake PID that's definitely running (our own PID)
-echo "$CLAUDE_CAGE_SESSION" > "$session_dir/$$"
+echo "$SOURCE_API" > "$session_dir/$$"
 
 # Create a broader root intermediary (triggers cleanup_child_intermediaries)
 CLAUDE_CAGE_SESSION="test-deferred-root"

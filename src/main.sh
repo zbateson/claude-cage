@@ -538,7 +538,7 @@ else
         # --attach-session mode
         if [ -n "$cli_attach_session" ]; then
             # --attach-session <ts>: target specific session, must be active
-            if ! session_is_active "$cfg_source" "$cli_attach_session"; then
+            if ! session_is_active "$cli_attach_session"; then
                 echo "Session $cli_attach_session ain't active. Use without a timestamp to pick up an inactive session."
                 exit 1
             fi
@@ -589,9 +589,14 @@ else
         # Default mode (no --attach-session)
         case "$REUSE_SESSION_STATE" in
             "active")
-                # Another session is running - create a fresh one alongside it
-                echo "Another session's runnin' ($REUSE_SESSION_ID). Firin' up a fresh one alongside it."
-                reuse_or_create_session "$cfg_source"
+                if [ "$cfg_isolated" != "true" ] && [ -n "${REUSE_JOINABLE_SESSIONS:-}" ]; then
+                    # Non-isolated: join an active session that another project is using
+                    reuse_or_create_session "$cfg_source"
+                else
+                    # Isolated or no joinable sessions: create a fresh one alongside it
+                    echo "Another session's runnin' ($REUSE_SESSION_ID). Firin' up a fresh one alongside it."
+                    reuse_or_create_session "$cfg_source"
+                fi
                 ;;
             "clean")
                 # Inactive clean session - reuse same-source only (handled by reuse_or_create_session)
@@ -711,6 +716,11 @@ else
     fi
 
     export CLAUDE_CAGE_SESSION
+
+    # Mark session as isolated if configured
+    if [ "$cfg_isolated" = "true" ]; then
+        mark_session_isolated "$CLAUDE_CAGE_SESSION" "$cfg_source"
+    fi
 
     # Finalize session log with the selected session ID
     finalize_session_log "$CLAUDE_CAGE_SESSION"
@@ -843,18 +853,21 @@ cleanup_on_exit() {
         fi
         # Always unregister our session
         unregister_session "$cfg_source"
-        # Proactive cleanup: if other sessions are still active and ours is clean, remove it
+        # Proactive cleanup: if other sessions are still active for this source and ours is clean, remove work dir
         if has_other_sessions "$cfg_source" && [ -d "$work_dir/.git" ] \
             && ! is_work_dirty "$work_dir" && ! work_has_unpushed "$work_dir"; then
             local session_cache="$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION"
             rm -rf "$work_dir"
             cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
-            # Clean empty session dir
+            # Clean session dir only if fully empty (no other projects' work dirs)
             if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
                 rm -rf "$session_cache/work"
             fi
             if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
                 rm -rf "$session_cache"
+                # Remove session log only when session dir is fully gone
+                local _log_file="$CLAUDE_CAGE_CACHE/logs/$CLAUDE_CAGE_SESSION.log"
+                [ -f "$_log_file" ] && rm -f "$_log_file"
             fi
             # Remove .caged session symlink
             local _git_root
@@ -862,9 +875,6 @@ cleanup_on_exit() {
             if [ -n "$_git_root" ] && [ -d "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ]; then
                 rm -rf "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
             fi
-            # Remove session log
-            local _log_file="$CLAUDE_CAGE_CACHE/logs/$CLAUDE_CAGE_SESSION.log"
-            [ -f "$_log_file" ] && rm -f "$_log_file"
         fi
         # Deferred cleanup: if this scoped intermediary is now superseded
         if [ -n "${scope_path:-}" ]; then

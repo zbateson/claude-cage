@@ -377,13 +377,14 @@ mkdir -p "$WORK_A" "$WORK_B"
 git clone -q "$INTERMEDIARY_DIR" "$WORK_A"
 git clone -q "$INTERMEDIARY_DIR" "$WORK_B"
 
-# Register session A as "us" (current PID)
+# Register session A as "us" (current PID) — new format: $RUNTIME/sessions/<session_id>/<pid> with source_dir as content
 CLAUDE_CAGE_SESSION="$SID_A"
 register_session "$SOURCE_PATH"
 
-# Register session B as the other live process
-SESSION_DIR=$(get_session_dir "$SOURCE_PATH")
-echo "$SID_B" > "$SESSION_DIR/$OTHER_PID"
+# Register session B as the other live process — PID file with source_dir as content
+SESSION_DIR_B=$(get_session_dir "$SID_B")
+mkdir -p "$SESSION_DIR_B"
+echo "$SOURCE_PATH" > "$SESSION_DIR_B/$OTHER_PID"
 
 # Verify has_other_sessions sees session B
 if ! has_other_sessions "$SOURCE_PATH"; then
@@ -433,11 +434,12 @@ git clone -q "$INTERMEDIARY_DIR" "$WORK_D"
 # Make session C dirty
 echo "dirty" >> "$WORK_C/file.txt"
 
-# Register sessions
+# Register sessions — new format: $RUNTIME/sessions/<session_id>/<pid> with source_dir as content
 CLAUDE_CAGE_SESSION="$SID_C"
 register_session "$SOURCE_PATH"
-SESSION_DIR=$(get_session_dir "$SOURCE_PATH")
-echo "$SID_D" > "$SESSION_DIR/$OTHER_PID"
+SESSION_DIR_D=$(get_session_dir "$SID_D")
+mkdir -p "$SESSION_DIR_D"
+echo "$SOURCE_PATH" > "$SESSION_DIR_D/$OTHER_PID"
 
 # Unregister ours
 unregister_session "$SOURCE_PATH"
@@ -458,7 +460,7 @@ echo "  PASS: Dirty session kept on exit"
 
 # Clean up background process and fake PID files
 kill $OTHER_PID 2>/dev/null || true
-rm -f "$SESSION_DIR/$OTHER_PID"
+rm -f "$SESSION_DIR_D/$OTHER_PID" 2>/dev/null || true
 
 echo ""
 echo "=== Testing scoped session cleanup ==="

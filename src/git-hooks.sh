@@ -6,34 +6,35 @@
 # Session tracking (prevents cleanup race conditions with multiple sessions)
 # ============================================================================
 
-# Get the session directory for a source project
-# Sessions are tracked in runtime dir (cleared on reboot), per-project (path hash)
+# Get the session directory for a session ID
+# Sessions are tracked in runtime dir (cleared on reboot), per-session-id
+# Arguments: $1 = session_id
 get_session_dir() {
-    local source_dir="$1"
-    local path_hash
-    path_hash=$(path_hash "$source_dir")
-    echo "$CLAUDE_CAGE_RUNTIME/sessions/$path_hash"
+    local session_id="$1"
+    echo "$CLAUDE_CAGE_RUNTIME/sessions/$session_id"
 }
 
-# Register this session (create PID file containing session ID)
+# Register this session (create PID file containing source_dir)
+# Arguments: $1 = source_dir
 register_session() {
     local source_dir="$1"
     local session_dir
-    session_dir=$(get_session_dir "$source_dir")
+    session_dir=$(get_session_dir "${CLAUDE_CAGE_SESSION:-default}")
 
     if [ "$dry_run" = true ]; then
         echo "[dry-run] register session at $session_dir/$$"
     else
         mkdir -p "$session_dir"
-        echo "${CLAUDE_CAGE_SESSION:-}" > "$session_dir/$$"
+        echo "$source_dir" > "$session_dir/$$"
     fi
 }
 
 # Unregister this session (remove PID file)
+# Arguments: $1 = source_dir (unused, kept for API compatibility)
 unregister_session() {
     local source_dir="$1"
     local session_dir
-    session_dir=$(get_session_dir "$source_dir")
+    session_dir=$(get_session_dir "${CLAUDE_CAGE_SESSION:-default}")
 
     if [ "$dry_run" = true ]; then
         echo "[dry-run] unregister session at $session_dir/$$"
@@ -45,56 +46,69 @@ unregister_session() {
 }
 
 # Check if other sessions exist for this source project
+# Scans ALL session dirs for PIDs whose content matches source_dir.
 # Returns 0 (true) if other sessions exist, 1 (false) if not
+# Arguments: $1 = source_dir
 has_other_sessions() {
     local source_dir="$1"
-    local session_dir
-    session_dir=$(get_session_dir "$source_dir")
+    local sessions_root="$CLAUDE_CAGE_RUNTIME/sessions"
 
-    if [ ! -d "$session_dir" ]; then
-        return 1  # no sessions at all
+    if [ ! -d "$sessions_root" ]; then
+        return 1
     fi
 
-    # Check for other PID files (not ours)
     local count=0
-    for pidfile in "$session_dir"/*; do
-        [ -f "$pidfile" ] || continue
-        local pid
-        pid=$(basename "$pidfile")
-        if [ "$pid" != "$$" ]; then
-            # Check if process is still running
-            if kill -0 "$pid" 2>/dev/null; then
-                count=$((count + 1))
-            else
-                # Stale PID file, clean it up
-                rm -f "$pidfile"
+    for session_dir in "$sessions_root"/*/; do
+        [ -d "$session_dir" ] || continue
+        for pidfile in "$session_dir"*; do
+            [ -f "$pidfile" ] || continue
+            local pid
+            pid=$(basename "$pidfile")
+            if [ "$pid" != "$$" ]; then
+                if kill -0 "$pid" 2>/dev/null; then
+                    local file_source
+                    file_source=$(cat "$pidfile" 2>/dev/null)
+                    if [ "$file_source" = "$source_dir" ]; then
+                        count=$((count + 1))
+                    fi
+                else
+                    rm -f "$pidfile"
+                fi
             fi
-        fi
+        done
     done
 
     [ $count -gt 0 ]
 }
 
 # Check if ANY sessions exist for a source directory (including our own)
+# Scans ALL session dirs for PIDs whose content matches source_dir.
 # Returns 0 (true) if any sessions exist, 1 (false) if not
+# Arguments: $1 = source_dir
 has_any_sessions() {
     local source_dir="$1"
-    local session_dir
-    session_dir=$(get_session_dir "$source_dir")
+    local sessions_root="$CLAUDE_CAGE_RUNTIME/sessions"
 
-    if [ ! -d "$session_dir" ]; then
+    if [ ! -d "$sessions_root" ]; then
         return 1
     fi
 
-    for pidfile in "$session_dir"/*; do
-        [ -f "$pidfile" ] || continue
-        local pid
-        pid=$(basename "$pidfile")
-        if kill -0 "$pid" 2>/dev/null; then
-            return 0
-        else
-            rm -f "$pidfile"
-        fi
+    for session_dir in "$sessions_root"/*/; do
+        [ -d "$session_dir" ] || continue
+        for pidfile in "$session_dir"*; do
+            [ -f "$pidfile" ] || continue
+            local pid
+            pid=$(basename "$pidfile")
+            if kill -0 "$pid" 2>/dev/null; then
+                local file_source
+                file_source=$(cat "$pidfile" 2>/dev/null)
+                if [ "$file_source" = "$source_dir" ]; then
+                    return 0
+                fi
+            else
+                rm -f "$pidfile"
+            fi
+        done
     done
 
     return 1

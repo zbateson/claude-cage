@@ -70,7 +70,7 @@ Source `post-commit` / `post-merge` hooks fire → check commit mapping (skip if
 
 ### Sessions
 
-Multiple concurrent sessions share the same intermediary. Each gets its own work directory. PID-based session tracking in `$XDG_RUNTIME_DIR/claude-cage/sessions/`. Inactive clean sessions are reused on startup; dirty ones prompt the user. `--attach-session` shares an active session's work dir.
+Multiple concurrent sessions share the same intermediary. Each gets its own work directory. PID-based session tracking in `$XDG_RUNTIME_DIR/claude-cage/sessions/<session-id>/<pid>` (file content = source_dir). When `isolated = false` (default), sessions are shared across projects: an active session for project A can be joined by project B, and inactive clean sessions are reusable by any project. When `isolated = true`, sessions are project-scoped (marked with `.claude-cage-isolated`). `--attach-session` shares an active session's work dir.
 
 ### Failed Patches
 
@@ -190,7 +190,7 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 
 $XDG_RUNTIME_DIR/claude-cage/
 ├── pipes/<timestamp>/<project-path>      # Named pipe
-└── sessions/<path-hash>/<pid>            # Session tracking
+└── sessions/<session-id>/<pid>            # Session tracking (content = source_dir)
 
 project/.git/hooks/
 ├── post-commit.d/claude-cage-<hash>      # Source→intermediary sync
@@ -226,8 +226,9 @@ bash tests/run-all.sh
 | test-direct-mount.sh | direct mount mode | 8 |
 | test-scoped.sh | scoped intermediary | 66 |
 | test-session-log.sh | per-session logging | 15 |
+| test-cross-session.sh | cross-project session sharing | 21 |
 
-**~302 assertions across 15 files.** bwrap tests skipped if user namespaces unavailable.
+**~323 assertions across 16 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## TODO
 

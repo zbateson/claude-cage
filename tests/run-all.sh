@@ -53,6 +53,7 @@ run_test "$SCRIPT_DIR/test-clean.sh"
 run_test "$SCRIPT_DIR/test-direct-mount.sh"
 run_test "$SCRIPT_DIR/test-scoped.sh"
 run_test "$SCRIPT_DIR/test-session-log.sh"
+run_test "$SCRIPT_DIR/test-cross-session.sh"
 
 # Summary
 echo "========================================"

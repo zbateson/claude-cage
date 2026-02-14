@@ -274,11 +274,33 @@ claude-cage clean --all                          # Remove all sessions
 
 Every time you fire up claude-cage, it creates a session tagged with a timestamp (e.g., `2025-02-06_14-30-22`). Each session gets its own work directory while sharin' the same intermediary repo.
 
-**What this means for you:**
-- Run multiple sessions on the same project at the same time — they don't step on each other
-- Clean sessions that ain't doin' nothin' get reused automatically next startup
-- Dirty sessions? You'll get asked if you wanna pick up where you left off or start fresh
-- `--attach-session` lets two terminals share the same workspace
+### Session Lifecycle
+
+Here's how it decides what to do when you run `claude-cage`:
+
+1. **Join an active session** — If another project's already runnin' in a session, claude-cage joins it. Your project gets its own work directory inside the same session, and both projects are mounted in the sandbox.
+2. **Reuse a clean session** — If there's an inactive session lyin' around with no uncommitted changes, claude-cage takes it over. No sense lettin' it collect dust.
+3. **Prompt on dirty sessions** — If the only available session has uncommitted work, you get asked: pick it up, wipe it clean, or start fresh.
+4. **Create a new session** — If none of the above apply, a fresh session gets spun up.
+
+### Cross-Project Sharing
+
+By default, sessions are shared across projects. Fire up claude-cage in project A, then fire it up in project B on the same machine — project B joins project A's session. Both work directories get mounted in B's sandbox, so Claude can see and work on both projects at once.
+
+This is handy when your projects talk to each other — a frontend and a backend, a library and the app that uses it. Claude gets the full picture without you havin' to cram everythin' into one repo.
+
+**If you don't want that**, set `isolated = true` in your config. Isolated sessions are fenced off — only the same project with `isolated = true` can reuse or join them. Different projects won't even see 'em.
+
+```lua
+claude_cage {
+    -- Keep this project's session to itself
+    isolated = true,
+}
+```
+
+### Attach & Multi-Terminal
+
+`--attach-session` lets two terminals share the exact same workspace — same work directory, same session:
 
 ```bash
 # Terminal 1: Start a session
@@ -492,17 +514,27 @@ claude_cage {
 
 Claude gets the files, the network is locked down, and your private stuff stays private.
 
+### Use Case: Multi-Project
+
+If both projects use claude-cage, you don't need to do anythin' special. Sessions are shared by default — run claude-cage on your frontend, then run it on your backend, and Claude sees both in the same sandbox with full git sync on each.
+
 ### Use Case: Hybrid Mode
 
-Want the full git workflow for your main project but also let Claude peek at your other repos? Use `isolated = true` with `additionalMounts`:
+Want the full git workflow for your main project but also let Claude peek at repos that *don't* use claude-cage? Use `additionalMounts` to bring 'em along read-only:
 
 ```lua
 claude_cage {
-    -- Git sync for this project only
-    isolated = true,
-    autoSync = true,
+    additionalMounts = {
+        { source = "~/projects/open-source", mode = "ro" }
+    }
+}
+```
 
-    -- But mount the whole open source directory read-only
+Or if you want the main project completely fenced off from other claude-cage sessions, add `isolated = true`:
+
+```lua
+claude_cage {
+    isolated = true,
     additionalMounts = {
         { source = "~/projects/open-source", mode = "ro" }
     }

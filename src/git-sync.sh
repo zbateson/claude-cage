@@ -614,7 +614,7 @@ sync_to_source() {
         # Generate patch (git log --format=email handles both regular and merge
         # commits; format-patch silently skips merges so we don't use it)
         local patch
-        patch=$(git -C "$intermediary_dir" log -1 -p --format=email --first-parent "$commit" 2>/dev/null)
+        patch=$(git -C "$intermediary_dir" log -1 -p --binary --format=email --first-parent "$commit" 2>/dev/null)
 
         # Skip empty patches
         if ! echo "$patch" | grep -q "^diff --git"; then

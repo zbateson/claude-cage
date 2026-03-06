@@ -831,6 +831,10 @@ sync_to_source() {
 
     # Restore stashed working tree (syncActiveBranch mode)
     if [ "$did_stash" = true ]; then
+        # Clean files dirtied by build watchers/dev servers after git am
+        # (e.g., auto-generated type declarations like components.d.ts).
+        # The stash pop restores the user's actual dirty files.
+        git -C "$source_dir" checkout -- . 2>/dev/null || true
         local pop_rc
         git -C "$source_dir" stash pop 2>/dev/null && pop_rc=0 || pop_rc=$?
         if [ "$pop_rc" -eq 0 ]; then

@@ -194,7 +194,11 @@ copy_carry_files() {
                 cp -a "$from_path" "$to_path"
             fi
             if [ "$has_explicit_dest" = true ]; then
-                carried_names+=("$src_path -> $dest_path")
+                if [ "$direction" = "to_work" ]; then
+                    carried_names+=("$src_path -> $dest_path")
+                else
+                    carried_names+=("$dest_path -> $src_path")
+                fi
             else
                 carried_names+=("$src_path")
             fi

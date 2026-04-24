@@ -372,7 +372,26 @@ print(tostring(git_blockForceAdd))
 print(tostring(git_historyDepth))
 print(git_defaultBranch)
 print(tostring(git_scoped))
-print(array_to_string(config.carry or {}))
+-- Process carry entries (like additionalMounts: string or table)
+local carry = config.carry or {}
+local carry_entries = {}
+for _, entry in ipairs(carry) do
+    local src, dest
+    if type(entry) == "string" then
+        src = entry
+        dest = entry
+    elseif type(entry) == "table" then
+        src = entry.source or entry[1]
+        dest = entry["as"] or entry.dest or src
+    end
+    if src then
+        table.insert(carry_entries, src .. "|" .. dest)
+    end
+end
+print(#carry_entries)
+for _, entry in ipairs(carry_entries) do
+    print(entry)
+end
 
 -- Output excludes by source for display (in config file order)
 local display_lines = {}
@@ -468,7 +487,12 @@ LUAEOF
         read -r cfg_git_historyDepth
         read -r cfg_git_defaultBranch
         read -r cfg_git_scoped
-        read -r cfg_carry
+        read -r cfg_carry_count
+        cfg_carry_entries=()
+        for ((i=0; i<cfg_carry_count; i++)); do
+            read -r line
+            cfg_carry_entries+=("$line")
+        done
         read -r cfg_display_line_count
         cfg_display_lines=()
         for ((i=0; i<cfg_display_line_count; i++)); do
@@ -505,7 +529,12 @@ LUAEOF
     [ "$cfg_block_ips" = "EMPTY" ] && cfg_block_ips="" || true
     [ "$cfg_block_networks" = "EMPTY" ] && cfg_block_networks="" || true
     [ "$cfg_docker_packages" = "EMPTY" ] && cfg_docker_packages="" || true
-    [ "$cfg_carry" = "EMPTY" ] && cfg_carry="" || true
+
+    # Build cfg_carry string from entries (^-separated, each entry is source|dest)
+    cfg_carry=""
+    if [ ${#cfg_carry_entries[@]} -gt 0 ]; then
+        cfg_carry=$(IFS='^'; echo "${cfg_carry_entries[*]}")
+    fi
 }
 
 # Initialize config from current directory

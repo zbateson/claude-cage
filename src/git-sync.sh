@@ -125,12 +125,14 @@ copy_dirty_files_to_work() {
 # Copy carry files between source and work dir (outside git).
 # Carry files are gitignored files that should persist across sessions
 # (e.g., CLAUDE.md). Git-tracked files are skipped — git handles those.
+# Entries with explicit dest (source != dest) bypass scope filtering and
+# git-tracked checks, since the user explicitly mapped the path.
 # Arguments:
 #   $1 - direction: "to_work" or "to_source"
 #   $2 - source_dir: The source project directory
 #   $3 - work_dir: The cage work directory
 #   $4 - scope_path: Scope path (empty for unscoped)
-#   $5 - cfg_carry: Pipe-delimited carry file paths
+#   $5 - cfg_carry: ^-separated carry entries, each entry is source|dest
 copy_carry_files() {
     local direction="$1"
     local source_dir="$2"
@@ -140,36 +142,43 @@ copy_carry_files() {
 
     [ -z "$carry_str" ] && return 0
 
-    local -a paths carried_names=()
-    IFS='|' read -ra paths <<< "$carry_str"
+    local -a entries carried_names=()
+    IFS='^' read -ra entries <<< "$carry_str"
 
-    for filepath in "${paths[@]}"; do
-        [ -z "$filepath" ] && continue
+    for entry in "${entries[@]}"; do
+        [ -z "$entry" ] && continue
+        local src_path dest_path
+        IFS='|' read -r src_path dest_path <<< "$entry"
+        [ -z "$dest_path" ] && dest_path="$src_path"
 
-        # Skip git-tracked files — git handles those through the normal pipeline.
-        # Directories may contain a mix of tracked/untracked files, so always
-        # carry them (tracked files are identical in both repos anyway).
-        if [ ! -d "$source_dir/$filepath" ] && \
-           git -C "$source_dir" ls-files --error-unmatch "$filepath" >/dev/null 2>&1; then
-            continue
-        fi
+        local has_explicit_dest=false
+        [ "$src_path" != "$dest_path" ] && has_explicit_dest=true
 
-        # Scope filtering: skip files outside scope, strip prefix for work
-        local work_filepath="$filepath"
-        if [ -n "$scope_path" ]; then
-            case "$filepath" in
-                "$scope_path/"*) work_filepath="${filepath#"$scope_path/"}" ;;
-                *) continue ;;  # Outside scope, skip
-            esac
+        if [ "$has_explicit_dest" = false ]; then
+            # Skip git-tracked files — git handles those through the normal pipeline.
+            # Directories may contain a mix of tracked/untracked files, so always
+            # carry them (tracked files are identical in both repos anyway).
+            if [ ! -d "$source_dir/$src_path" ] && \
+               git -C "$source_dir" ls-files --error-unmatch "$src_path" >/dev/null 2>&1; then
+                continue
+            fi
+
+            # Scope filtering: skip files outside scope, strip prefix for work
+            if [ -n "$scope_path" ]; then
+                case "$src_path" in
+                    "$scope_path/"*) dest_path="${src_path#"$scope_path/"}" ;;
+                    *) continue ;;  # Outside scope, skip
+                esac
+            fi
         fi
 
         local from_path to_path
         if [ "$direction" = "to_work" ]; then
-            from_path="$source_dir/$filepath"
-            to_path="$work_dir/$work_filepath"
+            from_path="$source_dir/$src_path"
+            to_path="$work_dir/$dest_path"
         else
-            from_path="$work_dir/$work_filepath"
-            to_path="$source_dir/$filepath"
+            from_path="$work_dir/$dest_path"
+            to_path="$source_dir/$src_path"
         fi
 
         if [ -e "$from_path" ]; then
@@ -184,7 +193,11 @@ copy_carry_files() {
                 [ -f "$to_path" ] && chmod u+w "$to_path" 2>/dev/null || true
                 cp -a "$from_path" "$to_path"
             fi
-            carried_names+=("$filepath")
+            if [ "$has_explicit_dest" = true ]; then
+                carried_names+=("$src_path -> $dest_path")
+            else
+                carried_names+=("$src_path")
+            fi
         fi
     done
 

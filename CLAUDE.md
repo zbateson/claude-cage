@@ -85,7 +85,10 @@ Example `.claude-cage`:
 ```lua
 claude_cage {
     exclude = { ".env", "secrets/**", "application-*.properties" },
-    carry = { "CLAUDE.md", ".cursorrules" },  -- gitignored files copied at startup/exit
+    carry = {
+        "CLAUDE.md",                                          -- same path in source and work
+        { source = "config/instructions.md", as = "CLAUDE.md" },  -- different dest in work
+    },
     mode = "bwrap",  -- or "docker"
     autoSync = true,
     -- syncActiveBranch = false,  -- EXPERIMENTAL: also sync active branch (stash/apply/pop)
@@ -133,7 +136,7 @@ claude_cage {
 |--------|---------|-------------|
 | `launch` | `"claude"` | Command to run inside sandbox |
 | `exclude` | `{}` | Patterns to exclude from intermediary |
-| `carry` | `{}` | Gitignored files copied source↔work at startup/exit |
+| `carry` | `{}` | Files copied source↔work at startup/exit. String or `{ source, as/dest }` table. |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoSync` | `true` | Real-time sync of non-active branches via named pipe |
 | `syncActiveBranch` | `false` | **EXPERIMENTAL** Also sync active branch (stash/apply/pop) |
@@ -218,7 +221,7 @@ bash tests/run-all.sh
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
 | test-git-hooks.sh | git-hooks.sh | 22 |
 | test-git-patches.sh | git-patches.sh | 13 |
-| test-git-sync.sh | git-sync.sh | 26 |
+| test-git-sync.sh | git-sync.sh | 30 |
 | test-network.sh | network.sh | 31 |
 | test-bwrap.sh | bwrap.sh | 13 |
 | test-docker.sh | docker.sh | 18 |
@@ -228,7 +231,7 @@ bash tests/run-all.sh
 | test-session-log.sh | per-session logging | 15 |
 | test-cross-session.sh | cross-project session sharing | 21 |
 
-**~323 assertions across 16 files.** bwrap tests skipped if user namespaces unavailable.
+**~331 assertions across 16 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## TODO
 

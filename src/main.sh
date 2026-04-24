@@ -470,12 +470,16 @@ if [ ${#cfg_mounts[@]} -gt 0 ]; then
     done
 fi
 
-if [ "$direct_mount_mode" = false ] && [ -n "${cfg_carry:-}" ]; then
+if [ "$direct_mount_mode" = false ] && [ ${#cfg_carry_entries[@]} -gt 0 ]; then
     echo ""
     echo "Carry files (copied at startup/exit):"
-    IFS='|' read -ra _carry_display <<< "$cfg_carry"
-    for _cf in "${_carry_display[@]}"; do
-        echo "  $_cf"
+    for _entry in "${cfg_carry_entries[@]}"; do
+        IFS='|' read -r _src _dest <<< "$_entry"
+        if [ "$_src" = "$_dest" ]; then
+            echo "  $_src"
+        else
+            echo "  $_src -> $_dest"
+        fi
     done
 fi
 
@@ -785,7 +789,7 @@ else
     fi
 
     # Copy carry files (gitignored files that should persist across sessions)
-    if [ -n "$cfg_carry" ] && \
+    if [ ${#cfg_carry_entries[@]} -gt 0 ] && \
        [ "$cli_attach_session_mode" != true ] && \
        ! is_work_dirty "$work_dir"; then
         copy_carry_files "to_work" "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_carry"
@@ -848,7 +852,7 @@ cleanup_on_exit() {
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
         # Copy carry files back to source before cleanup
-        if [ -n "${cfg_carry:-}" ] && [ -d "$work_dir" ]; then
+        if [ ${#cfg_carry_entries[@]} -gt 0 ] && [ -d "$work_dir" ]; then
             copy_carry_files "to_source" "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_carry"
         fi
         # Always unregister our session

@@ -1419,7 +1419,7 @@ apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>
 git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
 
 # Copy carry files to work
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" >/dev/null
 
 if [ ! -f "$WORK_DIR/CLAUDE.md" ]; then
     echo "FAIL: CLAUDE.md should be copied to work"
@@ -1440,7 +1440,7 @@ echo "Test 37: copy_carry_files to_source should copy file back to source"
 # Modify the file in work
 echo "updated by claude" > "$WORK_DIR/CLAUDE.md"
 
-copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md" >/dev/null
+copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" >/dev/null
 
 source_content=$(cat "$SOURCE_PATH/CLAUDE.md")
 if [ "$source_content" != "updated by claude" ]; then
@@ -1457,7 +1457,7 @@ echo "Test 38: copy_carry_files to_work should be a no-op when file doesn't exis
 setup_test_cage "source38"
 
 # Don't create nonexistent.txt on source
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "nonexistent.txt" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "nonexistent.txt|nonexistent.txt" >/dev/null
 
 if [ -f "$WORK_DIR/nonexistent.txt" ]; then
     echo "FAIL: nonexistent.txt should not be in work"
@@ -1497,7 +1497,7 @@ echo "scoped carry" > "$SOURCE_PATH/services/api/CLAUDE.md"
 echo "root carry" > "$SOURCE_PATH/CLAUDE.md"
 
 # Copy with scope — inside scope should work, outside should be skipped
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "$local_scope" "services/api/CLAUDE.md|CLAUDE.md" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "$local_scope" "services/api/CLAUDE.md|services/api/CLAUDE.md^CLAUDE.md|CLAUDE.md" >/dev/null
 
 # In-scope: should be copied with prefix stripped
 if [ ! -f "$WORK_DIR/CLAUDE.md" ]; then
@@ -1539,7 +1539,7 @@ git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
 echo "claude md" > "$SOURCE_PATH/CLAUDE.md"
 echo "cursor rules" > "$SOURCE_PATH/.cursorrules"
 
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|.cursorrules" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md^.cursorrules|.cursorrules" >/dev/null
 
 if [ ! -f "$WORK_DIR/CLAUDE.md" ] || [ ! -f "$WORK_DIR/.cursorrules" ]; then
     echo "FAIL: Both files should be copied"
@@ -1577,7 +1577,7 @@ original_work_content=$(cat "$WORK_DIR/file.txt")
 echo "source modified" > "$SOURCE_PATH/file.txt"
 
 # Carry should skip it because it's tracked
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "file.txt" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "file.txt|file.txt" >/dev/null
 
 work_content=$(cat "$WORK_DIR/file.txt")
 if [ "$work_content" != "$original_work_content" ]; then
@@ -1603,7 +1603,7 @@ echo "nested" > "$SOURCE_PATH/.mydir/sub/data.txt"
 apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
 git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
 
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
 if [ ! -f "$WORK_DIR/.mydir/settings.json" ]; then
     echo "FAIL: .mydir/settings.json should be copied to work"
@@ -1624,7 +1624,7 @@ echo "Test 44: copy_carry_files should merge into existing dir, not nest"
 # not create .mydir/.mydir/
 echo "updated" > "$SOURCE_PATH/.mydir/settings.json"
 
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
 if [ -e "$WORK_DIR/.mydir/.mydir" ]; then
     echo "FAIL: Directory was nested (.mydir/.mydir exists)"
@@ -1650,7 +1650,7 @@ chmod 444 "$WORK_DIR/.mydir/sub/data.txt"
 echo "overwritten" > "$SOURCE_PATH/.mydir/settings.json"
 echo "also overwritten" > "$SOURCE_PATH/.mydir/sub/data.txt"
 
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
 work_content=$(cat "$WORK_DIR/.mydir/settings.json")
 if [ "$work_content" != "overwritten" ]; then
@@ -1677,7 +1677,7 @@ chmod 444 "$SOURCE_PATH/.mydir/sub/data.txt"
 echo "from cage rw" > "$WORK_DIR/.mydir/settings.json"
 echo "from cage nested" > "$WORK_DIR/.mydir/sub/data.txt"
 
-copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
 source_content=$(cat "$SOURCE_PATH/.mydir/settings.json")
 if [ "$source_content" != "from cage rw" ]; then
@@ -1699,7 +1699,7 @@ echo "Test 47: copy_carry_files should carry directory back to source"
 echo "from cage" > "$WORK_DIR/.mydir/settings.json"
 echo "new file" > "$WORK_DIR/.mydir/extra.txt"
 
-copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
 source_content=$(cat "$SOURCE_PATH/.mydir/settings.json")
 if [ "$source_content" != "from cage" ]; then
@@ -1732,13 +1732,136 @@ echo "untracked" > "$SOURCE_PATH/.mydir/untracked.txt"
 apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
 git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
 
-copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir" >/dev/null
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
 if [ ! -f "$WORK_DIR/.mydir/untracked.txt" ]; then
     echo "FAIL: .mydir/untracked.txt should be carried to work"
     exit 1
 fi
 echo "  PASS: Directory with mixed tracked/untracked files is carried"
+
+# ============================================================================
+# Test 49: copy_carry_files — mapped carry (source != dest) to_work
+# ============================================================================
+echo ""
+echo "Test 49: copy_carry_files should carry file to different dest path"
+
+setup_test_cage "source49"
+
+# Create a gitignored file on source at a nested path
+mkdir -p "$SOURCE_PATH/config"
+echo "config/" >> "$SOURCE_PATH/.gitignore"
+git -C "$SOURCE_PATH" add .gitignore && git -C "$SOURCE_PATH" commit -q -m "Add gitignore"
+echo "my instructions" > "$SOURCE_PATH/config/claude.md"
+
+apply_source_to_intermediary "$SOURCE_PATH" "$INTERMEDIARY_DIR" "" >/dev/null 2>&1
+git -C "$WORK_DIR" pull -q origin "$BRANCH_NAME" 2>/dev/null || true
+
+# Carry config/claude.md as CLAUDE.md in work
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "config/claude.md|CLAUDE.md" >/dev/null
+
+if [ ! -f "$WORK_DIR/CLAUDE.md" ]; then
+    echo "FAIL: CLAUDE.md should be created in work dir"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/CLAUDE.md")
+if [ "$work_content" != "my instructions" ]; then
+    echo "FAIL: CLAUDE.md content wrong: '$work_content'"
+    exit 1
+fi
+# Source path should NOT be created in work
+if [ -f "$WORK_DIR/config/claude.md" ]; then
+    echo "FAIL: config/claude.md should NOT exist in work (it was mapped to CLAUDE.md)"
+    exit 1
+fi
+echo "  PASS: Mapped carry file copied to different dest path"
+
+# ============================================================================
+# Test 50: copy_carry_files — mapped carry to_source
+# ============================================================================
+echo "Test 50: copy_carry_files should carry mapped file back to source path"
+
+# Modify the file in work at the dest path
+echo "updated from cage" > "$WORK_DIR/CLAUDE.md"
+
+copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" "config/claude.md|CLAUDE.md" >/dev/null
+
+source_content=$(cat "$SOURCE_PATH/config/claude.md")
+if [ "$source_content" != "updated from cage" ]; then
+    echo "FAIL: config/claude.md on source should be updated, got: '$source_content'"
+    exit 1
+fi
+echo "  PASS: Mapped carry file copied back to source path"
+
+# ============================================================================
+# Test 51: copy_carry_files — mapped carry bypasses scope filtering
+# ============================================================================
+echo "Test 51: copy_carry_files with mapped dest should bypass scope filtering"
+
+# Set up a scoped test: repo with services/api/ structure
+rm -rf "$TEST_TMP/source51"
+mkdir -p "$TEST_TMP/source51/services/api"
+cd "$TEST_TMP/source51"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "CLAUDE.md" >> .gitignore
+echo "api code" > services/api/app.txt
+git add . && git commit -q -m "Initial"
+
+SOURCE_PATH="$TEST_TMP/source51"
+local_scope="services/api"
+CLAUDE_CAGE_SESSION="test-scoped-51"
+export CLAUDE_CAGE_SESSION
+
+INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_PATH" "$local_scope")
+WORK_DIR=$(get_work_path "$TEST_TMP/source51/services/api")
+
+create_intermediary_clone "$TEST_TMP/source51/services/api" "$local_scope" >/dev/null 2>&1
+
+# Create a root-level gitignored file (outside scope)
+echo "root instructions" > "$SOURCE_PATH/CLAUDE.md"
+
+# With explicit dest, out-of-scope source file should be carried
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "$local_scope" "CLAUDE.md|INSTRUCTIONS.md" >/dev/null
+
+if [ ! -f "$WORK_DIR/INSTRUCTIONS.md" ]; then
+    echo "FAIL: INSTRUCTIONS.md should be created in work (explicit dest bypasses scope filter)"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/INSTRUCTIONS.md")
+if [ "$work_content" != "root instructions" ]; then
+    echo "FAIL: INSTRUCTIONS.md content wrong: '$work_content'"
+    exit 1
+fi
+echo "  PASS: Mapped carry bypasses scope filtering"
+
+# Reset
+CLAUDE_CAGE_SESSION="test-session-$$"
+export CLAUDE_CAGE_SESSION
+
+# ============================================================================
+# Test 52: copy_carry_files — mapped carry bypasses git-tracked check
+# ============================================================================
+echo "Test 52: copy_carry_files with mapped dest should carry git-tracked files"
+
+setup_test_cage "source52"
+
+# file.txt is already committed (git-tracked)
+# With explicit dest, it should still be carried (to a different path)
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "file.txt|reference.txt" >/dev/null
+
+if [ ! -f "$WORK_DIR/reference.txt" ]; then
+    echo "FAIL: reference.txt should be created (mapped carry bypasses git-tracked check)"
+    exit 1
+fi
+work_content=$(cat "$WORK_DIR/reference.txt")
+source_content=$(cat "$SOURCE_PATH/file.txt")
+if [ "$work_content" != "$source_content" ]; then
+    echo "FAIL: reference.txt content should match source file.txt"
+    exit 1
+fi
+echo "  PASS: Mapped carry copies git-tracked file to different dest"
 
 echo ""
 echo "=== All git-sync tests passed! ==="

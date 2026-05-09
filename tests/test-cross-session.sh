@@ -268,6 +268,30 @@ if [ ! -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION" ]; then
 fi
 echo "  PASS: Cross-project clean session reused (non-isolated)"
 
+echo "Test 13: find_reusable_session skips dirty sessions from other projects"
+# Clean up and create a dirty work dir for project A
+rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_RUNTIME/sessions"
+DIRTY_SID="2025-06-02_10-00-00"
+mkdir -p "$CLAUDE_CAGE_CACHE/sessions/$DIRTY_SID/work$PROJECT_A"
+git clone -q "$PROJECT_A" "$CLAUDE_CAGE_CACHE/sessions/$DIRTY_SID/work$PROJECT_A" 2>/dev/null || \
+    (cd "$CLAUDE_CAGE_CACHE/sessions/$DIRTY_SID/work$PROJECT_A" && git init -q && echo "A" > readme.txt && git add -A && git commit -q -m "init")
+# Make it dirty with uncommitted changes
+echo "dirty" > "$CLAUDE_CAGE_CACHE/sessions/$DIRTY_SID/work$PROJECT_A/dirty.txt"
+
+# Search from project B — dirty session from A must NOT appear as a dirty candidate for B
+cfg_isolated=""
+find_reusable_session "$PROJECT_B"
+
+if [ -n "$REUSE_DIRTY_SESSIONS" ]; then
+    echo "FAIL: Dirty session from other project should not appear as dirty for current project"
+    exit 1
+fi
+if [ "$REUSE_SESSION_STATE" = "dirty" ]; then
+    echo "FAIL: Expected state 'none', got 'dirty' — other project's dirty session leaked"
+    exit 1
+fi
+echo "  PASS: Dirty session from other project correctly skipped"
+
 # ============================================================================
 echo ""
 echo "=== Testing joinable active sessions ==="
@@ -275,7 +299,7 @@ echo ""
 
 rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_RUNTIME/sessions"
 
-echo "Test 13: Active session is joinable when not isolated"
+echo "Test 14: Active session is joinable when not isolated"
 # Create session and register a live PID for project A
 ACTIVE_SID="2025-07-01_10-00-00"
 mkdir -p "$CLAUDE_CAGE_CACHE/sessions/$ACTIVE_SID/work$PROJECT_A"
@@ -304,7 +328,7 @@ if [ "$joinable_id" != "$ACTIVE_SID" ]; then
 fi
 echo "  PASS: Active session listed as joinable"
 
-echo "Test 14: reuse_or_create_session joins active session (non-isolated)"
+echo "Test 15: reuse_or_create_session joins active session (non-isolated)"
 REUSE_JOINABLE_SESSIONS="$ACTIVE_SID"
 REUSE_CLEAN_SESSIONS=""
 reuse_or_create_session "$PROJECT_B" >/dev/null
@@ -314,7 +338,7 @@ if [ "$CLAUDE_CAGE_SESSION" != "$ACTIVE_SID" ]; then
 fi
 echo "  PASS: Joined active session"
 
-echo "Test 15: Isolated project does NOT join shared active sessions"
+echo "Test 16: Isolated project does NOT join shared active sessions"
 cfg_isolated="true"
 REUSE_JOINABLE_SESSIONS=""
 REUSE_CLEAN_SESSIONS=""
@@ -337,7 +361,7 @@ echo ""
 
 rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_RUNTIME/sessions"
 
-echo "Test 16: enumerate_projects discovers two work dirs in same session"
+echo "Test 17: enumerate_projects discovers two work dirs in same session"
 # Set up intermediaries
 IDIR_A="$CLAUDE_CAGE_CACHE/intermediary$PROJECT_A"
 IDIR_B="$CLAUDE_CAGE_CACHE/intermediary$PROJECT_B"
@@ -377,7 +401,7 @@ if [ ${#CAGE_WORK_PROJECTS[@]} -ne 2 ]; then
 fi
 echo "  PASS: enumerate_projects found 2 work dirs in session"
 
-echo "Test 17: enumerate_projects includes intermediary for discovered project"
+echo "Test 18: enumerate_projects includes intermediary for discovered project"
 if [ ${#CAGE_INTERMEDIARY_PROJECTS[@]} -lt 2 ]; then
     echo "FAIL: Expected at least 2 intermediary projects, got ${#CAGE_INTERMEDIARY_PROJECTS[@]}"
     for e in "${CAGE_INTERMEDIARY_PROJECTS[@]}"; do echo "  $e"; done
@@ -385,7 +409,7 @@ if [ ${#CAGE_INTERMEDIARY_PROJECTS[@]} -lt 2 ]; then
 fi
 echo "  PASS: Both intermediaries discovered"
 
-echo "Test 18: enumerate_projects returns empty for isolated mode"
+echo "Test 19: enumerate_projects returns empty for isolated mode"
 cfg_isolated="true"
 enumerate_projects "$SWR" "$CLAUDE_CAGE_CACHE/intermediary" "$WORK_A" "$IDIR_A" "$PROJECT_A"
 if [ ${#CAGE_WORK_PROJECTS[@]} -ne 0 ]; then
@@ -402,7 +426,7 @@ echo ""
 
 rm -rf "$CLAUDE_CAGE_CACHE/sessions" "$CLAUDE_CAGE_RUNTIME/sessions"
 
-echo "Test 19: clean_session_cache removes only target project's work dir"
+echo "Test 20: clean_session_cache removes only target project's work dir"
 # Set up a shared session with two projects
 CLEAN_SID="cleanup-test-session"
 CLAUDE_CAGE_SESSION="$CLEAN_SID"
@@ -425,7 +449,7 @@ if [ ! -d "$CLEAN_WORK_B/.git" ]; then
 fi
 echo "  PASS: Only project A's work dir removed from shared session"
 
-echo "Test 20: Session dir persists while other project's work dir remains"
+echo "Test 21: Session dir persists while other project's work dir remains"
 session_cache="$CLAUDE_CAGE_CACHE/sessions/$CLEAN_SID"
 if [ ! -d "$session_cache" ]; then
     echo "FAIL: Session dir should persist (project B work dir remains)"
@@ -433,7 +457,7 @@ if [ ! -d "$session_cache" ]; then
 fi
 echo "  PASS: Session dir persists"
 
-echo "Test 21: Session dir removed after all work dirs cleaned"
+echo "Test 22: Session dir removed after all work dirs cleaned"
 clean_session_cache "$PROJECT_B" "$CLEAN_SID"
 if [ -d "$session_cache" ]; then
     echo "FAIL: Session dir should be removed when all work dirs cleaned"

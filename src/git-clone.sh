@@ -662,22 +662,10 @@ find_reusable_session() {
 
                 if session_is_active "$session_id"; then
                     active_sessions+=("$session_id $_other_branch $_other_sd $_other_scope")
-                else
-                    local _has_uncommitted=false _has_unpushed=false _dirty_type=""
-                    is_work_dirty "$_other_work" && _has_uncommitted=true
-                    work_has_unpushed "$_other_work" && _has_unpushed=true
-                    if [ "$_has_uncommitted" = true ] && [ "$_has_unpushed" = true ]; then
-                        _dirty_type="uncommitted+unpushed"
-                    elif [ "$_has_uncommitted" = true ]; then
-                        _dirty_type="uncommitted"
-                    elif [ "$_has_unpushed" = true ]; then
-                        _dirty_type="unpushed"
-                    fi
-                    if [ -n "$_dirty_type" ]; then
-                        inactive_dirty+=("$session_id $_other_branch $_dirty_type $_other_sd $_other_scope")
-                    else
-                        inactive_clean+=("$session_id $_other_branch $_other_sd $_other_scope")
-                    fi
+                elif ! is_work_dirty "$_other_work" && ! work_has_unpushed "$_other_work"; then
+                    # Only reuse clean sessions from other projects — dirty
+                    # sessions belong to the other project, not ours
+                    inactive_clean+=("$session_id $_other_branch $_other_sd $_other_scope")
                 fi
             fi
         fi

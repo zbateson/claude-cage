@@ -656,7 +656,7 @@ sync_to_source() {
                 echo "  Push the branch to the remote first, then merge."
                 save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
                 sync_log "$log_file" "$commit_short" ">>source" "merge FAILED: second parent ${cage_second_parent:0:8} not mapped"
-                continue
+                break
             fi
 
             local source_first_parent
@@ -666,7 +666,7 @@ sync_to_source() {
                 echo "  Can't sync merge — branch $branch_name don't exist on source."
                 save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
                 sync_log "$log_file" "$commit_short" ">>source" "merge FAILED: branch $branch_name missing on source"
-                continue
+                break
             fi
 
             sync_log "$log_file" "$commit_short" ">>source" "merge on $branch_name: first=${source_first_parent:0:8} second=${source_second_parent:0:8}"
@@ -723,9 +723,12 @@ sync_to_source() {
                     echo "  Merge patch didn't apply clean to $branch_name."
                     save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
                     sync_log "$log_file" "$commit_short" ">>source" "merge FAILED on $branch_name: $(echo "$apply_output" | tail -1)"
+                    exit 1
                 fi
             )
+            local _merge_rc=$?
             rm -f "$tmp_index"
+            [ "$_merge_rc" -ne 0 ] && break
             continue
         fi
 
@@ -770,6 +773,7 @@ sync_to_source() {
                 git -C "$source_dir" am --abort 2>/dev/null || true
                 save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
                 sync_log "$log_file" "$commit_short" ">>source" "git-am FAILED rc=$am_rc: $(echo "$am_output" | tail -1)"
+                break
             fi
         else
             # User switched branches - apply via temp index
@@ -817,10 +821,12 @@ sync_to_source() {
                     echo "  Patch didn't apply clean to $branch_name."
                     save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
                     sync_log "$log_file" "$commit_short" ">>source" "git-apply FAILED rc=$apply_rc on $branch_name: $(echo "$apply_output" | tail -1)"
+                    exit 1
                 fi
             )
-
+            local _apply_rc=$?
             rm -f "$tmp_index"
+            [ "$_apply_rc" -ne 0 ] && break
         fi
     done
 

@@ -1402,6 +1402,141 @@ CLAUDE_CAGE_SESSION="test-session-$$"
 export CLAUDE_CAGE_SESSION
 
 # ============================================================================
+# Test 35a: enumerate_source_dirty_pairs emits pairs for modified file
+# ============================================================================
+echo ""
+echo "Test 35a: enumerate_source_dirty_pairs should emit (src, dest) pair for modified file"
+
+setup_test_cage "source35a"
+echo "modified" > "$SOURCE_PATH/file.txt"
+
+pairs=$(enumerate_source_dirty_pairs "$SOURCE_PATH" "" "" | tr '\0' '|')
+if [ "$pairs" != "file.txt|file.txt|" ]; then
+    echo "FAIL: expected 'file.txt|file.txt|', got '$pairs'"
+    exit 1
+fi
+echo "  PASS: emits pair for modified file"
+
+# ============================================================================
+# Test 35b: enumerate_source_dirty_pairs strips scope prefix
+# ============================================================================
+echo "Test 35b: enumerate_source_dirty_pairs should strip scope prefix from dest"
+
+mkdir -p "$TEST_TMP/source35b/services/api"
+cd "$TEST_TMP/source35b"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "x" > services/api/a.txt
+echo "y" > root.txt
+git add . && git commit -q -m "Initial"
+echo "edit" > "$TEST_TMP/source35b/services/api/a.txt"
+echo "edit" > "$TEST_TMP/source35b/root.txt"
+
+pairs=$(enumerate_source_dirty_pairs "$TEST_TMP/source35b" "services/api" "" | tr '\0' '|')
+# Only the in-scope file should appear; dest path strips the scope prefix
+if [ "$pairs" != "services/api/a.txt|a.txt|" ]; then
+    echo "FAIL: expected 'services/api/a.txt|a.txt|', got '$pairs'"
+    exit 1
+fi
+echo "  PASS: scope prefix stripped, out-of-scope dropped"
+
+# ============================================================================
+# Test 35c: work_matches_source_dirty returns 0 when work mirrors source
+# ============================================================================
+echo "Test 35c: work_matches_source_dirty should return 0 when work mirrors source"
+
+setup_test_cage "source35c"
+echo "user wip" > "$SOURCE_PATH/file.txt"
+echo "user wip" > "$WORK_DIR/file.txt"
+
+if ! work_matches_source_dirty "$SOURCE_PATH" "$WORK_DIR" "" ""; then
+    echo "FAIL: should have matched"
+    exit 1
+fi
+echo "  PASS: returns 0 when work and source dirty content matches"
+
+# ============================================================================
+# Test 35d: work_matches_source_dirty returns 1 when content diverges
+# ============================================================================
+echo "Test 35d: work_matches_source_dirty should return 1 when content diverges"
+
+setup_test_cage "source35d"
+echo "user wip" > "$SOURCE_PATH/file.txt"
+echo "claude edited" > "$WORK_DIR/file.txt"
+
+if work_matches_source_dirty "$SOURCE_PATH" "$WORK_DIR" "" ""; then
+    echo "FAIL: should not have matched (content diverges)"
+    exit 1
+fi
+echo "  PASS: returns 1 when content diverges"
+
+# ============================================================================
+# Test 35e: work_matches_source_dirty returns 1 when work has extra dirty path
+# ============================================================================
+echo "Test 35e: work_matches_source_dirty should return 1 when work has dirty paths absent in source"
+
+setup_test_cage "source35e"
+echo "user wip" > "$SOURCE_PATH/file.txt"
+echo "user wip" > "$WORK_DIR/file.txt"
+echo "untracked claude file" > "$WORK_DIR/new.txt"
+
+if work_matches_source_dirty "$SOURCE_PATH" "$WORK_DIR" "" ""; then
+    echo "FAIL: should not have matched (work has extra untracked path)"
+    exit 1
+fi
+echo "  PASS: returns 1 when work has dirty paths outside source's set"
+
+# ============================================================================
+# Test 35f: work_matches_source_dirty matches deletions on both sides
+# ============================================================================
+echo "Test 35f: work_matches_source_dirty should match when both delete same file"
+
+setup_test_cage "source35f"
+rm "$SOURCE_PATH/file.txt"
+rm "$WORK_DIR/file.txt"
+
+if ! work_matches_source_dirty "$SOURCE_PATH" "$WORK_DIR" "" ""; then
+    echo "FAIL: should have matched (both deleted)"
+    exit 1
+fi
+echo "  PASS: returns 0 when both delete the same file"
+
+# ============================================================================
+# Test 35g: work_matches_source_dirty rejects when source deletes, work keeps
+# ============================================================================
+echo "Test 35g: work_matches_source_dirty should reject when source deletes but work retains"
+
+setup_test_cage "source35g"
+rm "$SOURCE_PATH/file.txt"
+# work_dir still has file.txt
+
+if work_matches_source_dirty "$SOURCE_PATH" "$WORK_DIR" "" ""; then
+    echo "FAIL: should not match (source deleted, work retained)"
+    exit 1
+fi
+echo "  PASS: returns 1 when source deletes but work retains"
+
+# ============================================================================
+# Test 35h: work_matches_source_dirty honors exclude patterns
+# ============================================================================
+echo "Test 35h: work_matches_source_dirty should ignore excluded patterns"
+
+setup_test_cage "source35h"
+echo "user wip" > "$SOURCE_PATH/file.txt"
+echo "user wip" > "$WORK_DIR/file.txt"
+# Source has a dirty .env that is excluded; work doesn't see it.
+echo "secret" > "$SOURCE_PATH/.env"
+
+if ! work_matches_source_dirty "$SOURCE_PATH" "$WORK_DIR" "" ".env"; then
+    echo "FAIL: should have matched (excluded path ignored)"
+    exit 1
+fi
+echo "  PASS: excluded paths are ignored during match"
+
+
+
+# ============================================================================
 # Test 36: copy_carry_files to_work — basic copy
 # ============================================================================
 echo ""

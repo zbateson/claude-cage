@@ -382,6 +382,8 @@ claude_cage {
 
 With `--with-dirty` (or `bringDirty = true`), claude-cage replays your modified, new, and deleted files into the cage's work dir at startup. Excluded patterns and gitignored files stay out, same as always. If the cage already has uncommitted work of its own (a reused dirty session), the carry's skipped so nothin' clobbers it.
 
+**On exit:** if the cage's dirty files all match your source byte-for-byte (Claude didn't touch the WIP you carried in), claude-cage clears the cage out — your source already has every change, so there's nothin' left to preserve. The "leavin' it around" warning only shows when there's genuinely new work in the cage.
+
 When your source is dirty and you didn't pass the flag, you'll see a one-line hint at startup pointin' at the option — no surprises either way.
 
 ### Co-Create Workflow (EXPERIMENTAL)

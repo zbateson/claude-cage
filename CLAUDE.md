@@ -80,6 +80,12 @@ When `git am` fails, patches are saved to `<source>/claude-cage-failed-patches/f
 
 Independent of `syncActiveBranch`. When `bringDirty = true` (or `--with-dirty` is passed), `copy_dirty_files_to_work` walks `git status --porcelain -z` on the source and replays modifications, deletions, renames, and untracked files into the cage work dir. Skipped if the work is already dirty (reused session) or if we're attaching. Default is off — when source is dirty but the flag isn't set, startup prints a one-line hint pointing at `--with-dirty` / `bringDirty`. Exclude patterns are applied via `build_exclude_pathspecs`.
 
+`enumerate_source_dirty_pairs` is the shared porcelain-walk helper: it emits NUL-separated `(src_path, dest_path)` records (scope-translated, renames expanded to delete+create). `copy_dirty_files_to_work` consumes the stream and acts; `work_matches_source_dirty` consumes the same stream to verify content equivalence via `cmp -s` plus a separate work-side porcelain walk to confirm the cage has no dirty paths outside source's set.
+
+### Match-Clean Exit
+
+`cleanup_on_exit` calls `work_matches_source_dirty` for any cage that's exiting dirty (with no unpushed commits). If every dirty path in the cage matches the source byte-for-byte, the cage is torn down via `cleanup_current_session_workdir` — nothing's lost because source already holds every change. Triggers in both the `has_other_sessions=true` branch and the solo-session branch; the solo path only cleans on a match (clean solo work dirs are still preserved for reuse).
+
 ## Configuration
 
 Config files loaded and merged in order (later values override, arrays merge): system (`/etc/claude-cage.conf`) → user (`~/.config/claude-cage/config`) → includeIf (directory-scoped, declared in system/user config) → local (`.claude-cage` at git root). No config triggers an interactive builder.

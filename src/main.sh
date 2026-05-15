@@ -875,28 +875,24 @@ cleanup_on_exit() {
         fi
         # Always unregister our session
         unregister_session "$cfg_source"
-        # Proactive cleanup: if other sessions are still active for this source and ours is clean, remove work dir
+        # Decide if the cage is safe to drop. Clean tree without unpushed
+        # commits is always safe. A dirty tree is also safe if every dirty
+        # file matches the source on disk — source already has it all.
+        local can_clean=false dirty_matched=false
+        if [ -d "$work_dir/.git" ] && ! work_has_unpushed "$work_dir"; then
+            if ! is_work_dirty "$work_dir"; then
+                can_clean=true
+            elif work_matches_source_dirty "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_exclude"; then
+                can_clean=true
+                dirty_matched=true
+            fi
+        fi
+
         if has_other_sessions "$cfg_source" && [ -d "$work_dir/.git" ]; then
-            if ! is_work_dirty "$work_dir" && ! work_has_unpushed "$work_dir"; then
-                local session_cache="$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION"
-                rm -rf "$work_dir"
-                cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
-                # Clean session dir only if fully empty (no other projects' work dirs)
-                if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
-                    rm -rf "$session_cache/work"
-                fi
-                if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
-                    rm -rf "$session_cache"
-                    # Remove session log only when session dir is fully gone
-                    local _log_file="$CLAUDE_CAGE_CACHE/logs/$CLAUDE_CAGE_SESSION.log"
-                    [ -f "$_log_file" ] && rm -f "$_log_file"
-                fi
-                # Remove .caged session symlink
-                local _git_root
-                _git_root=$(get_git_root "$cfg_source") || true
-                if [ -n "$_git_root" ] && [ -d "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ]; then
-                    rm -rf "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
-                fi
+            if [ "$can_clean" = true ]; then
+                cleanup_current_session_workdir "$cfg_source"
+                [ "$dirty_matched" = true ] && \
+                    echo "Cage's dirty files all match your source — clearin' it out."
             else
                 local _reasons=""
                 is_work_dirty "$work_dir" && _reasons="uncommitted changes"
@@ -908,6 +904,9 @@ cleanup_on_exit() {
                 echo "This cage's got $_reasons — leavin' it around so nothin' gets lost."
                 echo "Run 'claude-cage clean' to sort it out later."
             fi
+        elif [ -d "$work_dir/.git" ] && [ "$dirty_matched" = true ]; then
+            cleanup_current_session_workdir "$cfg_source"
+            echo "Cage's dirty files all match your source — clearin' it out."
         fi
         # Deferred cleanup: if this scoped intermediary is now superseded
         if [ -n "${scope_path:-}" ]; then

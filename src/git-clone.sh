@@ -773,6 +773,34 @@ reuse_or_create_session() {
     fi
 }
 
+# Tear down the current session's work dir, empty session-cache layers, and
+# its .caged sidecar. Called from cleanup_on_exit when we've determined the
+# cage is safe to drop (clean tree or dirty-but-matched-source).
+# Arguments: $1 = source directory
+# Uses globals: work_dir, CLAUDE_CAGE_CACHE, CLAUDE_CAGE_SESSION
+cleanup_current_session_workdir() {
+    local source_dir="$1"
+    local session_cache="$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION"
+
+    rm -rf "$work_dir"
+    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+
+    if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
+        rm -rf "$session_cache/work"
+    fi
+    if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
+        rm -rf "$session_cache"
+        local _log_file="$CLAUDE_CAGE_CACHE/logs/$CLAUDE_CAGE_SESSION.log"
+        [ -f "$_log_file" ] && rm -f "$_log_file"
+    fi
+
+    local _git_root
+    _git_root=$(get_git_root "$source_dir") || true
+    if [ -n "$_git_root" ] && [ -d "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ]; then
+        rm -rf "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
+    fi
+}
+
 # Prune .caged/sessions/<id>/ dirs whose work symlink target no longer exists.
 # Handles sessions cleaned up externally (cross-project sweeps, manual rm, crashes)
 # without removing the .caged sidecar.

@@ -24,20 +24,20 @@ source_is_dirty() {
     [ -n "$(git -C "$source_dir" status --porcelain 2>/dev/null)" ]
 }
 
-# Copy dirty files (modified, deleted, untracked) from source to work dir.
-# Used at startup with syncActiveBranch so Claude sees the user's in-progress edits.
+# Emit NUL-separated (src_path, dest_path) pairs for each dirty file in source.
+# Renames/copies expand to two records: (old_path -> dest_old) treated as a
+# deletion, and (new_path -> dest_new) treated as a create/modify. Paths
+# outside the scope are dropped. Existence of `source_dir/src_path` on disk
+# distinguishes create/modify from delete — consumers branch on that.
 # Arguments:
 #   $1 - source_dir: The source project directory
-#   $2 - work_dir: The cage work directory
-#   $3 - scope_path: Scope path (empty for unscoped)
-#   $4 - cfg_exclude: Pipe-delimited exclude patterns
-copy_dirty_files_to_work() {
+#   $2 - scope_path: Scope path (empty for unscoped)
+#   $3 - cfg_exclude: Pipe-delimited exclude patterns
+enumerate_source_dirty_pairs() {
     local source_dir="$1"
-    local work_dir="$2"
-    local scope_path="$3"
-    local cfg_exclude="$4"
+    local scope_path="$2"
+    local cfg_exclude="$3"
 
-    # Build exclude pathspec args
     local -a exclude_args=()
     if [ -n "$cfg_exclude" ]; then
         while IFS= read -r _ea; do
@@ -45,23 +45,16 @@ copy_dirty_files_to_work() {
         done < <(build_exclude_pathspecs "$cfg_exclude")
     fi
 
-    local copied=0 deleted=0
-
-    # Parse NUL-separated status entries directly from git (no command subst —
-    # bash $() strips NUL bytes). Format: XY<space>path<NUL>
-    # Renames/copies add a second NUL-separated entry for the new path.
     while IFS= read -r -d '' entry; do
         [ -z "$entry" ] && continue
 
         local xy="${entry:0:2}"
         local filepath="${entry:3}"
 
-        # Renames/copies: filepath is the NEW name, next NUL entry is the OLD name
         if [[ "$xy" == R* ]] || [[ "$xy" == C* ]]; then
             local oldpath=""
             IFS= read -r -d '' oldpath || true
 
-            # For scoped repos: skip files outside scope, strip prefix
             local dest_old="$oldpath"
             local dest_new="$filepath"
             if [ -n "$scope_path" ]; then
@@ -75,23 +68,11 @@ copy_dirty_files_to_work() {
                 esac
             fi
 
-            # Delete old path from work if it was in scope
-            if [ -n "$dest_old" ] && [ -f "$work_dir/$dest_old" ]; then
-                rm -f "$work_dir/$dest_old"
-                deleted=$((deleted + 1))
-            fi
-
-            # Copy new path to work if it was in scope and exists on disk
-            if [ -n "$dest_new" ] && [ -e "$source_dir/$filepath" ]; then
-                mkdir -p "$work_dir/$(dirname "$dest_new")"
-                [ -f "$work_dir/$dest_new" ] && chmod u+w "$work_dir/$dest_new" 2>/dev/null || true
-                cp -a "$source_dir/$filepath" "$work_dir/$dest_new"
-                copied=$((copied + 1))
-            fi
+            [ -n "$dest_old" ] && printf '%s\0%s\0' "$oldpath" "$dest_old"
+            [ -n "$dest_new" ] && printf '%s\0%s\0' "$filepath" "$dest_new"
             continue
         fi
 
-        # For scoped repos: skip files outside scope, strip prefix
         local dest="$filepath"
         if [ -n "$scope_path" ]; then
             case "$filepath" in
@@ -99,27 +80,112 @@ copy_dirty_files_to_work() {
                 *) continue ;;
             esac
         fi
+        printf '%s\0%s\0' "$filepath" "$dest"
+    done < <(git -C "$source_dir" status --porcelain -z -- . ${exclude_args:+"${exclude_args[@]}"} 2>/dev/null)
+}
 
-        # Check if file was deleted
-        if [ ! -e "$source_dir/$filepath" ]; then
-            if [ -e "$work_dir/$dest" ]; then
-                rm -f "$work_dir/$dest"
+# Copy dirty files (modified, deleted, untracked) from source to work dir.
+# Used at startup when bringDirty so Claude sees the user's in-progress edits.
+# Arguments:
+#   $1 - source_dir: The source project directory
+#   $2 - work_dir: The cage work directory
+#   $3 - scope_path: Scope path (empty for unscoped)
+#   $4 - cfg_exclude: Pipe-delimited exclude patterns
+copy_dirty_files_to_work() {
+    local source_dir="$1"
+    local work_dir="$2"
+    local scope_path="$3"
+    local cfg_exclude="$4"
+
+    local copied=0 deleted=0
+    local src_path dest_path
+    while IFS= read -r -d '' src_path && IFS= read -r -d '' dest_path; do
+        if [ ! -e "$source_dir/$src_path" ]; then
+            if [ -e "$work_dir/$dest_path" ]; then
+                rm -f "$work_dir/$dest_path"
                 deleted=$((deleted + 1))
             fi
-            continue
+        else
+            mkdir -p "$work_dir/$(dirname "$dest_path")"
+            [ -f "$work_dir/$dest_path" ] && chmod u+w "$work_dir/$dest_path" 2>/dev/null || true
+            cp -a "$source_dir/$src_path" "$work_dir/$dest_path"
+            copied=$((copied + 1))
         fi
-
-        # Copy file to work dir
-        mkdir -p "$work_dir/$(dirname "$dest")"
-        [ -f "$work_dir/$dest" ] && chmod u+w "$work_dir/$dest" 2>/dev/null || true
-        cp -a "$source_dir/$filepath" "$work_dir/$dest"
-        copied=$((copied + 1))
-    done < <(git -C "$source_dir" status --porcelain -z -- . ${exclude_args:+"${exclude_args[@]}"} 2>/dev/null)
+    done < <(enumerate_source_dirty_pairs "$source_dir" "$scope_path" "$cfg_exclude")
 
     local total=$((copied + deleted))
     if [ "$total" -gt 0 ]; then
         echo "Carried over $copied file(s) from your workin' tree${deleted:+, removed $deleted}."
     fi
+}
+
+# Decide if a dirty cage's working tree mirrors the source's dirty state
+# exactly, file-for-file. When true, the cage can be cleaned at exit without
+# loss — source already holds every change. Drives match-clean cleanup.
+# Returns 0 if every source-dirty path matches work content (and work has no
+# extra dirty paths); 1 otherwise.
+# Arguments:
+#   $1 - source_dir, $2 - work_dir, $3 - scope_path, $4 - cfg_exclude
+work_matches_source_dirty() {
+    local source_dir="$1"
+    local work_dir="$2"
+    local scope_path="$3"
+    local cfg_exclude="$4"
+
+    [ -d "$work_dir/.git" ] || return 1
+
+    local pairs_file
+    pairs_file=$(mktemp)
+    enumerate_source_dirty_pairs "$source_dir" "$scope_path" "$cfg_exclude" > "$pairs_file"
+
+    declare -A source_dests=()
+    local src_path dest_path
+    while IFS= read -r -d '' src_path && IFS= read -r -d '' dest_path; do
+        source_dests["$dest_path"]=1
+    done < "$pairs_file"
+
+    local entry xy wpath oldpath
+    while IFS= read -r -d '' entry; do
+        [ -z "$entry" ] && continue
+        xy="${entry:0:2}"
+        wpath="${entry:3}"
+
+        if [[ "$xy" == R* ]] || [[ "$xy" == C* ]]; then
+            oldpath=""
+            IFS= read -r -d '' oldpath || true
+            if [ -z "${source_dests[$wpath]+_}" ]; then
+                rm -f "$pairs_file"
+                return 1
+            fi
+            if [ -n "$oldpath" ] && [ -z "${source_dests[$oldpath]+_}" ]; then
+                rm -f "$pairs_file"
+                return 1
+            fi
+            continue
+        fi
+
+        if [ -z "${source_dests[$wpath]+_}" ]; then
+            rm -f "$pairs_file"
+            return 1
+        fi
+    done < <(git -C "$work_dir" status --porcelain -z 2>/dev/null)
+
+    while IFS= read -r -d '' src_path && IFS= read -r -d '' dest_path; do
+        if [ ! -e "$source_dir/$src_path" ]; then
+            if [ -e "$work_dir/$dest_path" ]; then
+                rm -f "$pairs_file"
+                return 1
+            fi
+        else
+            if [ ! -e "$work_dir/$dest_path" ] || ! cmp -s "$source_dir/$src_path" "$work_dir/$dest_path"; then
+                rm -f "$pairs_file"
+                return 1
+            fi
+        fi
+    done < "$pairs_file"
+
+    rm -f "$pairs_file"
+    return 0
 }
 
 # Copy carry files between source and work dir (outside git).

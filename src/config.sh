@@ -287,6 +287,8 @@ local autoSync = config.autoSync
 if autoSync == nil then autoSync = true end
 local syncActiveBranch = config.syncActiveBranch
 if syncActiveBranch == nil then syncActiveBranch = false end
+local bringDirty = config.bringDirty
+if bringDirty == nil then bringDirty = false end
 local isolated = config.isolated
 if isolated == nil then isolated = false end
 local hideConfirmationPrompt = config.hideConfirmationPrompt
@@ -347,6 +349,7 @@ print(config_root)
 print(mode)
 print(tostring(autoSync))
 print(tostring(syncActiveBranch))
+print(tostring(bringDirty))
 print(tostring(isolated))
 print(docker_image)
 print(launch)
@@ -475,6 +478,7 @@ LUAEOF
         read -r cfg_mode
         read -r cfg_autoSync
         read -r cfg_syncActiveBranch
+        read -r cfg_bringDirty
         read -r cfg_isolated
         read -r cfg_docker_image
         read -r cfg_launch

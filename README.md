@@ -169,6 +169,8 @@ claude_cage {
     autoSync = true,
     -- EXPERIMENTAL: Also sync to active branch (stash/apply/pop)
     -- syncActiveBranch = false,
+    -- Copy uncommitted source files into the cage at startup (or use --with-dirty)
+    -- bringDirty = false,
 
     -- Allow sandboxing non-git directories (mounts directly, no sync)
     allowNonGit = true,
@@ -364,11 +366,29 @@ claude-cage git-merge --all
 - Active branch with `syncActiveBranch = false` (the default) — Auto-sync handles other branches, but your active branch waits for you
 - After reviewin' Claude's work — Check the diff first, merge when you're satisfied
 
+### Bringin' Dirty Files Into the Cage
+
+By default, the cage starts from your last committed state — uncommitted edits in your source tree stay put on your side. If you want Claude to see your work-in-progress, opt in:
+
+```bash
+# One-off: bring this session's WIP into the cage
+claude-cage --with-dirty
+
+# Always-on: set in your .claude-cage config
+claude_cage {
+    bringDirty = true,
+}
+```
+
+With `--with-dirty` (or `bringDirty = true`), claude-cage replays your modified, new, and deleted files into the cage's work dir at startup. Excluded patterns and gitignored files stay out, same as always. If the cage already has uncommitted work of its own (a reused dirty session), the carry's skipped so nothin' clobbers it.
+
+When your source is dirty and you didn't pass the flag, you'll see a one-line hint at startup pointin' at the option — no surprises either way.
+
 ### Co-Create Workflow (EXPERIMENTAL)
 
 When `syncActiveBranch = true`, you and Claude are workin' the same branch at the same time. Claude's commits get synced back to your source repo automatically — and if you've got uncommitted work sittin' in your tree, claude-cage handles it without blowin' anythin' away.
 
-**Startup:** If your workin' tree has uncommitted changes when you fire up the cage, those dirty files get carried over into Claude's workspace. Modified files, new untracked files, even deletes — Claude starts with the same state you're lookin' at. Excluded files and gitignored files stay out, naturally.
+Pair it with `bringDirty = true` (or `--with-dirty`) if you also want Claude startin' from your WIP. They're independent: sync's about commits flowin' back, carry's about your edits goin' in.
 
 **Here's what happens when Claude pushes:**
 1. Claude pushes commits, and claude-cage checks if your workin' tree is dirty

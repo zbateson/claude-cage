@@ -614,4 +614,64 @@ fi
 echo "  PASS: Default syncActiveBranch is false"
 
 echo ""
+echo "=== Testing bringDirty config ==="
+
+echo "Test 25: Should parse bringDirty = true"
+setup_git_repo "$TEST_TMP/bringdirty-test"
+cat > "$TEST_TMP/bringdirty-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    bringDirty = true
+}
+EOF
+
+cd "$TEST_TMP/bringdirty-test"
+parse_config "bringdirty-test" "$TEST_TMP/bringdirty-test" "$TEST_TMP/bringdirty-test/.claude-cage"
+
+if [ "$cfg_bringDirty" != "true" ]; then
+    echo "FAIL: bringDirty should be 'true', got '$cfg_bringDirty'"
+    exit 1
+fi
+echo "  PASS: Parsed bringDirty = true"
+
+echo "Test 25b: Should default bringDirty to false"
+setup_git_repo "$TEST_TMP/bringdirty-default-test"
+cat > "$TEST_TMP/bringdirty-default-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+cd "$TEST_TMP/bringdirty-default-test"
+parse_config "bringdirty-default-test" "$TEST_TMP/bringdirty-default-test" "$TEST_TMP/bringdirty-default-test/.claude-cage"
+
+if [ "$cfg_bringDirty" != "false" ]; then
+    echo "FAIL: bringDirty should default to 'false', got '$cfg_bringDirty'"
+    exit 1
+fi
+echo "  PASS: Default bringDirty is false"
+
+echo "Test 25c: bringDirty is independent of syncActiveBranch"
+setup_git_repo "$TEST_TMP/bringdirty-decoupled-test"
+cat > "$TEST_TMP/bringdirty-decoupled-test/.claude-cage" << 'EOF'
+claude_cage {
+    showBanner = false,
+    hideConfirmationPrompt = true,
+    syncActiveBranch = true,
+    bringDirty = false
+}
+EOF
+
+cd "$TEST_TMP/bringdirty-decoupled-test"
+parse_config "bringdirty-decoupled-test" "$TEST_TMP/bringdirty-decoupled-test" "$TEST_TMP/bringdirty-decoupled-test/.claude-cage"
+
+if [ "$cfg_syncActiveBranch" != "true" ] || [ "$cfg_bringDirty" != "false" ]; then
+    echo "FAIL: expected syncActiveBranch=true bringDirty=false, got '$cfg_syncActiveBranch' '$cfg_bringDirty'"
+    exit 1
+fi
+echo "  PASS: syncActiveBranch and bringDirty parse independently"
+
+echo ""
 echo "=== All config tests passed! ==="

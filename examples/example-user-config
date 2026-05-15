@@ -23,6 +23,9 @@ claude_cage {
     -- EXPERIMENTAL: Also sync to the branch you're actively on (stash/apply/pop)
     -- syncActiveBranch = false,
 
+    -- Copy uncommitted source files into the cage at startup (or use --with-dirty)
+    -- bringDirty = false,
+
     -- Allow non-git directories (mounts directly without git sync)
     -- allowNonGit = true,
 

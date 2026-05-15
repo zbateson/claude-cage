@@ -42,6 +42,7 @@ clean_mode=false
 clean_all=false
 cli_direct_mount=false
 cli_scoped=false
+cli_bring_dirty=false
 cli_attach_session=""
 cli_attach_session_mode=false
 passthrough_args=()
@@ -55,6 +56,7 @@ for i in "$@"; do
         --test) test_mode=true ;;
         --direct-mount) cli_direct_mount=true ;;
         --scoped) cli_scoped=true ;;
+        --with-dirty) cli_bring_dirty=true ;;
         --dry-run) ;; # handled by helpers.sh
         --verbose|-v) ;; # handled by helpers.sh
         --debug) ;; # handled by helpers.sh
@@ -442,6 +444,11 @@ fi
 if [ "$direct_mount_mode" = false ]; then
     echo "  Auto-sync:     $cfg_autoSync"
     echo "  Sync active:   $cfg_syncActiveBranch"
+    if [ "$cli_bring_dirty" = true ]; then
+        echo "  Bring dirty:   true (--with-dirty)"
+    else
+        echo "  Bring dirty:   $cfg_bringDirty"
+    fi
     echo "  Isolated:      $cfg_isolated"
     if [ -n "$scope_path" ]; then
         echo "  Scoped to:     $scope_path"
@@ -781,12 +788,22 @@ else
             ;;
     esac
 
-    # Copy dirty files into the cage so Claude starts with the user's WIP
-    if [ "$cfg_syncActiveBranch" = "true" ] && \
-       [ "$cli_attach_session_mode" != true ] && \
-       source_is_dirty "$cfg_source" && \
-       ! is_work_dirty "$work_dir"; then
-        copy_dirty_files_to_work "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_exclude"
+    # Copy dirty source files into the cage if explicitly opted in.
+    # Off by default so the cage starts from a predictable, committed state.
+    bring_dirty=false
+    if [ "$cli_bring_dirty" = true ] || [ "$cfg_bringDirty" = "true" ]; then
+        bring_dirty=true
+    fi
+    if [ "$cli_attach_session_mode" != true ] && \
+       ! is_work_dirty "$work_dir" && \
+       source_is_dirty "$cfg_source"; then
+        if [ "$bring_dirty" = true ]; then
+            copy_dirty_files_to_work "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_exclude"
+        else
+            echo ""
+            echo "Source has uncommitted changes — leavin' 'em out of the cage."
+            echo "Run with --with-dirty (or set bringDirty = true) to bring 'em in."
+        fi
     fi
 
     # Copy carry files (gitignored files that should persist across sessions)

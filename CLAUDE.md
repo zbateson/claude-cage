@@ -76,6 +76,10 @@ Multiple concurrent sessions share the same intermediary. Each gets its own work
 
 When `git am` fails, patches are saved to `<source>/claude-cage-failed-patches/from-intermediary/<branch>/`. At next startup, an interactive prompt offers to apply, delete, or skip them.
 
+### Startup Dirty Carry
+
+Independent of `syncActiveBranch`. When `bringDirty = true` (or `--with-dirty` is passed), `copy_dirty_files_to_work` walks `git status --porcelain -z` on the source and replays modifications, deletions, renames, and untracked files into the cage work dir. Skipped if the work is already dirty (reused session) or if we're attaching. Default is off — when source is dirty but the flag isn't set, startup prints a one-line hint pointing at `--with-dirty` / `bringDirty`. Exclude patterns are applied via `build_exclude_pathspecs`.
+
 ## Configuration
 
 Config files loaded and merged in order (later values override, arrays merge): system (`/etc/claude-cage.conf`) → user (`~/.config/claude-cage/config`) → includeIf (directory-scoped, declared in system/user config) → local (`.claude-cage` at git root). No config triggers an interactive builder.
@@ -92,6 +96,7 @@ claude_cage {
     mode = "bwrap",  -- or "docker"
     autoSync = true,
     -- syncActiveBranch = false,  -- EXPERIMENTAL: also sync active branch (stash/apply/pop)
+    -- bringDirty = false,  -- copy uncommitted source files into the cage at startup
     showBanner = true,
 
     networkMode = "allowlist",  -- "disabled", "allowlist", or "blocklist"
@@ -140,6 +145,7 @@ claude_cage {
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoSync` | `true` | Real-time sync of non-active branches via named pipe |
 | `syncActiveBranch` | `false` | **EXPERIMENTAL** Also sync active branch (stash/apply/pop) |
+| `bringDirty` | `false` | Copy uncommitted source files into the cage at startup (CLI: `--with-dirty`) |
 | `allowNonGit` | unset | Allow non-git directories (triggers direct mount) |
 | `directMount` | `false` | Mount source directly, skip git sync entirely |
 | `isolated` | `false` | Only mount single project (not all same-session projects) |
@@ -166,6 +172,7 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 ./claude-cage --resume                             # Pass args to launch command
 ./claude-cage --test                               # Shell inside sandbox
 ./claude-cage --direct-mount                       # Skip git sync
+./claude-cage --with-dirty                         # Carry uncommitted source files into the cage
 ./claude-cage git-merge [<branch>|--all]            # Sync intermediary commits to source
 ./claude-cage --attach-session [<timestamp>]       # Share active session
 ./claude-cage clean [<id>|--all]                   # Clean cached sessions

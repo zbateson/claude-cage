@@ -174,6 +174,7 @@ Options:
   --test                  Drop into a shell for testing instead of launching
   --direct-mount          Mount source directly without git sync
   --scoped                Scope intermediary to CWD subdirectory only
+  --with-dirty            Copy uncommitted source files into the cage at startup
   --attach-session [TS]   Attach to an active session (optionally by timestamp)
   --all                   Remove all sessions (with clean subcommand)
   --dry-run               Show commands without executing
@@ -215,7 +216,7 @@ _claude_cage() {
     _init_completion 2>/dev/null || return
 
     local subcommands="git-merge clean completion install-completions"
-    local flags="--test --direct-mount --scoped --attach-session --all --dry-run --verbose -v --debug --help -h --version"
+    local flags="--test --direct-mount --scoped --with-dirty --attach-session --all --dry-run --verbose -v --debug --help -h --version"
 
     # Check if a subcommand is present in the command line
     local has_clean=false has_git_merge=false
@@ -315,6 +316,7 @@ _claude_cage() {
         '--test[Drop into a shell for testing]'
         '--direct-mount[Mount source directly without git sync]'
         '--scoped[Scope intermediary to CWD subdirectory only]'
+        '--with-dirty[Copy uncommitted source files into the cage at startup]'
         '--attach-session[Attach to an active session]:session:_claude_cage_sessions'
         '--all[Remove all sessions (with clean subcommand)]'
         '--dry-run[Show commands without executing]'

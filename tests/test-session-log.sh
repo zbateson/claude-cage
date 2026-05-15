@@ -349,5 +349,82 @@ if [ -f "$CLAUDE_CAGE_CACHE/logs/stale-session-001.log" ]; then
 fi
 echo "  PASS: cleanup_stale_sessions removes stale session log"
 
+# ============================================================================
+echo "Test 16: cleanup_stale_caged_links prunes broken work symlinks"
+# ============================================================================
+mkdir -p "$TEST_TMP/caged-source"
+cd "$TEST_TMP/caged-source"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "content" > file.txt
+git add . && git commit -q -m "Initial"
+
+CAGED_SOURCE="$TEST_TMP/caged-source"
+
+mkdir -p "$CAGED_SOURCE/.caged/sessions/dead-session/"
+ln -s "$TEST_TMP/does-not-exist" "$CAGED_SOURCE/.caged/sessions/dead-session/work"
+
+mkdir -p "$CAGED_SOURCE/.caged/sessions/live-session/"
+mkdir -p "$TEST_TMP/live-target"
+ln -s "$TEST_TMP/live-target" "$CAGED_SOURCE/.caged/sessions/live-session/work"
+
+cleanup_stale_caged_links "$CAGED_SOURCE" >/dev/null 2>&1 || true
+
+if [ -d "$CAGED_SOURCE/.caged/sessions/dead-session" ]; then
+    echo "FAIL: dead-session with broken work symlink should be pruned"
+    exit 1
+fi
+if [ ! -d "$CAGED_SOURCE/.caged/sessions/live-session" ]; then
+    echo "FAIL: live-session with valid work symlink should be kept"
+    exit 1
+fi
+echo "  PASS: cleanup_stale_caged_links prunes broken work symlinks"
+
+# ============================================================================
+echo "Test 17: cleanup_stale_caged_links removes empty .caged dir"
+# ============================================================================
+mkdir -p "$TEST_TMP/empty-caged-source"
+cd "$TEST_TMP/empty-caged-source"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "content" > file.txt
+git add . && git commit -q -m "Initial"
+
+EMPTY_CAGED_SOURCE="$TEST_TMP/empty-caged-source"
+
+mkdir -p "$EMPTY_CAGED_SOURCE/.caged/sessions/orphan/"
+ln -s "$TEST_TMP/does-not-exist-either" "$EMPTY_CAGED_SOURCE/.caged/sessions/orphan/work"
+printf '*\n!.gitignore\n' > "$EMPTY_CAGED_SOURCE/.caged/.gitignore"
+
+cleanup_stale_caged_links "$EMPTY_CAGED_SOURCE" >/dev/null 2>&1 || true
+
+if [ -d "$EMPTY_CAGED_SOURCE/.caged" ]; then
+    echo "FAIL: .caged dir should be removed when only .gitignore remains"
+    exit 1
+fi
+echo "  PASS: cleanup_stale_caged_links removes empty .caged dir"
+
+# ============================================================================
+echo "Test 18: cleanup_stale_caged_links no-op when .caged missing"
+# ============================================================================
+mkdir -p "$TEST_TMP/no-caged-source"
+cd "$TEST_TMP/no-caged-source"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "content" > file.txt
+git add . && git commit -q -m "Initial"
+
+NO_CAGED_SOURCE="$TEST_TMP/no-caged-source"
+
+cleanup_stale_caged_links "$NO_CAGED_SOURCE" >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "FAIL: cleanup_stale_caged_links should succeed when .caged missing"
+    exit 1
+fi
+echo "  PASS: cleanup_stale_caged_links no-op when .caged missing"
+
 echo ""
 echo "=== All session logging tests passed! ==="

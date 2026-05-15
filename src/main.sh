@@ -401,6 +401,7 @@ fi
 # Clean up any orphaned hooks from crashed sessions (git mode only)
 if [ "$direct_mount_mode" = false ] && is_git_repo "$cfg_source"; then
     cleanup_orphaned_hooks "$cfg_source"
+    cleanup_stale_caged_links "$cfg_source"
     repos_list_clean_orphans "$cfg_source" 2>/dev/null || true
 fi
 

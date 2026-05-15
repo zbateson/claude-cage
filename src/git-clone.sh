@@ -773,6 +773,50 @@ reuse_or_create_session() {
     fi
 }
 
+# Prune .caged/sessions/<id>/ dirs whose work symlink target no longer exists.
+# Handles sessions cleaned up externally (cross-project sweeps, manual rm, crashes)
+# without removing the .caged sidecar.
+# Arguments: $1 = source directory
+cleanup_stale_caged_links() {
+    local source_dir="$1"
+    [ "${dry_run:-}" = true ] && return 0
+
+    local git_root
+    git_root=$(get_git_root "$source_dir" 2>/dev/null) || return 0
+    [ -z "$git_root" ] && return 0
+
+    local sessions_dir="$git_root/.caged/sessions"
+    [ -d "$sessions_dir" ] || return 0
+
+    local cleaned=0
+    local entry work_link
+    for entry in "$sessions_dir"/*; do
+        [ -d "$entry" ] || continue
+        work_link="$entry/work"
+        if [ ! -L "$work_link" ] || [ ! -e "$work_link" ]; then
+            rm -rf "$entry"
+            cleaned=$((cleaned + 1))
+        fi
+    done
+
+    if [ -d "$sessions_dir" ] && [ -z "$(ls -A "$sessions_dir" 2>/dev/null)" ]; then
+        rmdir "$sessions_dir" 2>/dev/null || true
+    fi
+
+    local caged_dir="$git_root/.caged"
+    if [ -d "$caged_dir" ]; then
+        local remaining
+        remaining=$(ls -A "$caged_dir" 2>/dev/null | grep -v '^\.gitignore$')
+        if [ -z "$remaining" ]; then
+            rm -rf "$caged_dir"
+        fi
+    fi
+
+    if [ "$cleaned" -gt 0 ]; then
+        echo "Cleaned up $cleaned stale .caged session link(s)."
+    fi
+}
+
 # Clean up inactive clean sessions we're not using
 # Only removes THIS project's work dir from clean sessions.
 # Removes session dir only if empty after cleanup.

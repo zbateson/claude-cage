@@ -82,7 +82,15 @@ Display layer: every user-facing surface (`Joinin'…`, dirty prompt, `claude-ca
 
 **Mount layering.** `enumerate_projects` scans `$CACHE/sessions/default/work` for cross-project visibility regardless of which session we're actually in (see `get_default_work_root`). When in an alternate, the alternate's own `work_dir` is the first `CAGE_WORK_PROJECTS` entry and wins for its own `project_path`; other projects come from `default`'s tree. When in `default`, the scan trivially produces the same set.
 
-**`isolated` config option** is deprecated. It's parsed-but-ignored with a one-line note on startup. The new structural isolation (alternates are keyed on `project_key`) replaces it. Genuine cross-contamination concerns are addressed by overriding `CLAUDE_CAGE_CACHE` per-project.
+**`isolated = true`** opts a project into its own dedicated session at `$CACHE/sessions/<project-key>-isolated/`. The user-facing label is `isolated`. Key properties:
+
+- The isolated session never mounts default's work tree (mount layering's cross-project visibility is skipped via the existing `cfg_isolated` branches in `enumerate_projects` / `build_mount_specs`).
+- The isolated project never enters default's tree, so other projects running in default never see it either.
+- Stickiness: `select_session` treats the project as isolated when *either* `cfg_isolated=true` *or* `$CACHE/sessions/<project-key>-isolated/` already exists. Removing `isolated = true` from config doesn't accidentally re-expose the project's work — the isolated cache wins and `cfg_isolated` is force-set true at runtime. To genuinely un-isolate, run `claude-cage clean isolated` and start over.
+- Canonical-vs-alternate semantics still apply: the isolated session is the canonical session for that project (preserved on clean exit, like default), and alternates allocated when it's busy follow the normal `<project-key>-N` numbering (torn down on clean exit).
+- Symmetry: the isolation works in both leak directions. Users with mostly-public projects use it to keep work files out of OSS cages. Users with a single private-secrets project use it to keep secrets out of their other cages. Same mechanism either way: don't participate in default.
+
+`resolve_session_name "isolated" "$source_dir"` → `<project-key>-isolated`. `display_session_name` maps the cache id back to `isolated`. Both `--attach-session isolated` and `claude-cage clean isolated` work via the same name pair. The on-disk name embeds the project key so `claude-cage clean` listings across multiple isolated projects stay unambiguous.
 
 **Migration.** Pre-existing timestamp-named sessions (`2026-05-16_09-22-31/`) are ignored by discovery (`select_session` never auto-joins them) but remain visible to `claude-cage clean`. `display_session_name` passes them through unchanged so listings stay readable. Users do a `claude-cage clean --all` post-upgrade if they want a clean slate.
 
@@ -192,7 +200,7 @@ claude_cage {
 | `bringDirty` | `false` | Copy uncommitted source files into the cage at startup (CLI: `--with-dirty`) |
 | `allowNonGit` | unset | Allow non-git directories (triggers direct mount) |
 | `directMount` | `false` | Mount source directly, skip git sync entirely |
-| `isolated` | `false` | **DEPRECATED** Parsed-but-ignored, with a one-line note on startup. Per-project isolation is now structural via alternate sessions; for true cross-contamination prevention, override `CLAUDE_CAGE_CACHE` per project. |
+| `isolated` | `false` | Route this project to its own sealed `<project-key>-isolated` session instead of the shared `default`. The isolated session never mounts default's work tree, and other projects in default never see the isolated one — works in both leak directions (sensitive content in *this* project shouldn't reach others, or sensitive content in *other* projects shouldn't reach this one). Sticky: once an isolated cache exists, the project keeps using it even if the flag is removed, until the cache is cleaned. |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip confirmation prompt before entering sandbox |
 | `createCagedDir` | `false` | Create `.caged/` symlinks to session caches |
@@ -244,6 +252,9 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
     ├── default/                          # Canonical shared session (every project joins by default)
     │   ├── work/<project>/               # Unscoped work dir
     │   └── scoped/<git-root>/<scope>/    # Scoped work dir (sibling tree)
+    ├── <basename>-<6hex>-isolated/       # Per-project sealed session when isolated = true (no default mount)
+    │   ├── work/<project>/
+    │   └── scoped/<git-root>/<scope>/
     └── <basename>-<6hex>-<N>/            # Per-project alternate (e.g. claude-cage-a3f7b2-2)
         ├── work/<project>/
         └── scoped/<git-root>/<scope>/

@@ -101,12 +101,18 @@ claude_cage {
     -- even when working in a git repo. Changes go straight to source.
     -- directMount = false,
 
-    -- DEPRECATED. 'isolated = true' is parsed-but-ignored, with a one-line
-    -- note on startup. Per-project isolation is now structural: this project's
-    -- alternates (session.2, session.3, ...) are keyed on the project's own
-    -- hash, so they can never accidentally cross-mount. For true sealed-off
-    -- behaviour (separate cache tree, no possibility of sharing), override
-    -- CLAUDE_CAGE_CACHE per project instead.
+    -- Route this project to its own sealed 'isolated' session instead of the
+    -- shared 'default'. The isolated session never mounts default's work tree,
+    -- and other projects in default never see this one. Use this either way
+    -- the leak risk runs:
+    --   - Mostly-public projects + one or two with secrets in default:
+    --     mark the public ones as 'isolated' so the OSS cage never sees the
+    --     secrets project's tree.
+    --   - One sealed-off private project + others in default: mark the
+    --     private project as 'isolated' so other cages can't read it.
+    -- Sticky: once the isolated cache exists, claude-cage keeps using it
+    -- even if 'isolated = true' is removed from this file. Run
+    -- 'claude-cage clean isolated' to truly opt back into default.
     -- isolated = false,
 
     -- =========================================================================

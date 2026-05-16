@@ -175,7 +175,7 @@ Options:
   --direct-mount          Mount source directly without git sync
   --scoped                Scope intermediary to CWD subdirectory only
   --with-dirty            Copy uncommitted source files into the cage at startup
-  --attach-session [NAME] Attach to a session (default | session.<N>; no arg = pick)
+  --attach-session [NAME] Attach to a session (default | isolated | session.<N>; no arg = pick)
   --all                   Remove all sessions (with clean subcommand)
   --dry-run               Show commands without executing
   --verbose, -v           Show commands as they execute
@@ -197,9 +197,10 @@ Examples:
   claude-cage --resume               Pass --resume to the launch command
   claude-cage --attach-session       Pick a session to attach to
   claude-cage --attach-session default     Attach to the shared default session
+  claude-cage --attach-session isolated    Attach to this project's isolated session
   claude-cage --attach-session session.2   Attach to alternate 2 for this project
   claude-cage clean                  Interactively select session cache(s) to remove
-  claude-cage clean session.2        Remove a specific alternate (or 'default')
+  claude-cage clean session.2        Remove a specific alternate (or 'default'/'isolated')
   claude-cage clean --all            Remove all cached sessions for this project
   claude-cage git-merge              Sync current branch from intermediary
   claude-cage git-merge feature      Sync specific branch from intermediary
@@ -241,6 +242,7 @@ _claude_cage() {
             fi
             local sessions="default"
             if [ -d "$cache_dir/sessions" ] && [ -n "$proj_key" ]; then
+                [ -d "$cache_dir/sessions/${proj_key}-isolated" ] && sessions="$sessions isolated"
                 for d in "$cache_dir/sessions/${proj_key}-"*/; do
                     [ -d "$d" ] || continue
                     local n
@@ -296,6 +298,7 @@ _claude_cage() {
             sessions="default"
         fi
         if [ -d "$cache_dir/sessions" ] && [ -n "$proj_key" ]; then
+            [ -d "$cache_dir/sessions/${proj_key}-isolated" ] && sessions="$sessions isolated"
             for d in "$cache_dir/sessions/${proj_key}-"*/; do
                 [ -d "$d" ] || continue
                 local n
@@ -398,6 +401,7 @@ _claude_cage_sessions() {
         sessions+=("default")
     fi
     if [ -d "$cache_dir/sessions" ] && [ -n "$proj_key" ]; then
+        [ -d "$cache_dir/sessions/${proj_key}-isolated" ] && sessions+=("isolated")
         for d in "$cache_dir/sessions/${proj_key}-"*/; do
             [ -d "$d" ] || continue
             local n

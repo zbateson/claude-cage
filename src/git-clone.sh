@@ -59,6 +59,7 @@ allocate_alternate_session() {
 
 # Resolve a user-facing session name to its on-disk cache name.
 #   "default"    → "default"
+#   "isolated"   → "<project-key>-isolated"
 #   "session.N"  → "<project-key>-N"
 # Any other input is rejected with a non-zero return and an error on stderr.
 # Arguments: $1 = user-facing name, $2 = source directory
@@ -68,6 +69,11 @@ resolve_session_name() {
     if [ "$name" = "default" ]; then
         echo "default"
         return 0
+    elif [ "$name" = "isolated" ]; then
+        local key
+        key=$(get_project_key "$source_dir")
+        echo "${key}-isolated"
+        return 0
     elif [[ "$name" =~ ^session\.([0-9]+)$ ]]; then
         local n="${BASH_REMATCH[1]}"
         local key
@@ -75,13 +81,14 @@ resolve_session_name() {
         echo "${key}-${n}"
         return 0
     fi
-    echo "error: unknown session name '$name' (expected 'default' or 'session.<N>')" >&2
+    echo "error: unknown session name '$name' (expected 'default', 'isolated', or 'session.<N>')" >&2
     return 1
 }
 
 # Render an on-disk session cache name back to its user-facing form.
-#   "default"            → "default"
-#   "<basename>-<hash>-N" → "session.N"
+#   "default"                    → "default"
+#   "<basename>-<hash>-isolated" → "isolated"
+#   "<basename>-<hash>-N"        → "session.N"
 # Anything else (legacy timestamp IDs, unknown formats) passes through verbatim
 # so the caller still has something printable.
 # Arguments: $1 = cache name
@@ -89,6 +96,8 @@ display_session_name() {
     local cache_id="$1"
     if [ "$cache_id" = "default" ]; then
         echo "default"
+    elif [[ "$cache_id" =~ ^.+-[a-f0-9]{6}-isolated$ ]]; then
+        echo "isolated"
     elif [[ "$cache_id" =~ ^.+-[a-f0-9]{6}-([0-9]+)$ ]]; then
         echo "session.${BASH_REMATCH[1]}"
     else
@@ -819,20 +828,37 @@ select_session() {
         return
     fi
 
-    if ! session_is_active_for_source "default" "$source_dir"; then
-        CLAUDE_CAGE_SESSION="default"
+    # Pick the canonical session for this project. Default is the shared
+    # cross-project tree; isolated is a per-project sealed tree that doesn't
+    # mount default at all. Stickiness: if the isolated cache already exists
+    # for this project (from a prior run), treat the project as isolated even
+    # if the current config doesn't set isolated = true — otherwise a
+    # forgotten config change would silently land the project in default
+    # and expose every other project's work through the mount layer.
+    local _key
+    _key=$(get_project_key "$source_dir")
+    local _canonical
+    if [ "${cfg_isolated:-}" = "true" ] || [ -d "$CLAUDE_CAGE_CACHE/sessions/${_key}-isolated" ]; then
+        _canonical="${_key}-isolated"
+        cfg_isolated="true"
+    else
+        _canonical="default"
+    fi
+
+    if ! session_is_active_for_source "$_canonical" "$source_dir"; then
+        CLAUDE_CAGE_SESSION="$_canonical"
         return
     fi
 
     local _alternates
     _alternates=$(list_inactive_dirty_alternates "$source_dir")
     if [ -n "$_alternates" ] && [ -t 0 ] && [ -t 1 ]; then
-        _select_alternate_prompt "$source_dir" "$_alternates"
+        _select_alternate_prompt "$source_dir" "$_alternates" "$_canonical"
         return
     fi
 
     CLAUDE_CAGE_SESSION=$(allocate_alternate_session "$source_dir")
-    echo "Settin' up $(display_session_name "$CLAUDE_CAGE_SESSION") (this project's already runnin' in default)."
+    echo "Settin' up $(display_session_name "$CLAUDE_CAGE_SESSION") (this project's already runnin' in $(display_session_name "$_canonical"))."
 }
 
 # Helper for select_session: handle --attach-session in both forms (specific
@@ -842,8 +868,8 @@ _select_attach_session() {
     local source_dir="$1"
 
     if [ -n "${cli_attach_session:-}" ]; then
-        # Specific name. Accept "default", "session.N", or a legacy cache id
-        # (timestamp form) for users mid-migration.
+        # Specific name. Accept "default", "isolated", "session.N", or a
+        # legacy cache id (timestamp form) for users mid-migration.
         local cache_id
         if cache_id=$(resolve_session_name "$cli_attach_session" "$source_dir" 2>/dev/null); then
             :
@@ -860,18 +886,26 @@ _select_attach_session() {
             exit 1
         fi
         CLAUDE_CAGE_SESSION="$cache_id"
+        # Attaching to an isolated session implies isolation for this run too —
+        # otherwise we'd cross-mount default into a session that was set up to
+        # avoid it.
+        case "$cache_id" in
+            *-isolated) cfg_isolated="true" ;;
+        esac
         echo "Attachin' to $(display_session_name "$cache_id")."
         return
     fi
 
-    # No-arg --attach-session: build the list of attachable sessions
-    # (default + each on-disk alternate for this project). Prompt if many.
+    # No-arg --attach-session: build the list of attachable sessions for this
+    # project. Includes default (if present), <key>-isolated (if present), and
+    # each numbered alternate. Prompt if more than one candidate.
     local key
     key=$(get_project_key "$source_dir")
     local -a candidates=()
     [ -d "$CLAUDE_CAGE_CACHE/sessions/default" ] && candidates+=("default")
+    [ -d "$CLAUDE_CAGE_CACHE/sessions/${key}-isolated" ] && candidates+=("${key}-isolated")
     local d
-    for d in $(ls -1d "$CLAUDE_CAGE_CACHE/sessions/${key}-"* 2>/dev/null | awk -F- '{print $NF" "$0}' | sort -n | awk '{print $2}'); do
+    for d in $(ls -1d "$CLAUDE_CAGE_CACHE/sessions/${key}-"[0-9]* 2>/dev/null | awk -F- '{print $NF" "$0}' | sort -n | awk '{print $2}'); do
         [ -d "$d" ] || continue
         candidates+=("$(basename "$d")")
     done
@@ -883,6 +917,9 @@ _select_attach_session() {
 
     if [ ${#candidates[@]} -eq 1 ]; then
         CLAUDE_CAGE_SESSION="${candidates[0]}"
+        case "$CLAUDE_CAGE_SESSION" in
+            *-isolated) cfg_isolated="true" ;;
+        esac
         echo "Attachin' to $(display_session_name "$CLAUDE_CAGE_SESSION")."
         return
     fi
@@ -902,6 +939,9 @@ _select_attach_session() {
         read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#candidates[@]} ]; then
             CLAUDE_CAGE_SESSION="${candidates[$((choice - 1))]}"
+            case "$CLAUDE_CAGE_SESSION" in
+                *-isolated) cfg_isolated="true" ;;
+            esac
             return
         fi
         echo "Pick a number."
@@ -912,15 +952,17 @@ _select_attach_session() {
 # for this project. Each candidate gets a number; "n" → fresh alternate; "q" → quit.
 # Picking an alternate may switch source_dir/scope to that alternate's, so
 # we update the relevant globals (cfg_source, scope_path, intermediary_dir).
-# Arguments: $1 = source_dir, $2 = newline-separated alternate list
+# Arguments: $1 = source_dir, $2 = newline-separated alternate list,
+#            $3 = canonical session name we tried first (for prompt wording)
 _select_alternate_prompt() {
     local source_dir="$1"
     local alternates="$2"
+    local canonical="${3:-default}"
 
     local count
     count=$(echo "$alternates" | wc -l)
 
-    echo "This project's already runnin' in 'default'. Found $count inactive cage(s) with dirty work:"
+    echo "This project's already runnin' in '$(display_session_name "$canonical")'. Found $count inactive cage(s) with dirty work:"
     echo ""
     local -a alt_entries=()
     local -a alt_ids=()

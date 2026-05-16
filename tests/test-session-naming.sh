@@ -174,6 +174,15 @@ else
     exit 1
 fi
 
+echo "Test 13a: 'isolated' resolves to '<key>-isolated'"
+got=$(resolve_session_name "isolated" "$PROJ_A")
+if [ "$got" = "${KEY_A}-isolated" ]; then
+    echo "  PASS: $got"
+else
+    echo "  FAIL: expected ${KEY_A}-isolated, got '$got'"
+    exit 1
+fi
+
 echo ""
 echo "=== display_session_name ==="
 
@@ -203,6 +212,37 @@ else
     echo "  FAIL: got '$got'"
     exit 1
 fi
+
+echo "Test 16a: '<basename>-<hash>-isolated' → 'isolated'"
+got=$(display_session_name "${KEY_A}-isolated")
+if [ "$got" = "isolated" ]; then
+    echo "  PASS"
+else
+    echo "  FAIL: got '$got'"
+    exit 1
+fi
+
+echo "Test 16b: 'isolated' round-trips through resolve+display"
+cache=$(resolve_session_name "isolated" "$PROJ_A")
+back=$(display_session_name "$cache")
+if [ "$back" = "isolated" ]; then
+    echo "  PASS"
+else
+    echo "  FAIL: isolated → $cache → $back"
+    exit 1
+fi
+
+echo "Test 16c: allocate_alternate_session ignores '<key>-isolated', returns numbered slot"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions/${KEY_A}-"*
+mkdir -p "$CLAUDE_CAGE_CACHE/sessions/${KEY_A}-isolated"
+NAME=$(allocate_alternate_session "$PROJ_A")
+if [ "$NAME" = "${KEY_A}-2" ]; then
+    echo "  PASS: alt allocation skipped 'isolated' and picked .2"
+else
+    echo "  FAIL: expected ${KEY_A}-2, got '$NAME'"
+    exit 1
+fi
+rm -rf "$CLAUDE_CAGE_CACHE/sessions/${KEY_A}-"*
 
 echo "Test 17: project key with multi-word basename (claude-cage-style) renders correctly"
 multi_proj="$TEST_TMP/projects/claude-cage"

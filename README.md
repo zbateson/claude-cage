@@ -261,11 +261,12 @@ claude-cage git-merge --all
 # Attach to a session
 claude-cage --attach-session                     # No arg — pick from a list
 claude-cage --attach-session default             # The shared default session
+claude-cage --attach-session isolated            # This project's sealed session (if isolated = true)
 claude-cage --attach-session session.2           # Alternate 2 for this project
 
 # Clean up cached sessions for this project
 claude-cage clean                                # Interactive selection
-claude-cage clean session.2                      # Remove a specific alternate (or 'default')
+claude-cage clean session.2                      # Remove an alternate (or 'default'/'isolated')
 claude-cage clean --all                          # Remove all sessions
 ```
 
@@ -305,7 +306,40 @@ Even in an alternate, you still see every other project. Mount layerin' makes it
 
 Default never sees alternate work dirs. Alternates see default + their own override.
 
-If you genuinely need cross-contamination prevention (say, sensitive client work), override `CLAUDE_CAGE_CACHE` per-project to put it in a separate cache tree.
+### Sealin' a Project Off: `isolated = true`
+
+When you want a project to *not* participate in the shared `default` tree at all, drop `isolated = true` into its `.claude-cage`:
+
+```lua
+claude_cage {
+    isolated = true,
+}
+```
+
+That project now lives in its own dedicated session, `isolated`, with no default-tree mount. Other projects in `default` never see this one (because it never enters `default`), and this project never sees other projects (because default ain't mounted).
+
+It works in both directions, depending on where you think the leak risk lives:
+
+- **You're mostly on public/OSS projects, with one or two private work projects with secrets.** Mark the public ones as `isolated = true`. Your work projects stay in `default`, but the OSS cage never mounts them — no risk of pastin' a stray API key into an open-source commit.
+- **You're mostly on public projects, with one private project full of secrets.** Mark the private one as `isolated = true`. The other public projects stay in `default` and never see the sealed project — no risk of one of those public cages accidentally readin' from the private tree.
+
+Same mechanism either way: the `isolated` flag means "this project doesn't participate in `default`, in or out."
+
+Once you've opted in, the isolated cache is sticky. Removin' `isolated = true` from config doesn't quietly re-expose the project — claude-cage notices the existin' isolated cache and keeps usin' it. To genuinely undo it: `claude-cage clean isolated`, then start fresh.
+
+You can attach to it like any other session:
+
+```bash
+claude-cage --attach-session isolated
+```
+
+And clean it the same way:
+
+```bash
+claude-cage clean isolated
+```
+
+For *really* paranoid setups (say, sensitive client work where even sharing a cache root with public work feels too close), override `CLAUDE_CAGE_CACHE` per-project to put it in a completely separate cache tree.
 
 ### Attach & Multi-Terminal
 
@@ -565,13 +599,24 @@ claude_cage {
 }
 ```
 
-Or if you want the main project completely fenced off from other claude-cage sessions, point its cache at a dedicated directory via `CLAUDE_CAGE_CACHE`:
+Or if you want the main project completely fenced off from other claude-cage sessions, set `isolated = true` (see [Sealin' a Project Off](#sealin-a-project-off-isolated--true)):
+
+```lua
+claude_cage {
+    isolated = true,
+    additionalMounts = {
+        { source = "~/projects/open-source", mode = "ro" }
+    }
+}
+```
+
+The project lives in its own sealed `isolated` session — `default` is never mounted, so other claude-cage projects stay invisible to this one and vice-versa.
+
+For an even harder seal (separate cache tree entirely), override `CLAUDE_CAGE_CACHE` per-project:
 
 ```bash
 CLAUDE_CAGE_CACHE=~/.cache/claude-cage-fenced claude-cage
 ```
-
-Different cache → different `default` session → no cross-project visibility at all. Use this for sensitive client work or anywhere you genuinely need separate worlds.
 
 Now you've got:
 - Full git workflow on your main project

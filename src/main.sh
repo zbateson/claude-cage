@@ -609,15 +609,11 @@ else
     intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
     intermediary_root=$(get_intermediary_root)
 
-    # Deprecated config option: warn once and force it off so downstream code
-    # (mount specs, etc.) doesn't accidentally re-honour it.
-    if [ "$cfg_isolated" = "true" ]; then
-        echo "Note: 'isolated = true' is deprecated and ignored. Override CLAUDE_CAGE_CACHE per project for true isolation." >&2
-        cfg_isolated="false"
-    fi
-
     # Session selection: routes between default and per-project alternates.
-    # Also handles --attach-session in both forms.
+    # When cfg_isolated=true (or a <project-key>-isolated cache already exists
+    # for this project), select_session sticks the project in a dedicated
+    # 'isolated' session and forces cfg_isolated=true so the mount code skips
+    # default's cross-project tree entirely.
     select_session "$cfg_source"
 
     export CLAUDE_CAGE_SESSION
@@ -777,7 +773,15 @@ cleanup_on_exit() {
             fi
         fi
 
-        if [ "$CLAUDE_CAGE_SESSION" != "default" ]; then
+        # Canonical sessions (default + <project-key>-isolated) are preserved
+        # on clean exit so reuse and project-state continuity work. Alternates
+        # (<project-key>-N) are torn down on clean exit so the slot recycles.
+        _is_canonical=false
+        case "$CLAUDE_CAGE_SESSION" in
+            default|*-isolated) _is_canonical=true ;;
+        esac
+
+        if [ "$_is_canonical" = false ]; then
             # Alternate exit: clean → tear the whole alternate down; dirty →
             # leave it so the next startup finds it and prompts. Slot recycles
             # once every alternate for this project has gone.

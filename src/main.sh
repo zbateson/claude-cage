@@ -612,7 +612,11 @@ else
 
     # Now compute paths using the selected session
     work_dir=$(get_scoped_work_path "$cfg_source" "$scope_path")
-    session_work_root=$(get_session_work_root)
+    # Cross-project visibility always goes through default's work tree. When
+    # we're in an alternate, the project's own path is overlaid below (via the
+    # first CAGE_WORK_PROJECTS entry) so the project sees its isolated copy
+    # while other projects come from default.
+    session_work_root=$(get_default_work_root)
     pipe_path=$(get_pipe_path "$cfg_source")
 
     # Check for other active sessions before doing anything destructive

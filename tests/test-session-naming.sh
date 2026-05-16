@@ -228,4 +228,18 @@ done
 echo "  PASS"
 
 echo ""
+echo "=== get_default_work_root ==="
+
+echo "Test 19: get_default_work_root is sessions/default/work, regardless of CLAUDE_CAGE_SESSION"
+expected="$CLAUDE_CAGE_CACHE/sessions/default/work"
+CLAUDE_CAGE_SESSION="default" got=$(get_default_work_root)
+[ "$got" = "$expected" ] || { echo "  FAIL: in default got '$got'"; exit 1; }
+CLAUDE_CAGE_SESSION="${KEY_A}-2" got=$(get_default_work_root)
+[ "$got" = "$expected" ] || { echo "  FAIL: in alternate got '$got'"; exit 1; }
+unset CLAUDE_CAGE_SESSION
+got=$(get_default_work_root)
+[ "$got" = "$expected" ] || { echo "  FAIL: unset got '$got'"; exit 1; }
+echo "  PASS: always $expected"
+
+echo ""
 echo "=== All session-naming tests passed! ==="

@@ -236,6 +236,14 @@ get_session_work_root() {
     echo "$CLAUDE_CAGE_CACHE/sessions/$session_id/work"
 }
 
+# Get the canonical default session's work root. Every cage — default or
+# alternate — uses this as the cross-project visibility tree. Alternates
+# additionally overlay their own work_dir on top of their project's path
+# so the project sees an isolated copy while other projects come from default.
+get_default_work_root() {
+    echo "$CLAUDE_CAGE_CACHE/sessions/default/work"
+}
+
 # Get the latest session file path (inside bare intermediary)
 get_latest_session_path() {
     local intermediary_dir="$1"

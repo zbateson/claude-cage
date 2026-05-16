@@ -272,25 +272,25 @@ bash tests/run-all.sh
 | Test File | Component | Tests |
 |-----------|-----------|-------|
 | test-helpers.sh | helpers.sh | 7 |
-| test-config.sh | config.sh | 18 |
+| test-config.sh | config.sh | 28 |
 | test-banner.sh | banner.sh | 6 |
-| test-git-clone.sh | git-clone.sh | 22 |
+| test-git-clone.sh | git-clone.sh | 34 |
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
-| test-git-hooks.sh | git-hooks.sh | 22 |
+| test-git-hooks.sh | git-hooks.sh | 29 |
 | test-git-patches.sh | git-patches.sh | 13 |
-| test-git-sync.sh | git-sync.sh | 30 |
-| test-network.sh | network.sh | 31 |
-| test-bwrap.sh | bwrap.sh | 13 |
+| test-git-sync.sh | git-sync.sh | 82 |
+| test-network.sh | network.sh | 1 |
+| test-bwrap.sh | bwrap.sh | 15 |
 | test-docker.sh | docker.sh | 18 |
-| test-clean.sh | clean commands | 14 |
+| test-clean.sh | clean commands | 16 |
 | test-direct-mount.sh | direct mount mode | 8 |
-| test-scoped.sh | scoped intermediary | 66 |
-| test-session-log.sh | per-session logging | 15 |
-| test-cross-session.sh | cross-project session sharing | 21 |
+| test-scoped.sh | scoped intermediary | 70 |
+| test-session-log.sh | per-session logging | 17 |
+| test-cross-session.sh | cross-project session sharing | 11 |
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 | test-session-naming.sh | session naming + allocation | 19 |
 
-**~370 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
+**~407 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

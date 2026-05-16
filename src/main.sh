@@ -609,9 +609,11 @@ else
     intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
     intermediary_root=$(get_intermediary_root)
 
-    # Deprecated config option: warn once so users notice it stopped doing anything.
+    # Deprecated config option: warn once and force it off so downstream code
+    # (mount specs, etc.) doesn't accidentally re-honour it.
     if [ "$cfg_isolated" = "true" ]; then
         echo "Note: 'isolated = true' is deprecated and ignored. Override CLAUDE_CAGE_CACHE per project for true isolation." >&2
+        cfg_isolated="false"
     fi
 
     # Session selection: routes between default and per-project alternates.

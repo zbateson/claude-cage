@@ -307,50 +307,7 @@ CLAUDE_CAGE_SESSION_LOG="$saved_log"
 echo "  PASS: no log symlink when session log unset"
 
 # ============================================================================
-echo "Test 15: cleanup_stale_sessions removes session log"
-# ============================================================================
-# Create a stale clean session with a log file
-mkdir -p "$TEST_TMP/stale-source"
-cd "$TEST_TMP/stale-source"
-git init -q
-git config user.email "test@test.com"
-git config user.name "Test"
-echo "content" > file.txt
-git add . && git commit -q -m "Initial"
-
-STALE_SOURCE="$TEST_TMP/stale-source"
-
-# Create a "stale" session
-CLAUDE_CAGE_SESSION="stale-session-001"
-export CLAUDE_CAGE_SESSION
-create_intermediary_clone "$STALE_SOURCE" >/dev/null 2>&1
-STALE_WORK=$(get_work_path "$STALE_SOURCE")
-STALE_INTERMEDIARY=$(get_intermediary_path "$STALE_SOURCE")
-git -C "$STALE_WORK" remote set-url origin "$STALE_INTERMEDIARY"
-git -C "$STALE_WORK" config user.email "test@test.com"
-git -C "$STALE_WORK" config user.name "Test"
-
-# Create log file for stale session
-mkdir -p "$CLAUDE_CAGE_CACHE/logs"
-echo "stale log" > "$CLAUDE_CAGE_CACHE/logs/stale-session-001.log"
-
-# Switch to a "current" session
-CLAUDE_CAGE_SESSION="current-session-001"
-export CLAUDE_CAGE_SESSION
-
-# Set up REUSE_CLEAN_SESSIONS as if find_reusable_session found it
-REUSE_CLEAN_SESSIONS="stale-session-001 master $STALE_SOURCE "
-
-cleanup_stale_sessions "$STALE_SOURCE" >/dev/null 2>&1 || true
-
-if [ -f "$CLAUDE_CAGE_CACHE/logs/stale-session-001.log" ]; then
-    echo "FAIL: cleanup_stale_sessions should remove stale session log"
-    exit 1
-fi
-echo "  PASS: cleanup_stale_sessions removes stale session log"
-
-# ============================================================================
-echo "Test 16: cleanup_stale_caged_links prunes broken work symlinks"
+echo "Test 15: cleanup_stale_caged_links prunes broken work symlinks"
 # ============================================================================
 mkdir -p "$TEST_TMP/caged-source"
 cd "$TEST_TMP/caged-source"

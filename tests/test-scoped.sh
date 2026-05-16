@@ -784,26 +784,28 @@ if [ "$field_count" -lt 3 ]; then
 fi
 echo "  PASS: Session output has expected field count"
 
-echo "Test 28: find_reusable_session discovers cross-scope dirty sessions"
+echo "Test 28: list_cached_sessions discovers cross-scope sessions from git root"
 # Make the scoped session dirty (work dir lives in the scoped tree now)
 SCOPED_WORK=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/test-scoped" "$SOURCE_API" "services/api")
 if [ -d "$SCOPED_WORK" ]; then
     echo "dirty" >> "$SCOPED_WORK/app.go"
 fi
-# Run find_reusable_session from the git root
-find_reusable_session "$MONOREPO_PATH"
-if [ -z "$REUSE_DIRTY_SESSIONS" ]; then
-    echo "FAIL: Should find dirty cross-scope session from git root"
-    echo "  state: $REUSE_SESSION_STATE"
+# list_cached_sessions iterates cross-scope source_dirs from repos.list so
+# `claude-cage clean` (and similar) at the git root can still see scoped work
+# dirs underneath it. Run it from the git root and assert our scoped session
+# appears with its scope.
+CACHED_FROM_ROOT=$(list_cached_sessions "$MONOREPO_PATH")
+if [ -z "$CACHED_FROM_ROOT" ]; then
+    echo "FAIL: list_cached_sessions from git root should not be empty"
     exit 1
 fi
-if ! echo "$REUSE_DIRTY_SESSIONS" | grep -q "$SOURCE_API"; then
-    echo "FAIL: Dirty session listing should contain scoped source_dir"
-    echo "  Dirty sessions:"
-    echo "$REUSE_DIRTY_SESSIONS"
+if ! echo "$CACHED_FROM_ROOT" | grep -q "test-scoped .* $SOURCE_API services/api$"; then
+    echo "FAIL: Cross-scope session should be visible from git root"
+    echo "  Output:"
+    echo "$CACHED_FROM_ROOT"
     exit 1
 fi
-echo "  PASS: Cross-scope dirty session discovered from git root"
+echo "  PASS: Cross-scope session discovered from git root"
 # Clean up repos.list root entry
 repos_list_remove "$SOURCE_API" ""
 

@@ -234,7 +234,7 @@ _claude_cage() {
                 local sessions=""
                 for d in "$cache_dir/sessions"/*/; do
                     [ -d "$d" ] || continue
-                    [ -d "$d/work$git_root" ] || continue
+                    [ -d "$d/work$git_root" ] || [ -d "$d/scoped$git_root" ] || continue
                     local ts
                     ts=$(basename "$d")
                     sessions="$sessions $ts"
@@ -278,7 +278,7 @@ _claude_cage() {
         if [ -d "$cache_dir/sessions" ]; then
             for d in "$cache_dir/sessions"/*/; do
                 [ -d "$d" ] || continue
-                [ -d "$d/work$git_root" ] || continue
+                [ -d "$d/work$git_root" ] || [ -d "$d/scoped$git_root" ] || continue
                 local ts
                 ts=$(basename "$d")
                 sessions="$sessions $ts"
@@ -369,7 +369,7 @@ _claude_cage_sessions() {
         local -a sessions=()
         for d in "$cache_dir/sessions"/*/; do
             [ -d "$d" ] || continue
-            [ -d "$d/work$git_root" ] || continue
+            [ -d "$d/work$git_root" ] || [ -d "$d/scoped$git_root" ] || continue
             local ts
             ts=${d%/}
             ts=${ts##*/}

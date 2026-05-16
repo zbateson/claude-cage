@@ -90,6 +90,16 @@ Independent of `syncActiveBranch`. When `bringDirty = true` (or `--with-dirty` i
 
 When `claude-cage` is invoked from a subdir of a git repo without `--scoped`, `main.sh` detects the situation (via `git rev-parse --show-toplevel`) and either silently routes `cfg_source` to the git root or prompts. The route-vs-prompt decision is driven by `is_caged_repo` (`src/git-clone.sh`), which returns true on any of: `.claude-cage` config at the root, an existing `$CACHE/intermediary$git_root/`, or a `repos.list` entry. The relative subpath is stashed in `cage_start_subdir`, which `run_in_bwrap` / `run_in_docker` append to `project_path` for `--chdir` / `-w`, so the shell starts at the original invocation cwd inside the cage. Non-interactive invocations from a fresh subdir exit with a hint rather than guessing intent.
 
+### Scoped Work-Dir Tree
+
+Work dirs are routed by scope the same way intermediaries are. Unscoped runs land at `$CACHE/sessions/<id>/work$source_dir/`; scoped runs land in a sibling tree at `$CACHE/sessions/<id>/scoped$git_root/$scope_path/`. This parallels the intermediary side's `intermediary/` vs `scoped/.bare/` split and prevents scoped work dirs from nesting inside their unscoped siblings under the same git root. Three helpers in `src/git-clone.sh` compute the path:
+
+- `get_scoped_work_path(source_dir, scope_path)` — current session.
+- `session_work_dir(session_dir, source_dir, git_root)` — arbitrary session, scope inferred from `source_dir` vs `git_root`.
+- `session_work_dir_by_scope(session_dir, source_dir, scope_path)` — arbitrary session when scope is already known (e.g. iterating `REUSE_*_SESSIONS` entries or cached_sessions output).
+
+Cleanup helpers (`cleanup_current_session_workdir`, `cleanup_stale_sessions`, `clean_session_cache`) walk both `work/` and `scoped/` trees so empty parents in either get pruned. Session discovery (`find_reusable_session`, `list_cached_sessions`, completion scanners in `src/helpers.sh`) checks both trees too.
+
 ## Configuration
 
 Config files loaded and merged in order (later values override, arrays merge): system (`/etc/claude-cage.conf`) → user (`~/.config/claude-cage/config`) → includeIf (directory-scoped, declared in system/user config) → local (`.claude-cage` at git root). No config triggers an interactive builder.
@@ -206,7 +216,9 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 │   ├── claude-cage-exclude-hash          # Rebuild detection
 │   └── sync.log
 ├── logs/<session-id>.log                 # Per-session operational log
-└── sessions/<timestamp>/work/<project>/  # Claude's working directory
+└── sessions/<timestamp>/
+    ├── work/<project>/                   # Unscoped work dir
+    └── scoped/<git-root>/<scope>/        # Scoped work dir (sibling tree)
 
 $XDG_RUNTIME_DIR/claude-cage/
 ├── pipes/<timestamp>/<project-path>      # Named pipe
@@ -249,7 +261,7 @@ bash tests/run-all.sh
 | test-cross-session.sh | cross-project session sharing | 21 |
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 
-**~341 assertions across 17 files.** bwrap tests skipped if user namespaces unavailable.
+**~345 assertions across 17 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## TODO
 

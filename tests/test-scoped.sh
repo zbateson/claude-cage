@@ -115,7 +115,7 @@ dry_run=false
 verbose=false
 
 INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
-WORK_DIR=$(get_work_path "$SOURCE_API")
+WORK_DIR=$(get_scoped_work_path "$SOURCE_API" "services/api")
 
 echo "Test 4: Scoped intermediary has stripped paths (no scope prefix)"
 create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
@@ -460,7 +460,7 @@ cfg_isolated="false"
 intermediary_root=$(get_intermediary_root)
 session_work_root=$(get_session_work_root)
 
-enumerate_projects "$session_work_root" "$intermediary_root" "$(get_work_path "$SOURCE_API")" "$INTERMEDIARY_DIR" "$SOURCE_API"
+enumerate_projects "$session_work_root" "$intermediary_root" "$(get_scoped_work_path "$SOURCE_API" "services/api")" "$INTERMEDIARY_DIR" "$SOURCE_API"
 
 # The current project should be mounted at git_root (not scope_path)
 # so the user sees empty parent dirs above scope with no .git
@@ -785,8 +785,8 @@ fi
 echo "  PASS: Session output has expected field count"
 
 echo "Test 28: find_reusable_session discovers cross-scope dirty sessions"
-# Make the scoped session dirty
-SCOPED_WORK="$CLAUDE_CAGE_CACHE/sessions/test-scoped/work$SOURCE_API"
+# Make the scoped session dirty (work dir lives in the scoped tree now)
+SCOPED_WORK=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/test-scoped" "$SOURCE_API" "services/api")
 if [ -d "$SCOPED_WORK" ]; then
     echo "dirty" >> "$SCOPED_WORK/app.go"
 fi
@@ -806,6 +806,87 @@ fi
 echo "  PASS: Cross-scope dirty session discovered from git root"
 # Clean up repos.list root entry
 repos_list_remove "$SOURCE_API" ""
+
+echo ""
+echo "=== Testing scoped work-dir layout ==="
+echo ""
+
+echo "Test 28a: get_scoped_work_path returns unscoped path when scope_path empty"
+CLAUDE_CAGE_SESSION="test-layout-unscoped"
+expected_unscoped="$CLAUDE_CAGE_CACHE/sessions/test-layout-unscoped/work$MONOREPO_PATH"
+got_unscoped=$(get_scoped_work_path "$MONOREPO_PATH" "")
+if [ "$got_unscoped" != "$expected_unscoped" ]; then
+    echo "FAIL: unscoped path should be $expected_unscoped, got $got_unscoped"
+    exit 1
+fi
+echo "  PASS: unscoped falls through to the standard work-tree path"
+
+echo "Test 28b: get_scoped_work_path routes scoped runs to scoped/ tree"
+expected_scoped="$CLAUDE_CAGE_CACHE/sessions/test-layout-unscoped/scoped${MONOREPO_PATH}/services/api"
+got_scoped=$(get_scoped_work_path "$SOURCE_API" "services/api")
+if [ "$got_scoped" != "$expected_scoped" ]; then
+    echo "FAIL: scoped path should be $expected_scoped, got $got_scoped"
+    exit 1
+fi
+echo "  PASS: scoped runs route to scoped/ tree"
+
+echo "Test 28c: scoped path is NOT a subdir of unscoped path (no nesting)"
+case "$got_scoped" in
+    "$got_unscoped"*)
+        echo "FAIL: scoped path nests inside unscoped path — that's the bug we just fixed"
+        echo "  unscoped: $got_unscoped"
+        echo "  scoped:   $got_scoped"
+        exit 1
+        ;;
+esac
+echo "  PASS: scoped and unscoped trees are siblings, not nested"
+
+echo "Test 28d: scoped + unscoped work dirs coexist for same git root without collision"
+# Clean state for this test
+rm -rf "$CLAUDE_CAGE_CACHE/scoped" "$CLAUDE_CAGE_CACHE/intermediary"
+rm -rf "$CLAUDE_CAGE_CACHE/sessions"
+repos_file=$(get_repos_list_path "$SOURCE_API")
+rm -f "$repos_file"
+
+# Create unscoped cage for monorepo root
+CLAUDE_CAGE_SESSION="test-coexist-shared"
+cfg_exclude=""
+UNSCOPED_IDIR=$(get_scoped_intermediary_path "$MONOREPO_PATH" "")
+create_intermediary_clone "$MONOREPO_PATH" "" >/dev/null 2>&1
+UNSCOPED_WORK=$(get_scoped_work_path "$MONOREPO_PATH" "")
+
+# Now spin up a scoped run for services/api in the SAME session
+SCOPED_IDIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
+create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
+SCOPED_WORK=$(get_scoped_work_path "$SOURCE_API" "services/api")
+
+if [ ! -d "$UNSCOPED_WORK/.git" ]; then
+    echo "FAIL: unscoped work dir should exist at $UNSCOPED_WORK"
+    exit 1
+fi
+if [ ! -d "$SCOPED_WORK/.git" ]; then
+    echo "FAIL: scoped work dir should exist at $SCOPED_WORK"
+    exit 1
+fi
+
+# Crucial: they must NOT be at colliding filesystem locations
+case "$SCOPED_WORK" in
+    "$UNSCOPED_WORK"*)
+        echo "FAIL: scoped work dir nests inside unscoped work dir!"
+        echo "  unscoped: $UNSCOPED_WORK"
+        echo "  scoped:   $SCOPED_WORK"
+        exit 1
+        ;;
+esac
+
+# Each work dir should be a distinct git repo
+unscoped_head=$(git -C "$UNSCOPED_WORK" rev-parse HEAD 2>/dev/null)
+scoped_head=$(git -C "$SCOPED_WORK" rev-parse HEAD 2>/dev/null)
+if [ -z "$unscoped_head" ] || [ -z "$scoped_head" ]; then
+    echo "FAIL: both work dirs should be valid git repos"
+    exit 1
+fi
+echo "  PASS: scoped + unscoped coexist for same git root, no path collision"
 
 echo ""
 echo "=== Testing scoped intermediary coexistence ==="
@@ -1201,7 +1282,7 @@ create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
 
 # Simulate a cage commit by pushing to API intermediary's work dir
 CLAUDE_CAGE_SESSION="test-prop-api"
-api_work=$(get_work_path "$SOURCE_API")
+api_work=$(get_scoped_work_path "$SOURCE_API" "services/api")
 git -C "$api_work" config user.email "test@test.com"
 git -C "$api_work" config user.name "Test"
 echo "cage-change-api" > "$api_work/app.go"
@@ -1277,7 +1358,7 @@ create_intermediary_clone "$WEB_SOURCE" "services/web" >/dev/null 2>&1
 
 # Simulate cage commit
 CLAUDE_CAGE_SESSION="test-tempidx-api"
-api_work=$(get_work_path "$SOURCE_API")
+api_work=$(get_scoped_work_path "$SOURCE_API" "services/api")
 git -C "$api_work" config user.email "test@test.com"
 git -C "$api_work" config user.name "Test"
 echo "tempidx-api-change" > "$api_work/app.go"
@@ -1413,7 +1494,7 @@ INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_API" "services/api")
 create_intermediary_clone "$SOURCE_API" "services/api" >/dev/null 2>&1
 
 # Get work dir and install pre-commit hook with scope
-MERGE_WORK=$(get_work_path "$SOURCE_API")
+MERGE_WORK=$(get_scoped_work_path "$SOURCE_API" "services/api")
 git -C "$MERGE_WORK" config user.email "test@test.com"
 git -C "$MERGE_WORK" config user.name "Test"
 setup_work_pre_commit "$MERGE_WORK" "services/api"

@@ -20,12 +20,65 @@ sanitize_branch_name() {
 CLAUDE_CAGE_SESSION=""
 
 # Get the work directory path for a source directory
-# Work dirs are per-session: sessions/<session_id>/work$source_dir
+# Get the unscoped work-dir path for a source directory in the current session.
+# For scoped runs, use get_scoped_work_path instead.
 # Arguments: $1 = source directory
 get_work_path() {
     local source_dir="$1"
     local session_id="${CLAUDE_CAGE_SESSION:-default}"
     echo "$CLAUDE_CAGE_CACHE/sessions/$session_id/work$source_dir"
+}
+
+# Get the work-dir path with scope awareness. Mirrors the intermediary side
+# (get_scoped_intermediary_path): scoped work dirs live in a separate tree
+# under the session cache to prevent path collisions with unscoped siblings.
+#   Unscoped (scope_path empty): $CACHE/sessions/<id>/work$source_dir/
+#   Scoped:                       $CACHE/sessions/<id>/scoped$git_root/$scope_path/
+# Arguments: $1 = source_dir, $2 = scope_path (optional, empty = unscoped)
+get_scoped_work_path() {
+    local source_dir="$1"
+    local scope_path="${2:-}"
+    if [ -n "$scope_path" ]; then
+        local session_id="${CLAUDE_CAGE_SESSION:-default}"
+        local git_root
+        git_root=$(get_git_root "$source_dir")
+        echo "$CLAUDE_CAGE_CACHE/sessions/$session_id/scoped${git_root}/${scope_path}"
+    else
+        get_work_path "$source_dir"
+    fi
+}
+
+# Compute the work-dir path for an arbitrary session by path. Used by session
+# enumeration that walks all sessions, not just the current one. Scope is
+# inferred from source_dir vs git_root (passed in to avoid repeated git
+# invocations during scans). git_root may be empty if unknown — falls back
+# to treating source_dir as unscoped.
+# Arguments: $1 = session_dir (full path), $2 = source_dir, $3 = git_root
+session_work_dir() {
+    local session_dir="$1"
+    local source_dir="$2"
+    local git_root="$3"
+    if [ -n "$git_root" ] && [ "$source_dir" != "$git_root" ]; then
+        local scope_path="${source_dir#"$git_root/"}"
+        echo "$session_dir/scoped${git_root}/${scope_path}"
+    else
+        echo "$session_dir/work$source_dir"
+    fi
+}
+
+# Variant of session_work_dir keyed on scope_path instead of git_root. Used by
+# code paths that already know the scope (e.g. iterating REUSE_*_SESSIONS
+# entries or persisted session lists where scope is recorded alongside source).
+# Arguments: $1 = session_dir (full path), $2 = source_dir, $3 = scope_path
+session_work_dir_by_scope() {
+    local session_dir="$1"
+    local source_dir="$2"
+    local scope_path="${3:-}"
+    if [ -n "$scope_path" ]; then
+        echo "$session_dir/scoped${source_dir%/$scope_path}/${scope_path}"
+    else
+        echo "$session_dir/work$source_dir"
+    fi
 }
 
 # Get the intermediary path for a source directory
@@ -479,6 +532,9 @@ list_cached_sessions() {
     build_cross_scope_source_dirs "$source_dir"
     local -a source_dirs=("${_CROSS_SCOPE_SOURCE_DIRS[@]}")
 
+    local our_git_root
+    our_git_root=$(get_git_root "$source_dir" 2>/dev/null) || our_git_root=""
+
     # Scan sessions for all discovered source dirs
     if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
         local session_id sd
@@ -486,8 +542,9 @@ list_cached_sessions() {
             [ -d "$session_dir" ] || continue
             session_id=$(basename "$session_dir")
             for sd in "${source_dirs[@]}"; do
-                local work="$session_dir/work$sd"
-                # Must have .git to be a real work dir (not just a parent of a scoped work dir)
+                local work
+                work=$(session_work_dir "$session_dir" "$sd" "$our_git_root")
+                # Must have .git to be a real work dir
                 if [ -d "$work/.git" ]; then
                     local branch scope=""
                     branch=$(get_work_branch "$work")
@@ -575,6 +632,10 @@ find_reusable_session() {
     build_cross_scope_source_dirs "$source_dir"
     local -a source_dirs=("${_CROSS_SCOPE_SOURCE_DIRS[@]}")
 
+    # Cache git_root once for scope-aware work-dir path computations
+    local our_git_root
+    our_git_root=$(get_git_root "$source_dir" 2>/dev/null) || our_git_root=""
+
     local -a active_sessions=()
     local -a inactive_clean=()
     local -a inactive_dirty=()
@@ -605,7 +666,8 @@ find_reusable_session() {
             # Check if this is an active session we can join (no work dir for us yet, or clean)
             if [ -z "${seen_session_ids[$session_id]+_}" ] && session_is_active "$session_id"; then
                 # Check if our work dir exists in this session
-                local our_work="$session_dir/work$source_dir"
+                local our_work
+                our_work=$(session_work_dir "$session_dir" "$source_dir" "$our_git_root")
                 if [ ! -d "$our_work/.git" ] || ! is_work_dirty "$our_work"; then
                     joinable_sessions+=("$session_id")
                 fi
@@ -628,7 +690,7 @@ find_reusable_session() {
         # Scan for work dirs matching our source_dirs
         local _found_any=false
         for sd in "${source_dirs[@]}"; do
-            work="$session_dir/work$sd"
+            work=$(session_work_dir "$session_dir" "$sd" "$our_git_root")
             # Must have .git to be a real work dir (not just a parent of a scoped work dir)
             [ -d "$work/.git" ] || continue
             _found_any=true
@@ -661,20 +723,34 @@ find_reusable_session() {
         done
 
         # Non-isolated: also scan for other projects' work dirs in this session
-        # so we can discover clean sessions from other projects for reuse
-        if [ "$_found_any" = false ] && [ "${cfg_isolated:-}" != "true" ] && \
-           [ -d "$session_dir/work" ]; then
-            # Find any .git dir in this session's work tree
-            local _other_git
-            _other_git=$(find "$session_dir/work" -name ".git" -type d -print -quit 2>/dev/null)
+        # so we can discover clean sessions from other projects for reuse.
+        # Search both the unscoped tree ($session_dir/work/) and the scoped
+        # tree ($session_dir/scoped/) so neither layout is overlooked.
+        if [ "$_found_any" = false ] && [ "${cfg_isolated:-}" != "true" ]; then
+            local _other_git=""
+            if [ -d "$session_dir/work" ]; then
+                _other_git=$(find "$session_dir/work" -name ".git" -type d -print -quit 2>/dev/null)
+            fi
+            if [ -z "$_other_git" ] && [ -d "$session_dir/scoped" ]; then
+                _other_git=$(find "$session_dir/scoped" -name ".git" -type d -print -quit 2>/dev/null)
+            fi
             if [ -n "$_other_git" ]; then
                 local _other_work="${_other_git%/.git}"
-                local _other_sd="${_other_work#"$session_dir/work"}"
-                local _other_branch
-                _other_branch=$(get_work_branch "$_other_work")
                 local _other_scope=""
                 [ -f "$_other_work/.git/claude-cage-scope-path" ] && \
                     _other_scope=$(cat "$_other_work/.git/claude-cage-scope-path")
+                # Recover source_dir from the work-dir path. Both layouts encode
+                # the absolute source path after the tree prefix: unscoped is
+                # $session/work$source_dir; scoped is $session/scoped$git_root/$scope
+                # (which equals $session/scoped$source_dir when source_dir =
+                # git_root/scope). Strip whichever prefix matches.
+                local _other_sd=""
+                case "$_other_work" in
+                    "$session_dir/work"*)   _other_sd="${_other_work#"$session_dir/work"}" ;;
+                    "$session_dir/scoped"*) _other_sd="${_other_work#"$session_dir/scoped"}" ;;
+                esac
+                local _other_branch
+                _other_branch=$(get_work_branch "$_other_work")
 
                 if session_is_active "$session_id"; then
                     active_sessions+=("$session_id $_other_branch $_other_sd $_other_scope")
@@ -783,7 +859,7 @@ reuse_or_create_session() {
         fi
     fi
     CLAUDE_CAGE_SESSION=$(date +%Y-%m-%d_%H-%M-%S)
-    if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION/work$source_dir" ]; then
+    if [ -d "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION" ]; then
         sleep 1
         CLAUDE_CAGE_SESSION=$(date +%Y-%m-%d_%H-%M-%S)
     fi
@@ -799,10 +875,14 @@ cleanup_current_session_workdir() {
     local session_cache="$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION"
 
     rm -rf "$work_dir"
-    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+    # Walk up to either tree's root (work/ for unscoped, scoped/ for scoped runs)
+    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache/scoped" "$session_cache"
 
     if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
         rm -rf "$session_cache/work"
+    fi
+    if [ -d "$session_cache/scoped" ] && [ -z "$(ls -A "$session_cache/scoped" 2>/dev/null)" ]; then
+        rm -rf "$session_cache/scoped"
     fi
     if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
         rm -rf "$session_cache"
@@ -879,7 +959,12 @@ cleanup_stale_sessions() {
         [ "$csource" != "$source_dir" ] && continue  # Only clean our own source
 
         local session_cache="$CLAUDE_CAGE_CACHE/sessions/$csid"
-        local work_dir="$session_cache/work$source_dir"
+        local work_dir
+        if [ -n "$cscope" ]; then
+            work_dir="$session_cache/scoped${csource%/$cscope}/${cscope}"
+        else
+            work_dir="$session_cache/work$csource"
+        fi
         [ -d "$work_dir" ] || continue
 
         rm -rf "$work_dir"
@@ -889,11 +974,14 @@ cleanup_stale_sessions() {
         local caged_link="$source_dir/.caged/sessions/$csid"
         [ -d "$caged_link" ] && rm -rf "$caged_link"
 
-        cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+        cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache/scoped" "$session_cache"
 
-        # Clean empty session dir (only if no other work dirs or markers remain)
+        # Clean empty session-tree roots and the session dir itself
         if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
             rm -rf "$session_cache/work"
+        fi
+        if [ -d "$session_cache/scoped" ] && [ -z "$(ls -A "$session_cache/scoped" 2>/dev/null)" ]; then
+            rm -rf "$session_cache/scoped"
         fi
         if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
             rm -rf "$session_cache"
@@ -982,11 +1070,31 @@ clean_session_cache() {
     local source_dir="$1"
     local session_id="$2"
     local session_cache="$CLAUDE_CAGE_CACHE/sessions/$session_id"
+
+    # Determine scope and work dir. Try unscoped path first; if that's not a
+    # work dir but a scoped tree exists, look there. Scope metadata lives in
+    # the work dir's .git folder.
     local work_dir="$session_cache/work$source_dir"
-    # Read scope from work dir metadata (if present) to find the correct intermediary
     local _clean_scope=""
     if [ -f "$work_dir/.git/claude-cage-scope-path" ]; then
         _clean_scope=$(cat "$work_dir/.git/claude-cage-scope-path")
+    elif [ ! -d "$work_dir/.git" ] && [ -d "$session_cache/scoped" ]; then
+        # Look for a scoped work dir under this session whose source_dir matches
+        local _candidate
+        while IFS= read -r _candidate; do
+            local _meta="$_candidate/claude-cage-scope-path"
+            [ -f "$_meta" ] || continue
+            local _scope
+            _scope=$(cat "$_meta")
+            # Reconstruct source path: $session_cache/scoped$git_root/$scope
+            local _candidate_work="${_candidate%/.git}"
+            local _candidate_src="${_candidate_work#"$session_cache/scoped"}"
+            if [ "$_candidate_src" = "$source_dir" ]; then
+                work_dir="$_candidate_work"
+                _clean_scope="$_scope"
+                break
+            fi
+        done < <(find "$session_cache/scoped" -name .git -type d 2>/dev/null)
     fi
 
     local intermediary_dir
@@ -1028,12 +1136,15 @@ clean_session_cache() {
         echo "Removed .caged symlink: $caged_link"
     fi
 
-    # Clean up empty parent directories between work_dir and session_cache/work
-    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache"
+    # Clean up empty parent directories within whichever tree contains work_dir
+    cleanup_empty_parents "$work_dir" "$session_cache/work" "$session_cache/scoped" "$session_cache"
 
-    # Clean up empty session directory if no other projects use it
+    # Clean up empty tree roots and the session directory itself
     if [ -d "$session_cache/work" ] && [ -z "$(ls -A "$session_cache/work" 2>/dev/null)" ]; then
         run rm -rf "$session_cache/work"
+    fi
+    if [ -d "$session_cache/scoped" ] && [ -z "$(ls -A "$session_cache/scoped" 2>/dev/null)" ]; then
+        run rm -rf "$session_cache/scoped"
     fi
     if [ -d "$session_cache" ] && [ -z "$(ls -A "$session_cache" 2>/dev/null)" ]; then
         run rm -rf "$session_cache"
@@ -1050,12 +1161,20 @@ clean_session_cache() {
     fi
 
     # Check if shared intermediary should be removed
-    # Only remove if no other sessions use it (no work dirs reference this source)
+    # Only remove if no other sessions use it (no work dirs reference this
+    # source). For scoped sessions, check the scoped tree; for unscoped, the
+    # standard work-tree path.
     local other_sessions_exist=false
     if [ -d "$CLAUDE_CAGE_CACHE/sessions" ]; then
+        local _other_work_path
         for sd in "$CLAUDE_CAGE_CACHE/sessions"/*; do
             [ -d "$sd" ] || continue
-            if [ -d "$sd/work$source_dir/.git" ]; then
+            if [ -n "$_clean_scope" ]; then
+                _other_work_path="$sd/scoped${source_dir%/$_clean_scope}/${_clean_scope}/.git"
+            else
+                _other_work_path="$sd/work$source_dir/.git"
+            fi
+            if [ -d "$_other_work_path" ]; then
                 other_sessions_exist=true
                 break
             fi
@@ -1745,7 +1864,7 @@ create_intermediary_clone() {
     local intermediary_dir
     local work_dir
     intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$scope_path")
-    work_dir=$(get_work_path "$source_dir")
+    work_dir=$(get_scoped_work_path "$source_dir" "$scope_path")
 
     # When scoped, fast-export must run from git root (pathspecs are CWD-relative)
     local export_dir="$source_dir"
@@ -2106,7 +2225,7 @@ setup_caged_symlinks() {
 
     # Target paths in cache
     local work_target
-    work_target=$(get_work_path "$source_dir")
+    work_target=$(get_scoped_work_path "$source_dir" "$scope_path")
     local intermediary_target
     intermediary_target=$(get_scoped_intermediary_path "$source_dir" "$scope_path")
 

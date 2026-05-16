@@ -1366,7 +1366,7 @@ CLAUDE_CAGE_SESSION="test-scoped-35"
 export CLAUDE_CAGE_SESSION
 
 INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_PATH" "$local_scope")
-WORK_DIR=$(get_work_path "$TEST_TMP/source35/services/api")
+WORK_DIR=$(get_scoped_work_path "$TEST_TMP/source35/services/api" "$local_scope")
 
 create_intermediary_clone "$TEST_TMP/source35/services/api" "$local_scope" >/dev/null 2>&1
 
@@ -1622,7 +1622,7 @@ CLAUDE_CAGE_SESSION="test-scoped-39"
 export CLAUDE_CAGE_SESSION
 
 INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_PATH" "$local_scope")
-WORK_DIR=$(get_work_path "$TEST_TMP/source39/services/api")
+WORK_DIR=$(get_scoped_work_path "$TEST_TMP/source39/services/api" "$local_scope")
 
 create_intermediary_clone "$TEST_TMP/source39/services/api" "$local_scope" >/dev/null 2>&1
 
@@ -1950,7 +1950,7 @@ CLAUDE_CAGE_SESSION="test-scoped-51"
 export CLAUDE_CAGE_SESSION
 
 INTERMEDIARY_DIR=$(get_scoped_intermediary_path "$SOURCE_PATH" "$local_scope")
-WORK_DIR=$(get_work_path "$TEST_TMP/source51/services/api")
+WORK_DIR=$(get_scoped_work_path "$TEST_TMP/source51/services/api" "$local_scope")
 
 create_intermediary_clone "$TEST_TMP/source51/services/api" "$local_scope" >/dev/null 2>&1
 

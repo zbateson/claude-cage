@@ -501,7 +501,7 @@ SCOPED_IDIR=$(get_scoped_intermediary_path "$API_PATH" "services/api")
 create_intermediary_clone "$API_PATH" "services/api" >/dev/null 2>&1
 
 # Write scope metadata into work dir
-SCOPED_WORK=$(get_work_path "$API_PATH")
+SCOPED_WORK=$(get_scoped_work_path "$API_PATH" "services/api")
 
 # Verify session listing from monorepo root
 sessions=$(list_cached_sessions "$MONOREPO_PATH")

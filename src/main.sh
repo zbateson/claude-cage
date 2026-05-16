@@ -247,7 +247,7 @@ if [ "$clean_mode" = true ]; then
         echo ""
         echo "Sessions to be removed:"
         while IFS=' ' read -r sid sbranch ssource sscope; do
-            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
+            work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$sid" "$ssource" "$sscope")
             scope_label=""
             [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
             if is_work_dirty "$work_dir"; then
@@ -302,7 +302,8 @@ if [ "$clean_mode" = true ]; then
                 fi
             done
 
-            work_dir="$CLAUDE_CAGE_CACHE/sessions/$csid/work$clean_source"
+            clean_scope=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $4; exit }')
+            work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$csid" "$clean_source" "$clean_scope")
             echo ""
             echo "This will remove the cache for session: $csid"
             if is_work_dirty "$work_dir"; then
@@ -331,9 +332,9 @@ if [ "$clean_mode" = true ]; then
                         break
                     fi
                 done
-                work_dir="$CLAUDE_CAGE_CACHE/sessions/$csid/work$clean_source"
                 _sbranch=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $2; exit }')
                 _sscope=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $4; exit }')
+                work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$csid" "$clean_source" "$_sscope")
                 scope_label=""
                 [ -n "$_sscope" ] && scope_label=" ${_cyan}(scoped: $_sscope)${_reset}"
                 if is_work_dirty "$work_dir"; then
@@ -373,7 +374,7 @@ if [ "$clean_mode" = true ]; then
         echo ""
         idx=1
         while IFS=' ' read -r sid sbranch ssource sscope; do
-            work_dir="$CLAUDE_CAGE_CACHE/sessions/$sid/work$ssource"
+            work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$sid" "$ssource" "$sscope")
             scope_label=""
             [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
             if is_work_dirty "$work_dir"; then
@@ -413,7 +414,8 @@ if [ "$clean_mode" = true ]; then
             if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#session_array[@]} ]; then
                 selected_session="${session_array[$((choice-1))]}"
                 selected_source="${session_sources[$((choice-1))]}"
-                work_dir="$CLAUDE_CAGE_CACHE/sessions/$selected_session/work$selected_source"
+                selected_scope=$(echo "$cached_sessions" | awk -v sid="$selected_session" '$1 == sid { print $4; exit }')
+                work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$selected_session" "$selected_source" "$selected_scope")
 
                 echo ""
                 echo "This will remove the cache for session: $selected_session"
@@ -792,7 +794,7 @@ else
     cleanup_stale_sessions "$cfg_source"
 
     # Now compute paths using the selected session
-    work_dir=$(get_work_path "$cfg_source")
+    work_dir=$(get_scoped_work_path "$cfg_source" "$scope_path")
     session_work_root=$(get_session_work_root)
     pipe_path=$(get_pipe_path "$cfg_source")
 

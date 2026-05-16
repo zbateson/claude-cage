@@ -686,6 +686,10 @@ else
                     [ -n "$REUSE_SESSION_SCOPE" ] && scope_label=" (scoped: $REUSE_SESSION_SCOPE)"
                     echo "Found an existing cage ($REUSE_SESSION_ID) on branch '$REUSE_SESSION_BRANCH'${scope_label}."
                     echo "  It's got $dirty_desc."
+
+                    # Show contextual git state so the user can decide informed
+                    _dirty_work=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$REUSE_SESSION_ID" "$REUSE_SESSION_SOURCE" "$REUSE_SESSION_SCOPE")
+                    print_session_context "$REUSE_SESSION_SOURCE" "$_dirty_work" "$REUSE_SESSION_BRANCH"
                     echo ""
                     echo "What do you wanna do?"
                     echo "  1) Pick it up (cage stays on branch '$REUSE_SESSION_BRANCH')"
@@ -736,6 +740,14 @@ else
                         printf "  %d) %s  branch: %-20s (%s)%b\n" "$didx" "$dsid" "$dbranch" "$dirty_label" "$scope_label"
                         ((didx++))
                     done <<< "$REUSE_DIRTY_SESSIONS"
+
+                    # Surface the latest dirty session's git context so the user
+                    # has something concrete to evaluate before picking
+                    IFS=' ' read -r _latest_sid _latest_branch _latest_dtype _latest_source _latest_scope <<< "${dirty_entries[0]}"
+                    echo ""
+                    echo "Latest session ($_latest_sid):"
+                    _dirty_work=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$_latest_sid" "$_latest_source" "$_latest_scope")
+                    print_session_context "$_latest_source" "$_dirty_work" "$_latest_branch"
                     echo ""
                     echo "What do you wanna do?"
                     echo "  Pick a number to continue that session, or:"

@@ -402,4 +402,128 @@ fi
 echo "  PASS: is_work_dirty refreshes the index and ignores stale stat"
 
 echo ""
+echo "=== Testing print_session_context ==="
+
+# Set up a fresh source + work for these tests, isolated from the file's
+# accumulated state.
+mkdir -p "$TEST_TMP/ctx-source"
+cd "$TEST_TMP/ctx-source"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+echo "v1" > file.txt
+git add . && git commit -q -m "Initial commit"
+echo "v2" > file.txt
+git add . && git commit -q -m "Second commit"
+
+CTX_SOURCE="$TEST_TMP/ctx-source"
+CTX_BRANCH=$(git -C "$CTX_SOURCE" branch --show-current)
+CLAUDE_CAGE_SESSION="ctx-test"
+export CLAUDE_CAGE_SESSION
+create_intermediary_clone "$CTX_SOURCE" >/dev/null 2>&1
+CTX_WORK=$(get_work_path "$CTX_SOURCE")
+git -C "$CTX_WORK" remote set-url origin "$(get_intermediary_path "$CTX_SOURCE")"
+git -C "$CTX_WORK" config user.email "test@test.com"
+git -C "$CTX_WORK" config user.name "Test"
+# Fetch origin so origin/$branch resolves in subsequent tests
+git -C "$CTX_WORK" fetch origin --quiet 2>/dev/null || true
+
+echo "Test 23: print_session_context shows latest synced commit"
+output=$(print_session_context "$CTX_SOURCE" "$CTX_WORK" "$CTX_BRANCH")
+if ! echo "$output" | grep -q "Latest synced commit"; then
+    echo "FAIL: should include 'Latest synced commit' section"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q "Second commit"; then
+    echo "FAIL: should show the latest source commit"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: latest synced commit section present"
+
+echo "Test 24: print_session_context shows unpushed commits in cage"
+# Add a commit to the cage but don't push
+echo "cage edit" > "$CTX_WORK/file.txt"
+git -C "$CTX_WORK" add file.txt
+git -C "$CTX_WORK" commit -q -m "Cage WIP not yet synced"
+
+output=$(print_session_context "$CTX_SOURCE" "$CTX_WORK" "$CTX_BRANCH")
+if ! echo "$output" | grep -q "Unpushed commits in cage"; then
+    echo "FAIL: should include 'Unpushed commits in cage' section"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q "Cage WIP not yet synced"; then
+    echo "FAIL: should show the unpushed commit subject"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: unpushed commits section present"
+
+echo "Test 25: print_session_context shows workspace state when dirty"
+# Make the work tree dirty
+echo "uncommitted edit" > "$CTX_WORK/file.txt"
+echo "new untracked" > "$CTX_WORK/new.txt"
+
+output=$(print_session_context "$CTX_SOURCE" "$CTX_WORK" "$CTX_BRANCH")
+if ! echo "$output" | grep -q "Workspace state"; then
+    echo "FAIL: should include 'Workspace state' section"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+# git status --short uses ' M file.txt' / '?? new.txt' format
+if ! echo "$output" | grep -qE " M +file\.txt"; then
+    echo "FAIL: should show modified file in workspace state"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q "?? new.txt"; then
+    echo "FAIL: should show untracked file in workspace state"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: workspace state section lists modifications and untracked"
+
+echo "Test 26: print_session_context omits sections that have no content"
+# Reset the cage to clean and synced state
+git -C "$CTX_WORK" checkout -- file.txt 2>/dev/null
+rm -f "$CTX_WORK/new.txt"
+# Push the cage WIP commit so unpushed is empty
+git -C "$CTX_WORK" push origin "$CTX_BRANCH" --quiet 2>/dev/null
+
+output=$(print_session_context "$CTX_SOURCE" "$CTX_WORK" "$CTX_BRANCH")
+if echo "$output" | grep -q "Unpushed commits in cage"; then
+    echo "FAIL: should NOT show unpushed commits section when nothing's unpushed"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+if echo "$output" | grep -q "Workspace state"; then
+    echo "FAIL: should NOT show workspace state section when clean"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: empty sections suppressed when clean"
+
+echo "Test 27: print_session_context is defensive when work_dir is missing"
+output=$(print_session_context "$CTX_SOURCE" "$TEST_TMP/does-not-exist" "$CTX_BRANCH" 2>&1)
+# Should not error; might still show the source section
+if echo "$output" | grep -q "Workspace state"; then
+    echo "FAIL: shouldn't render workspace state when work dir missing"
+    echo "Output:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: missing work dir handled gracefully"
+
+echo ""
 echo "=== All git-clone tests passed! ==="

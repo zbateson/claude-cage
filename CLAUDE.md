@@ -90,6 +90,10 @@ Independent of `syncActiveBranch`. When `bringDirty = true` (or `--with-dirty` i
 
 When `claude-cage` is invoked from a subdir of a git repo without `--scoped`, `main.sh` detects the situation (via `git rev-parse --show-toplevel`) and either silently routes `cfg_source` to the git root or prompts. The route-vs-prompt decision is driven by `is_caged_repo` (`src/git-clone.sh`), which returns true on any of: `.claude-cage` config at the root, an existing `$CACHE/intermediary$git_root/`, or a `repos.list` entry. The relative subpath is stashed in `cage_start_subdir`, which `run_in_bwrap` / `run_in_docker` append to `project_path` for `--chdir` / `-w`, so the shell starts at the original invocation cwd inside the cage. Non-interactive invocations from a fresh subdir exit with a hint rather than guessing intent.
 
+### Dirty-Session Context Block
+
+When the dirty-session prompt fires (`src/main.sh` in the `"dirty"` branch), `print_session_context` (`src/git-clone.sh`) renders up to three subsections before the choice menu so the user can decide informed: the latest synced commit from source (`git log --oneline -1`), unpushed commits in the cage (`git log --oneline origin/<branch>..HEAD`, truncated to 20), and workspace state (`git status --short`, truncated to 20). Each subsection is suppressed when empty; failures in any of the three queries are silently skipped so a damaged work dir still gets a prompt. In the multi-dirty branch, only the latest entry's context is surfaced (labelled `Latest session (<id>):`) to keep the prompt scannable.
+
 ### Index-Refresh in Dirty Classifiers
 
 `is_work_dirty` (`src/git-clone.sh`) and `source_is_dirty` (`src/git-sync.sh`) call `git update-index --refresh -q --unmerged` before reading `git status --porcelain`. The refresh is silent on the happy path and idempotent; it kills false-positive "dirty" classifications when the index's stat cache is stale relative to the working tree (suspend/resume, file-mode flips, backup restores, content-preserving `touch`).
@@ -265,7 +269,7 @@ bash tests/run-all.sh
 | test-cross-session.sh | cross-project session sharing | 21 |
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 
-**~345 assertions across 17 files.** bwrap tests skipped if user namespaces unavailable.
+**~351 assertions across 17 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## TODO
 

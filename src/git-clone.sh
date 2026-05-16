@@ -557,6 +557,67 @@ list_cached_sessions() {
     fi
 }
 
+# Render contextual information about a dirty session for the pick-it-up prompt.
+# Shows up to three subsections (each printed only if it has content):
+#   1) Latest synced commit from source — the divergence point.
+#   2) Unpushed commits in the cage — what's been done but not yet propagated.
+#   3) Workspace state — current uncommitted changes (git status --short).
+# Subsection 2 and 3 are each truncated to 20 lines with an "... and N more"
+# tail. Defensive: any failing subsection is silently skipped so the prompt
+# still works on damaged work dirs.
+# Arguments: $1 = source_dir, $2 = work_dir, $3 = branch (e.g. "master")
+print_session_context() {
+    local source_dir="$1"
+    local work_dir="$2"
+    local branch="$3"
+    local max_lines=20
+
+    # 1) Latest synced commit from source
+    if [ -d "$source_dir/.git" ] || [ -d "$source_dir" ] && git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        local _source_head
+        _source_head=$(git -C "$source_dir" log --oneline -1 2>/dev/null)
+        if [ -n "$_source_head" ]; then
+            echo ""
+            echo "Latest synced commit (from source):"
+            echo "  $_source_head"
+        fi
+    fi
+
+    # 2) Unpushed commits in the cage (intermediary is the cage's origin, so
+    # origin/<branch>..HEAD lists what hasn't propagated back yet).
+    if [ -d "$work_dir/.git" ] && [ -n "$branch" ]; then
+        local _unpushed
+        _unpushed=$(git -C "$work_dir" log --oneline "origin/$branch..HEAD" 2>/dev/null)
+        if [ -n "$_unpushed" ]; then
+            local _total
+            _total=$(echo "$_unpushed" | wc -l)
+            echo ""
+            echo "Unpushed commits in cage (not yet in source):"
+            echo "$_unpushed" | head -n "$max_lines" | sed 's/^/  /'
+            if [ "$_total" -gt "$max_lines" ]; then
+                echo "  ... and $((_total - max_lines)) more"
+            fi
+        fi
+    fi
+
+    # 3) Workspace state (compact porcelain)
+    if [ -d "$work_dir/.git" ]; then
+        git -C "$work_dir" update-index --refresh -q --unmerged >/dev/null 2>&1 || true
+        local _status
+        _status=$(git -C "$work_dir" status --short 2>/dev/null)
+        if [ -n "$_status" ]; then
+            local _total
+            _total=$(echo "$_status" | wc -l)
+            echo ""
+            echo "Workspace state:"
+            echo "$_status" | head -n "$max_lines" | sed 's/^/  /'
+            if [ "$_total" -gt "$max_lines" ]; then
+                echo "  ... and $((_total - max_lines)) more"
+            fi
+        fi
+    fi
+}
+
 # Check if a work directory has uncommitted changes
 # Returns 0 if dirty, 1 if clean
 # Refreshes the stat cache before reading porcelain so stale mtime/size from

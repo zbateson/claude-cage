@@ -574,16 +574,27 @@ Now you've got:
 
 Two ways to slim things down:
 
-### Run from a Subdirectory (Scoped Mode)
+### Run from a Subdirectory
 
-Just `cd` into the part you care about and hit it with `--scoped`:
+By default, runnin' `claude-cage` from anywhere inside a git repo sets the cage up at the **git root** and drops you into your invocation subdir once you're inside. Same view as if you'd cd'd up to the root, started the cage, and cd'd back. No data leakage, no nested-repo collisions — just the whole repo with Claude landin' where you were.
+
+```bash
+cd ~/myrepo/services/auth
+claude-cage     # cage is rooted at ~/myrepo, shell starts in services/auth
+```
+
+First time you run claude-cage from a subdir of a fresh repo, you'll get a quick prompt askin' whether you want the whole repo or a scoped run; once the repo's caged (config, cache, anything), the default just kicks in silently.
+
+### Slimmin' Down with --scoped
+
+If your repo's huge and you only care about a subdir, you can scope the export instead. `--scoped` builds an intermediary containin' only that subdirectory — faster to build, less noise for Claude:
 
 ```bash
 cd ~/massive-monorepo/services/auth
 claude-cage --scoped
 ```
 
-This creates a scoped intermediary containin' only `services/auth/` — faster to build, less noise for Claude. Your commits sync back to the main repo on the branch you started on.
+Your commits still sync back to the main repo on the branch you started on.
 
 You can also set it in config:
 ```lua

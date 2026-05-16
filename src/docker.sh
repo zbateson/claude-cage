@@ -390,8 +390,14 @@ run_in_docker() {
         esac
     done
 
-    # Working directory is the project path
-    docker_args+=(-w "$project_path")
+    # Working directory is the project path. If cage_start_subdir is set
+    # (subdir auto-routing), drop into that subdir of the cage so the inside
+    # view matches the invocation cwd.
+    local effective_workdir="$project_path"
+    if [ -n "${cage_start_subdir:-}" ]; then
+        effective_workdir="$project_path/$cage_start_subdir"
+    fi
+    docker_args+=(-w "$effective_workdir")
 
     # Environment
     docker_args+=(-e "HOME=$user_home")

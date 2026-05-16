@@ -153,8 +153,14 @@ run_in_bwrap() {
     # Cleanup on parent exit
     bwrap_args+=(--die-with-parent)
 
-    # Working directory is the project path (where work/ is mounted)
-    bwrap_args+=(--chdir "$project_path")
+    # Working directory is the project path (where work/ is mounted).
+    # If cage_start_subdir is set (subdir auto-routing), drop the user into
+    # that subdir of the cage so the inside view matches the invocation cwd.
+    local effective_chdir="$project_path"
+    if [ -n "${cage_start_subdir:-}" ]; then
+        effective_chdir="$project_path/$cage_start_subdir"
+    fi
+    bwrap_args+=(--chdir "$effective_chdir")
 
     # Add command or interactive shell
     # Create custom rcfile that silences command_not_found_handle after sourcing configs
@@ -223,6 +229,7 @@ run_in_bwrap_with_network() {
     export BWRAP_PROJECT_PATH="$project_path"
     export BWRAP_DRY_RUN="$dry_run"
     export BWRAP_VERBOSE="$verbose"
+    export BWRAP_START_SUBDIR="${cage_start_subdir:-}"
 
     # Capture real UID/GID before entering namespace (where we become root)
     export BWRAP_REAL_UID="$(id -u)"
@@ -262,6 +269,7 @@ run_in_bwrap_with_network() {
             source "$CLAUDE_CAGE_SCRIPT"
             dry_run="$BWRAP_DRY_RUN"
             verbose="$BWRAP_VERBOSE"
+            cage_start_subdir="$BWRAP_START_SUBDIR"
             # Restore cfg arrays
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
             IFS="^" read -ra cfg_bwrap_system_mounts <<< "$BWRAP_SYSTEM_MOUNTS"
@@ -279,6 +287,7 @@ run_in_bwrap_with_network() {
             source "$CLAUDE_CAGE_SCRIPT"
             dry_run="$BWRAP_DRY_RUN"
             verbose="$BWRAP_VERBOSE"
+            cage_start_subdir="$BWRAP_START_SUBDIR"
             # Restore cfg arrays
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
             IFS="^" read -ra cfg_bwrap_system_mounts <<< "$BWRAP_SYSTEM_MOUNTS"

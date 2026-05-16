@@ -146,6 +146,22 @@ is_git_repo() {
     git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
+# Check whether a git root has been touched by claude-cage before.
+# Signals (any one is enough): .claude-cage config at root, repos.list entry,
+# or an unscoped intermediary in $CACHE for this root. Used by main.sh to
+# decide between silent subdir-routing (caged) and the fresh-repo prompt.
+# Arguments: $1 = git_root directory
+is_caged_repo() {
+    local git_root="$1"
+    [ -n "$git_root" ] || return 1
+    [ -f "$git_root/.claude-cage" ] && return 0
+    [ -d "$CLAUDE_CAGE_CACHE/intermediary$git_root" ] && return 0
+    local repos_file
+    repos_file=$(get_repos_list_path "$git_root" 2>/dev/null) || return 1
+    [ -f "$repos_file" ] && return 0
+    return 1
+}
+
 # Get the relative path from git root to source directory (scope path)
 # Returns empty string if source_dir IS the git root
 # Arguments: $1 = source directory

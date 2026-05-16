@@ -86,6 +86,10 @@ Independent of `syncActiveBranch`. When `bringDirty = true` (or `--with-dirty` i
 
 `cleanup_on_exit` calls `work_matches_source_dirty` for any cage that's exiting dirty (with no unpushed commits). If every dirty path in the cage matches the source byte-for-byte, the cage is torn down via `cleanup_current_session_workdir` — nothing's lost because source already holds every change. Triggers in both the `has_other_sessions=true` branch and the solo-session branch; the solo path only cleans on a match (clean solo work dirs are still preserved for reuse).
 
+### Subdir Auto-Routing
+
+When `claude-cage` is invoked from a subdir of a git repo without `--scoped`, `main.sh` detects the situation (via `git rev-parse --show-toplevel`) and either silently routes `cfg_source` to the git root or prompts. The route-vs-prompt decision is driven by `is_caged_repo` (`src/git-clone.sh`), which returns true on any of: `.claude-cage` config at the root, an existing `$CACHE/intermediary$git_root/`, or a `repos.list` entry. The relative subpath is stashed in `cage_start_subdir`, which `run_in_bwrap` / `run_in_docker` append to `project_path` for `--chdir` / `-w`, so the shell starts at the original invocation cwd inside the cage. Non-interactive invocations from a fresh subdir exit with a hint rather than guessing intent.
+
 ## Configuration
 
 Config files loaded and merged in order (later values override, arrays merge): system (`/etc/claude-cage.conf`) → user (`~/.config/claude-cage/config`) → includeIf (directory-scoped, declared in system/user config) → local (`.claude-cage` at git root). No config triggers an interactive builder.
@@ -243,8 +247,9 @@ bash tests/run-all.sh
 | test-scoped.sh | scoped intermediary | 66 |
 | test-session-log.sh | per-session logging | 15 |
 | test-cross-session.sh | cross-project session sharing | 21 |
+| test-subdir-routing.sh | subdir auto-routing | 10 |
 
-**~331 assertions across 16 files.** bwrap tests skipped if user namespaces unavailable.
+**~341 assertions across 17 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## TODO
 

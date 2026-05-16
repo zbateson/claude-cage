@@ -150,6 +150,57 @@ elif ! is_git_repo "$cfg_source"; then
     esac
 fi
 
+# Subdir auto-routing: if running from inside an existing git repo's subdir
+# without --scoped, route cfg_source to the git root and stash the subpath so
+# we can cd there inside the cage. Caged repos route silently; fresh repos
+# prompt. Skips for direct-mount, explicit scoping, or non-git invocations.
+cage_start_subdir=""
+if [ "$direct_mount_mode" = false ] \
+   && [ "$cli_scoped" != true ] \
+   && [ "$cfg_git_scoped" != "true" ] \
+   && is_git_repo "$cfg_source"; then
+    _detected_git_root=$(get_git_root "$cfg_source")
+    if [ -n "$_detected_git_root" ] && [ "$_detected_git_root" != "$cfg_source" ]; then
+        _detected_subdir=$(get_scope_path "$cfg_source")
+        if is_caged_repo "$_detected_git_root"; then
+            echo "Caged repo detected at $_detected_git_root — startin' the cage there, droppin' you into $_detected_subdir/ inside."
+            cfg_source="$_detected_git_root"
+            cage_start_subdir="$_detected_subdir"
+        elif [ -t 0 ]; then
+            echo ""
+            echo "You're in $cfg_source, inside a git repo at $_detected_git_root."
+            echo "claude-cage ain't been run on this repo before."
+            echo ""
+            echo "What would you like?"
+            echo "  1) Set up the whole repo (recommended, starts in $_detected_subdir/ inside the cage)"
+            echo "  2) Scope this run to just $_detected_subdir (--scoped)"
+            echo "  q) Quit"
+            echo ""
+            while true; do
+                printf "Choice: "
+                read -r _subdir_choice
+                case "$_subdir_choice" in
+                    1)
+                        cfg_source="$_detected_git_root"
+                        cage_start_subdir="$_detected_subdir"
+                        break
+                        ;;
+                    2)
+                        cli_scoped=true
+                        break
+                        ;;
+                    q|Q) echo "Catch you later."; exit 0 ;;
+                    *) echo "Pick 1, 2, or q." ;;
+                esac
+            done
+        else
+            echo "Hold on. You're in $cfg_source, inside an un-caged git repo at $_detected_git_root."
+            echo "Run interactively to choose how to handle it, or pass --scoped to scope this run."
+            exit 1
+        fi
+    fi
+fi
+
 # Compute scope_path early for commands that need it before main orchestration
 scope_path=""
 if [ "$cli_scoped" = true ] || [ "$cfg_git_scoped" = "true" ]; then

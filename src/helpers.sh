@@ -175,7 +175,7 @@ Options:
   --direct-mount          Mount source directly without git sync
   --scoped                Scope intermediary to CWD subdirectory only
   --with-dirty            Copy uncommitted source files into the cage at startup
-  --attach-session [TS]   Attach to an active session (optionally by timestamp)
+  --attach-session [NAME] Attach to a session (default | session.<N>; no arg = pick)
   --all                   Remove all sessions (with clean subcommand)
   --dry-run               Show commands without executing
   --verbose, -v           Show commands as they execute
@@ -195,9 +195,11 @@ Examples:
   claude-cage                        Start sandbox with configured launch command
   claude-cage --test                 Drop into a shell for testing
   claude-cage --resume               Pass --resume to the launch command
-  claude-cage --attach-session       Attach to an active session
+  claude-cage --attach-session       Pick a session to attach to
+  claude-cage --attach-session default     Attach to the shared default session
+  claude-cage --attach-session session.2   Attach to alternate 2 for this project
   claude-cage clean                  Interactively select session cache(s) to remove
-  claude-cage clean 2025-02-06_14-30-22   Remove cache for specific session
+  claude-cage clean session.2        Remove a specific alternate (or 'default')
   claude-cage clean --all            Remove all cached sessions for this project
   claude-cage git-merge              Sync current branch from intermediary
   claude-cage git-merge feature      Sync specific branch from intermediary
@@ -230,17 +232,24 @@ _claude_cage() {
             local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
             local git_root
             git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return
-            if [ -d "$cache_dir/sessions" ]; then
-                local sessions=""
-                for d in "$cache_dir/sessions"/*/; do
-                    [ -d "$d" ] || continue
-                    [ -d "$d/work$git_root" ] || [ -d "$d/scoped$git_root" ] || continue
-                    local ts
-                    ts=$(basename "$d")
-                    sessions="$sessions $ts"
-                done
-                COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+            local proj_key=""
+            if [ -n "$git_root" ]; then
+                local base="${git_root##*/}"
+                local hash
+                hash=$(printf %s "$git_root" | md5sum | cut -c1-6)
+                proj_key="${base}-${hash}"
             fi
+            local sessions="default"
+            if [ -d "$cache_dir/sessions" ] && [ -n "$proj_key" ]; then
+                for d in "$cache_dir/sessions/${proj_key}-"*/; do
+                    [ -d "$d" ] || continue
+                    local n
+                    n=${d%/}
+                    n=${n##*-}
+                    [[ "$n" =~ ^[0-9]+$ ]] && sessions="$sessions session.$n"
+                done
+            fi
+            COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
             return
             ;;
         completion)
@@ -274,14 +283,25 @@ _claude_cage() {
         local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
         local git_root
         git_root=$(git rev-parse --show-toplevel 2>/dev/null) || { COMPREPLY=($(compgen -W "--all" -- "$cur")); return; }
+        local proj_key=""
+        if [ -n "$git_root" ]; then
+            local base="${git_root##*/}"
+            local hash
+            hash=$(printf %s "$git_root" | md5sum | cut -c1-6)
+            proj_key="${base}-${hash}"
+        fi
         local sessions=""
-        if [ -d "$cache_dir/sessions" ]; then
-            for d in "$cache_dir/sessions"/*/; do
+        if [ -d "$cache_dir/sessions/default" ] && \
+           { [ -d "$cache_dir/sessions/default/work$git_root" ] || [ -d "$cache_dir/sessions/default/scoped$git_root" ]; }; then
+            sessions="default"
+        fi
+        if [ -d "$cache_dir/sessions" ] && [ -n "$proj_key" ]; then
+            for d in "$cache_dir/sessions/${proj_key}-"*/; do
                 [ -d "$d" ] || continue
-                [ -d "$d/work$git_root" ] || [ -d "$d/scoped$git_root" ] || continue
-                local ts
-                ts=$(basename "$d")
-                sessions="$sessions $ts"
+                local n
+                n=${d%/}
+                n=${n##*-}
+                [[ "$n" =~ ^[0-9]+$ ]] && sessions="$sessions session.$n"
             done
         fi
         COMPREPLY=($(compgen -W "$sessions --all" -- "$cur"))
@@ -365,18 +385,28 @@ _claude_cage_sessions() {
     local cache_dir="${CLAUDE_CAGE_CACHE:-$HOME/.cache/claude-cage}"
     local git_root
     git_root=$(git rev-parse --show-toplevel 2>/dev/null) || return
-    if [ -d "$cache_dir/sessions" ]; then
-        local -a sessions=()
-        for d in "$cache_dir/sessions"/*/; do
-            [ -d "$d" ] || continue
-            [ -d "$d/work$git_root" ] || [ -d "$d/scoped$git_root" ] || continue
-            local ts
-            ts=${d%/}
-            ts=${ts##*/}
-            sessions+=("$ts")
-        done
-        [ ${#sessions[@]} -gt 0 ] && _describe -t sessions 'session' sessions
+    local proj_key=""
+    if [ -n "$git_root" ]; then
+        local base="${git_root##*/}"
+        local hash
+        hash=$(printf %s "$git_root" | md5sum | cut -c1-6)
+        proj_key="${base}-${hash}"
     fi
+    local -a sessions=()
+    if [ -d "$cache_dir/sessions/default" ] && \
+       { [ -d "$cache_dir/sessions/default/work$git_root" ] || [ -d "$cache_dir/sessions/default/scoped$git_root" ]; }; then
+        sessions+=("default")
+    fi
+    if [ -d "$cache_dir/sessions" ] && [ -n "$proj_key" ]; then
+        for d in "$cache_dir/sessions/${proj_key}-"*/; do
+            [ -d "$d" ] || continue
+            local n
+            n=${d%/}
+            n=${n##*-}
+            [[ "$n" =~ ^[0-9]+$ ]] && sessions+=("session.$n")
+        done
+    fi
+    [ ${#sessions[@]} -gt 0 ] && _describe -t sessions 'session' sessions
 }
 
 _claude_cage "$@"

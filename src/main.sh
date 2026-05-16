@@ -250,10 +250,11 @@ if [ "$clean_mode" = true ]; then
             work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$sid" "$ssource" "$sscope")
             scope_label=""
             [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+            display=$(display_session_name "$sid")
             if is_work_dirty "$work_dir"; then
-                echo -e "  $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
+                echo -e "  $display  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
             else
-                echo -e "  $sid  branch: $sbranch${scope_label}"
+                echo -e "  $display  branch: $sbranch${scope_label}"
             fi
         done <<< "$cached_sessions"
         echo ""
@@ -265,7 +266,7 @@ if [ "$clean_mode" = true ]; then
 
         while IFS=' ' read -r sid sbranch ssource sscope; do
             echo ""
-            echo "Cleaning session: $sid"
+            echo "Cleaning session: $(display_session_name "$sid")"
             clean_session_cache "$ssource" "$sid"
         done <<< "$cached_sessions"
 
@@ -274,21 +275,31 @@ if [ "$clean_mode" = true ]; then
         exit 0
 
     elif [ ${#clean_sessions[@]} -gt 0 ]; then
-        # Session IDs specified as positional args
-        # Validate all IDs first
+        # Session IDs specified as positional args.
+        # Accept user-facing display names (default, session.N) by resolving
+        # to cache ids; fall through to literal match for legacy timestamps.
+        resolved_clean_sessions=()
         for csid in "${clean_sessions[@]}"; do
-            if ! echo "$cached_sessions" | grep -q "^$csid "; then
+            resolved=""
+            if resolved=$(resolve_session_name "$csid" "$cfg_source" 2>/dev/null); then
+                :
+            else
+                resolved="$csid"
+            fi
+            if ! echo "$cached_sessions" | grep -q "^$resolved "; then
                 echo "Session '$csid' not found in cache."
                 echo ""
                 echo "Available sessions:"
                 while IFS=' ' read -r sid sbranch ssource sscope; do
                     scope_label=""
                     [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
-                    echo -e "  $sid  branch: $sbranch${scope_label}"
+                    echo -e "  $(display_session_name "$sid")  branch: $sbranch${scope_label}"
                 done <<< "$cached_sessions"
                 exit 1
             fi
+            resolved_clean_sessions+=("$resolved")
         done
+        clean_sessions=("${resolved_clean_sessions[@]}")
 
         if [ ${#clean_sessions[@]} -eq 1 ]; then
             # Single session: show details and confirm
@@ -305,7 +316,7 @@ if [ "$clean_mode" = true ]; then
             clean_scope=$(echo "$cached_sessions" | awk -v sid="$csid" '$1 == sid { print $4; exit }')
             work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$csid" "$clean_source" "$clean_scope")
             echo ""
-            echo "This will remove the cache for session: $csid"
+            echo "This will remove the cache for session: $(display_session_name "$csid")"
             if is_work_dirty "$work_dir"; then
                 echo ""
                 echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
@@ -319,7 +330,7 @@ if [ "$clean_mode" = true ]; then
 
             clean_session_cache "$clean_source" "$csid"
             echo ""
-            echo "Done. Session '$csid' cleaned up."
+            echo "Done. Session '$(display_session_name "$csid")' cleaned up."
         else
             # Multiple sessions: show list and single confirm
             echo ""
@@ -337,10 +348,11 @@ if [ "$clean_mode" = true ]; then
                 work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$csid" "$clean_source" "$_sscope")
                 scope_label=""
                 [ -n "$_sscope" ] && scope_label=" ${_cyan}(scoped: $_sscope)${_reset}"
+                display=$(display_session_name "$csid")
                 if is_work_dirty "$work_dir"; then
-                    echo -e "  $csid  branch: $_sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
+                    echo -e "  $display  branch: $_sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
                 else
-                    echo -e "  $csid  branch: $_sbranch${scope_label}"
+                    echo -e "  $display  branch: $_sbranch${scope_label}"
                 fi
             done
             echo ""
@@ -359,7 +371,7 @@ if [ "$clean_mode" = true ]; then
                     fi
                 done
                 echo ""
-                echo "Cleaning session: $csid"
+                echo "Cleaning session: $(display_session_name "$csid")"
                 clean_session_cache "$clean_source" "$csid"
             done
 
@@ -377,10 +389,11 @@ if [ "$clean_mode" = true ]; then
             work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$sid" "$ssource" "$sscope")
             scope_label=""
             [ -n "$sscope" ] && scope_label=" ${_cyan}(scoped: $sscope)${_reset}"
+            display=$(display_session_name "$sid")
             if is_work_dirty "$work_dir"; then
-                echo -e "  $idx) $sid  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
+                echo -e "  $idx) $display  branch: $sbranch${scope_label} ${_yellow}(has uncommitted changes!)${_reset}"
             else
-                echo -e "  $idx) $sid  branch: $sbranch${scope_label}"
+                echo -e "  $idx) $display  branch: $sbranch${scope_label}"
             fi
             idx=$((idx + 1))
         done <<< "$cached_sessions"
@@ -404,7 +417,7 @@ if [ "$clean_mode" = true ]; then
                 fi
                 while IFS=' ' read -r sid sbranch ssource sscope; do
                     echo ""
-                    echo "Cleaning session: $sid"
+                    echo "Cleaning session: $(display_session_name "$sid")"
                     clean_session_cache "$ssource" "$sid"
                 done <<< "$cached_sessions"
                 echo ""
@@ -418,7 +431,7 @@ if [ "$clean_mode" = true ]; then
                 work_dir=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$selected_session" "$selected_source" "$selected_scope")
 
                 echo ""
-                echo "This will remove the cache for session: $selected_session"
+                echo "This will remove the cache for session: $(display_session_name "$selected_session")"
                 if is_work_dirty "$work_dir"; then
                     echo ""
                     echo -e "${_yellow}⚠️  WARNING: This session has uncommitted changes that will be lost!${_reset}"
@@ -432,7 +445,7 @@ if [ "$clean_mode" = true ]; then
 
                 clean_session_cache "$selected_source" "$selected_session"
                 echo ""
-                echo "Done. Session '$selected_session' cleaned up."
+                echo "Done. Session '$(display_session_name "$selected_session")' cleaned up."
                 exit 0
             fi
             echo "Pick a number, 'a' to remove all, or 'q' to quit."

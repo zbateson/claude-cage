@@ -27,6 +27,21 @@ source_is_dirty() {
     [ -n "$(git -C "$source_dir" status --porcelain 2>/dev/null)" ]
 }
 
+# Stricter version of source_is_dirty: returns 0 only when source has dirty
+# changes that would *actually* be carried into the cage — i.e. changes that
+# survive exclude patterns and (for scoped runs) the scope filter. The startup
+# bringDirty hint and the carry trigger use this so we don't nag when every
+# dirty file is excluded or out of scope. Uses enumerate_source_dirty_pairs as
+# the single source of truth for "carryable" — exactly the same set
+# copy_dirty_files_to_work would touch.
+# Arguments: $1=source_dir, $2=scope_path (empty for unscoped), $3=cfg_exclude
+source_has_carryable_dirty() {
+    local source_dir="$1"
+    local scope_path="$2"
+    local cfg_exclude="$3"
+    [ -n "$(enumerate_source_dirty_pairs "$source_dir" "$scope_path" "$cfg_exclude" 2>/dev/null | head -c 1)" ]
+}
+
 # Emit NUL-separated (src_path, dest_path) pairs for each dirty file in source.
 # Renames/copies expand to two records: (old_path -> dest_old) treated as a
 # deletion, and (new_path -> dest_new) treated as a create/modify. Paths
@@ -40,6 +55,8 @@ enumerate_source_dirty_pairs() {
     local source_dir="$1"
     local scope_path="$2"
     local cfg_exclude="$3"
+
+    git -C "$source_dir" update-index --refresh -q --unmerged >/dev/null 2>&1 || true
 
     local -a exclude_args=()
     if [ -n "$cfg_exclude" ]; then

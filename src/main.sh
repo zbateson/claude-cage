@@ -681,7 +681,7 @@ else
     fi
     if [ "$cli_attach_session_mode" != true ] && \
        ! is_work_dirty "$work_dir" && \
-       source_is_dirty "$cfg_source"; then
+       source_has_carryable_dirty "$cfg_source" "${scope_path:-}" "$cfg_exclude"; then
         if [ "$bring_dirty" = true ]; then
             copy_dirty_files_to_work "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_exclude"
         else

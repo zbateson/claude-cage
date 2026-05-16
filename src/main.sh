@@ -762,7 +762,39 @@ cleanup_on_exit() {
             fi
         fi
 
-        if has_other_sessions "$cfg_source" && [ -d "$work_dir/.git" ]; then
+        if [ "$CLAUDE_CAGE_SESSION" != "default" ]; then
+            # Alternate exit: clean → tear the whole alternate down; dirty →
+            # leave it so the next startup finds it and prompts. Slot recycles
+            # once every alternate for this project has gone.
+            if [ "$can_clean" = true ] && [ -d "$work_dir/.git" ]; then
+                local _display_name
+                _display_name=$(display_session_name "$CLAUDE_CAGE_SESSION")
+                rm -rf "$CLAUDE_CAGE_CACHE/sessions/$CLAUDE_CAGE_SESSION"
+                rm -rf "$CLAUDE_CAGE_RUNTIME/sessions/$CLAUDE_CAGE_SESSION"
+                local _log_file="$CLAUDE_CAGE_CACHE/logs/$CLAUDE_CAGE_SESSION.log"
+                [ -f "$_log_file" ] && rm -f "$_log_file"
+                local _alt_git_root
+                _alt_git_root=$(get_git_root "$cfg_source") || true
+                if [ -n "$_alt_git_root" ]; then
+                    [ -d "$_alt_git_root/.caged/sessions/$_display_name" ] && \
+                        rm -rf "$_alt_git_root/.caged/sessions/$_display_name"
+                    [ -d "$_alt_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ] && \
+                        rm -rf "$_alt_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
+                fi
+                [ "$dirty_matched" = true ] && \
+                    echo "Alternate $_display_name was just trackin' source — clearin' it out."
+            elif [ -d "$work_dir/.git" ]; then
+                local _reasons=""
+                is_work_dirty "$work_dir" && _reasons="uncommitted changes"
+                if work_has_unpushed "$work_dir"; then
+                    [ -n "$_reasons" ] && _reasons="$_reasons and "
+                    _reasons="${_reasons}unpushed commits"
+                fi
+                echo ""
+                echo "Alternate $(display_session_name "$CLAUDE_CAGE_SESSION") has $_reasons — leavin' it around for pickup."
+                echo "Run 'claude-cage clean' to wipe it later."
+            fi
+        elif has_other_sessions "$cfg_source" && [ -d "$work_dir/.git" ]; then
             if [ "$can_clean" = true ]; then
                 cleanup_current_session_workdir "$cfg_source"
                 [ "$dirty_matched" = true ] && \

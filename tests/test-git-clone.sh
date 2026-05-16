@@ -358,4 +358,48 @@ fi
 echo "  PASS: intermediary converge-test updated to match master"
 
 echo ""
+echo "=== Testing is_work_dirty hardening ==="
+
+echo "Test 22: is_work_dirty handles stale stat cache without false positives"
+# Set up a clean cage so we have a known-clean work dir
+cd "$TEST_TMP/source"
+DIRTY_SOURCE="$TEST_TMP/source"
+DIRTY_WORK=$(get_work_path "$DIRTY_SOURCE")
+
+# Cage already exists from earlier tests; make sure it's clean
+if ! [ -d "$DIRTY_WORK/.git" ]; then
+    create_intermediary_clone "$DIRTY_SOURCE" >/dev/null 2>&1
+fi
+git -C "$DIRTY_WORK" config user.email "test@test.com"
+git -C "$DIRTY_WORK" config user.name "Test"
+
+# Sanity: clean before the perturbation
+if is_work_dirty "$DIRTY_WORK"; then
+    echo "FAIL: work dir should start clean for this test"
+    exit 1
+fi
+
+# Pick a tracked file and twiddle its mtime without changing content. This
+# is the canonical stale-stat scenario; raw `git status --porcelain` may
+# report dirty until the index is refreshed.
+tracked_file=$(git -C "$DIRTY_WORK" ls-files | head -1)
+if [ -n "$tracked_file" ] && [ -f "$DIRTY_WORK/$tracked_file" ]; then
+    # Force mtime forward by reading and rewriting the same bytes via cp+mv.
+    cp "$DIRTY_WORK/$tracked_file" "$DIRTY_WORK/$tracked_file.tmp"
+    mv "$DIRTY_WORK/$tracked_file.tmp" "$DIRTY_WORK/$tracked_file"
+    # Bump mtime explicitly to be safe across filesystems
+    touch "$DIRTY_WORK/$tracked_file"
+fi
+
+# With the index-refresh, is_work_dirty should report clean even though the
+# stat cache is briefly out of sync with the working tree.
+if is_work_dirty "$DIRTY_WORK"; then
+    echo "FAIL: is_work_dirty should report clean after content-preserving touch"
+    echo "  Raw porcelain output:"
+    git -C "$DIRTY_WORK" status --porcelain
+    exit 1
+fi
+echo "  PASS: is_work_dirty refreshes the index and ignores stale stat"
+
+echo ""
 echo "=== All git-clone tests passed! ==="

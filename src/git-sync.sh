@@ -18,9 +18,12 @@ sync_log() {
 }
 
 # Check if source working tree has uncommitted changes (staged, unstaged, or untracked)
+# Refresh the stat cache first so stale mtime/size doesn't fake a dirty result
+# (same hardening as is_work_dirty in git-clone.sh).
 # Arguments: $1=source_dir
 source_is_dirty() {
     local source_dir="$1"
+    git -C "$source_dir" update-index --refresh -q --unmerged >/dev/null 2>&1 || true
     [ -n "$(git -C "$source_dir" status --porcelain 2>/dev/null)" ]
 }
 

@@ -559,10 +559,13 @@ list_cached_sessions() {
 
 # Check if a work directory has uncommitted changes
 # Returns 0 if dirty, 1 if clean
+# Refreshes the stat cache before reading porcelain so stale mtime/size from
+# suspend/resume, file-mode flips, or backup restores doesn't fake a "dirty"
+# result. The refresh is silent on the happy path and idempotent.
 is_work_dirty() {
     local work_dir="$1"
     [ -d "$work_dir/.git" ] || return 1
-    # Check for uncommitted changes
+    git -C "$work_dir" update-index --refresh -q --unmerged >/dev/null 2>&1 || true
     if [ -n "$(git -C "$work_dir" status --porcelain 2>/dev/null)" ]; then
         return 0
     fi

@@ -90,6 +90,10 @@ Independent of `syncActiveBranch`. When `bringDirty = true` (or `--with-dirty` i
 
 When `claude-cage` is invoked from a subdir of a git repo without `--scoped`, `main.sh` detects the situation (via `git rev-parse --show-toplevel`) and either silently routes `cfg_source` to the git root or prompts. The route-vs-prompt decision is driven by `is_caged_repo` (`src/git-clone.sh`), which returns true on any of: `.claude-cage` config at the root, an existing `$CACHE/intermediary$git_root/`, or a `repos.list` entry. The relative subpath is stashed in `cage_start_subdir`, which `run_in_bwrap` / `run_in_docker` append to `project_path` for `--chdir` / `-w`, so the shell starts at the original invocation cwd inside the cage. Non-interactive invocations from a fresh subdir exit with a hint rather than guessing intent.
 
+### Index-Refresh in Dirty Classifiers
+
+`is_work_dirty` (`src/git-clone.sh`) and `source_is_dirty` (`src/git-sync.sh`) call `git update-index --refresh -q --unmerged` before reading `git status --porcelain`. The refresh is silent on the happy path and idempotent; it kills false-positive "dirty" classifications when the index's stat cache is stale relative to the working tree (suspend/resume, file-mode flips, backup restores, content-preserving `touch`).
+
 ### Scoped Work-Dir Tree
 
 Work dirs are routed by scope the same way intermediaries are. Unscoped runs land at `$CACHE/sessions/<id>/work$source_dir/`; scoped runs land in a sibling tree at `$CACHE/sessions/<id>/scoped$git_root/$scope_path/`. This parallels the intermediary side's `intermediary/` vs `scoped/.bare/` split and prevents scoped work dirs from nesting inside their unscoped siblings under the same git root. Three helpers in `src/git-clone.sh` compute the path:

@@ -15,6 +15,87 @@ sanitize_branch_name() {
     echo "$branch" | sed 's|/|--|g; s|[^a-zA-Z0-9._-]|-|g'
 }
 
+# Project key for per-project alternate sessions: <basename>-<6-char-hash>.
+# The hash disambiguates same-named projects in different locations.
+# Arguments: $1 = source directory
+get_project_key() {
+    local source_dir="$1"
+    local base hash
+    base=$(basename "$source_dir")
+    hash=$(path_hash "$source_dir")
+    echo "${base}-${hash:0:6}"
+}
+
+# Atomically claim the next available alternate-session slot for a project.
+# Scans $CACHE/sessions/ for existing <project-key>-<N> dirs, picks max(N)+1
+# (or 2 if none — 1 is conceptually reserved for "default"), and tries to
+# claim the slot via mkdir. Retries on race if another startup beat us to it.
+# Echoes the chosen cache name (e.g. "ScienceOneVue-a3f7b2-2").
+# Arguments: $1 = source directory
+allocate_alternate_session() {
+    local source_dir="$1"
+    local key
+    key=$(get_project_key "$source_dir")
+    local sessions_dir="$CLAUDE_CAGE_CACHE/sessions"
+    mkdir -p "$sessions_dir"
+    while true; do
+        local max=1
+        local d n
+        for d in "$sessions_dir/${key}-"*; do
+            [ -d "$d" ] || continue
+            n="${d##*-}"
+            if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt "$max" ]; then
+                max="$n"
+            fi
+        done
+        local next=$((max + 1))
+        local candidate="$sessions_dir/${key}-${next}"
+        if mkdir "$candidate" 2>/dev/null; then
+            echo "${key}-${next}"
+            return 0
+        fi
+    done
+}
+
+# Resolve a user-facing session name to its on-disk cache name.
+#   "default"    → "default"
+#   "session.N"  → "<project-key>-N"
+# Any other input is rejected with a non-zero return and an error on stderr.
+# Arguments: $1 = user-facing name, $2 = source directory
+resolve_session_name() {
+    local name="$1"
+    local source_dir="$2"
+    if [ "$name" = "default" ]; then
+        echo "default"
+        return 0
+    elif [[ "$name" =~ ^session\.([0-9]+)$ ]]; then
+        local n="${BASH_REMATCH[1]}"
+        local key
+        key=$(get_project_key "$source_dir")
+        echo "${key}-${n}"
+        return 0
+    fi
+    echo "error: unknown session name '$name' (expected 'default' or 'session.<N>')" >&2
+    return 1
+}
+
+# Render an on-disk session cache name back to its user-facing form.
+#   "default"            → "default"
+#   "<basename>-<hash>-N" → "session.N"
+# Anything else (legacy timestamp IDs, unknown formats) passes through verbatim
+# so the caller still has something printable.
+# Arguments: $1 = cache name
+display_session_name() {
+    local cache_id="$1"
+    if [ "$cache_id" = "default" ]; then
+        echo "default"
+    elif [[ "$cache_id" =~ ^.+-[a-f0-9]{6}-([0-9]+)$ ]]; then
+        echo "session.${BASH_REMATCH[1]}"
+    else
+        echo "$cache_id"
+    fi
+}
+
 # Current session ID for path construction (set by main.sh before calling get_work_path)
 # Format: YYYYMMDDHHMMSS timestamp
 CLAUDE_CAGE_SESSION=""

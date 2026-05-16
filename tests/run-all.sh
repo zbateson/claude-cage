@@ -55,6 +55,7 @@ run_test "$SCRIPT_DIR/test-scoped.sh"
 run_test "$SCRIPT_DIR/test-session-log.sh"
 run_test "$SCRIPT_DIR/test-cross-session.sh"
 run_test "$SCRIPT_DIR/test-subdir-routing.sh"
+run_test "$SCRIPT_DIR/test-session-naming.sh"
 
 # Summary
 echo "========================================"

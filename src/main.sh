@@ -737,6 +737,7 @@ echo "Inside sandbox:"
 echo "  $project_path              (working dir)"
 if [ "$direct_mount_mode" = false ]; then
     echo "  /run$intermediary_dir      (git origin)"
+    echo "  $(display_session_name "$CLAUDE_CAGE_SESSION")              (session)"
 fi
 echo ""
 

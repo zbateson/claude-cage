@@ -230,6 +230,7 @@ run_in_bwrap_with_network() {
     export BWRAP_DRY_RUN="$dry_run"
     export BWRAP_VERBOSE="$verbose"
     export BWRAP_START_SUBDIR="${cage_start_subdir:-}"
+    export BWRAP_CFG_ISOLATED="${cfg_isolated:-}"
 
     # Capture real UID/GID before entering namespace (where we become root)
     export BWRAP_REAL_UID="$(id -u)"
@@ -270,6 +271,7 @@ run_in_bwrap_with_network() {
             dry_run="$BWRAP_DRY_RUN"
             verbose="$BWRAP_VERBOSE"
             cage_start_subdir="$BWRAP_START_SUBDIR"
+            cfg_isolated="$BWRAP_CFG_ISOLATED"
             # Restore cfg arrays
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
             IFS="^" read -ra cfg_bwrap_system_mounts <<< "$BWRAP_SYSTEM_MOUNTS"
@@ -288,6 +290,7 @@ run_in_bwrap_with_network() {
             dry_run="$BWRAP_DRY_RUN"
             verbose="$BWRAP_VERBOSE"
             cage_start_subdir="$BWRAP_START_SUBDIR"
+            cfg_isolated="$BWRAP_CFG_ISOLATED"
             # Restore cfg arrays
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
             IFS="^" read -ra cfg_bwrap_system_mounts <<< "$BWRAP_SYSTEM_MOUNTS"

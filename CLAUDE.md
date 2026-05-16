@@ -70,7 +70,23 @@ Source `post-commit` / `post-merge` hooks fire → check commit mapping (skip if
 
 ### Sessions
 
-Multiple concurrent sessions share the same intermediary. Each gets its own work directory. PID-based session tracking in `$XDG_RUNTIME_DIR/claude-cage/sessions/<session-id>/<pid>` (file content = source_dir). When `isolated = false` (default), sessions are shared across projects: an active session for project A can be joined by project B, and inactive clean sessions are reusable by any project. When `isolated = true`, sessions are project-scoped (marked with `.claude-cage-isolated`). `--attach-session` shares an active session's work dir.
+One canonical shared session named `default` lives at `$CACHE/sessions/default/`. Every project joins it by, well, default. The rare case where this project is already running in `default` falls back to a **per-project alternate** at `$CACHE/sessions/<project-key>-<N>/` (`<project-key>` is `<basename>-<6-hex-md5-of-source>`). `N` is picked at allocation time by scanning existing `<project-key>-*` dirs and taking `max(N) + 1` (or `2` if none) — no persistent counter, so slots recycle once every alternate has exited. The atomic claim is via `mkdir`; concurrent racers retry on the next available `N`.
+
+`select_session` (`src/git-clone.sh`) collapses the whole flow to a single decision: `--attach-session` resolves a user-facing name (`default`, `session.N`, or a legacy timestamp) to its cache id; otherwise check whether `default` has a live PID for this `source_dir`; if not, land in `default`; if so, prompt over inactive dirty alternates for the project (or allocate a fresh one).
+
+PID-based session tracking still lives at `$XDG_RUNTIME_DIR/claude-cage/sessions/<session-id>/<pid>` (file content = `source_dir`). `session_is_active_for_source` is the source-scoped liveness check.
+
+Display layer: every user-facing surface (`Joinin'…`, dirty prompt, `claude-cage clean` listings, `.caged/sessions/<name>/`, completions) renders via `display_session_name`, which maps `default` → `default`, `<project-key>-<N>` → `session.<N>`, and passes anything else (legacy timestamps, unknown formats) through unchanged.
+
+**Cleanup contract.** Default's work dir is preserved on clean exit for reuse next time (existing match-clean tear-down still applies for dirty-matching-source). Alternates are ephemeral: clean exit (or dirty-matching-source) tears the whole alternate session dir down — runtime PID dir, log file, and `.caged` sidecar — so the slot is immediately recyclable. A dirty alternate is left for the next startup's prompt.
+
+**Mount layering.** `enumerate_projects` scans `$CACHE/sessions/default/work` for cross-project visibility regardless of which session we're actually in (see `get_default_work_root`). When in an alternate, the alternate's own `work_dir` is the first `CAGE_WORK_PROJECTS` entry and wins for its own `project_path`; other projects come from `default`'s tree. When in `default`, the scan trivially produces the same set.
+
+**`isolated` config option** is deprecated. It's parsed-but-ignored with a one-line note on startup. The new structural isolation (alternates are keyed on `project_key`) replaces it. Genuine cross-contamination concerns are addressed by overriding `CLAUDE_CAGE_CACHE` per-project.
+
+**Migration.** Pre-existing timestamp-named sessions (`2026-05-16_09-22-31/`) are ignored by discovery (`select_session` never auto-joins them) but remain visible to `claude-cage clean`. `display_session_name` passes them through unchanged so listings stay readable. Users do a `claude-cage clean --all` post-upgrade if they want a clean slate.
+
+`--attach-session` keeps working in both forms: with no arg, it lists every attachable session (`default` + each on-disk alternate for this project) and prompts; with a name, it accepts `default` / `session.N` / legacy timestamp.
 
 ### Failed Patches
 
@@ -176,7 +192,7 @@ claude_cage {
 | `bringDirty` | `false` | Copy uncommitted source files into the cage at startup (CLI: `--with-dirty`) |
 | `allowNonGit` | unset | Allow non-git directories (triggers direct mount) |
 | `directMount` | `false` | Mount source directly, skip git sync entirely |
-| `isolated` | `false` | Only mount single project (not all same-session projects) |
+| `isolated` | `false` | **DEPRECATED** Parsed-but-ignored, with a one-line note on startup. Per-project isolation is now structural via alternate sessions; for true cross-contamination prevention, override `CLAUDE_CAGE_CACHE` per project. |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip confirmation prompt before entering sandbox |
 | `createCagedDir` | `false` | Create `.caged/` symlinks to session caches |
@@ -202,8 +218,8 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 ./claude-cage --direct-mount                       # Skip git sync
 ./claude-cage --with-dirty                         # Carry uncommitted source files into the cage
 ./claude-cage git-merge [<branch>|--all]            # Sync intermediary commits to source
-./claude-cage --attach-session [<timestamp>]       # Share active session
-./claude-cage clean [<id>|--all]                   # Clean cached sessions
+./claude-cage --attach-session [default|session.N] # Attach to a session (no arg = pick)
+./claude-cage clean [default|session.N|--all]      # Clean cached sessions
 ./claude-cage completion bash|zsh                  # Output completion script
 ./claude-cage install-completions                  # Auto-install completions
 ./claude-cage --dry-run                            # Show commands without executing
@@ -224,12 +240,16 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 │   ├── claude-cage-exclude-hash          # Rebuild detection
 │   └── sync.log
 ├── logs/<session-id>.log                 # Per-session operational log
-└── sessions/<timestamp>/
-    ├── work/<project>/                   # Unscoped work dir
-    └── scoped/<git-root>/<scope>/        # Scoped work dir (sibling tree)
+└── sessions/
+    ├── default/                          # Canonical shared session (every project joins by default)
+    │   ├── work/<project>/               # Unscoped work dir
+    │   └── scoped/<git-root>/<scope>/    # Scoped work dir (sibling tree)
+    └── <basename>-<6hex>-<N>/            # Per-project alternate (e.g. claude-cage-a3f7b2-2)
+        ├── work/<project>/
+        └── scoped/<git-root>/<scope>/
 
 $XDG_RUNTIME_DIR/claude-cage/
-├── pipes/<timestamp>/<project-path>      # Named pipe
+├── pipes/<session-id>/<project-path>     # Named pipe
 └── sessions/<session-id>/<pid>            # Session tracking (content = source_dir)
 
 project/.git/hooks/
@@ -268,8 +288,29 @@ bash tests/run-all.sh
 | test-session-log.sh | per-session logging | 15 |
 | test-cross-session.sh | cross-project session sharing | 21 |
 | test-subdir-routing.sh | subdir auto-routing | 10 |
+| test-session-naming.sh | session naming + allocation | 19 |
 
-**~351 assertions across 17 files.** bwrap tests skipped if user namespaces unavailable.
+**~370 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
+
+## Documentation surfaces
+
+When the user says "update the docs" (or any phrase about documentation), it refers to **all** of these — keep them in sync:
+
+| File | Audience | What it covers |
+|------|----------|----------------|
+| `README.md` | End users | Prose intro, getting started, feature explanations, CLI reference, troubleshooting. Con Air voice. |
+| `CLAUDE.md` | This file | Architecture, internals, design rationale, build/test commands, file map. Technical voice. |
+| `.claude-cage.example` | End users | Annotated project-level config template. Every option commented inline. |
+| `examples/example-user-config` | End users | User-level config template (`~/.config/claude-cage/config`) with includeIf usage. |
+| `examples/example-system-config` | End users | System-level config template (`/etc/claude-cage.conf`) for shared defaults. |
+
+Any new config option, CLI flag, or behavior change touches several of these:
+
+- **New config option** → README option table + `.claude-cage.example` (inline comment) + `examples/example-user-config` and/or `examples/example-system-config` if it makes sense at those levels + CLAUDE.md options table.
+- **New CLI flag** → README CLI section + `src/helpers.sh` `--help` text + bash/zsh completions + CLAUDE.md CLI section.
+- **Architecture change** → CLAUDE.md (primary) + README if user-visible behavior changes.
+
+Before claiming a docs update is complete, scan this table.
 
 ## TODO
 

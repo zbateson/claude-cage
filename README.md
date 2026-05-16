@@ -258,13 +258,14 @@ claude-cage git-merge
 claude-cage git-merge feature-branch
 claude-cage git-merge --all
 
-# Attach to an existing active session
-claude-cage --attach-session                     # Auto-select or prompt
-claude-cage --attach-session 2025-02-06_14-30-22      # Specific session
+# Attach to a session
+claude-cage --attach-session                     # No arg — pick from a list
+claude-cage --attach-session default             # The shared default session
+claude-cage --attach-session session.2           # Alternate 2 for this project
 
 # Clean up cached sessions for this project
 claude-cage clean                                # Interactive selection
-claude-cage clean 2025-02-06_14-30-22                 # Remove specific session
+claude-cage clean session.2                      # Remove a specific alternate (or 'default')
 claude-cage clean --all                          # Remove all sessions
 ```
 
@@ -274,41 +275,53 @@ claude-cage clean --all                          # Remove all sessions
 
 ## Sessions
 
-Every time you fire up claude-cage, it creates a session tagged with a timestamp (e.g., `2025-02-06_14-30-22`). Each session gets its own work directory while sharin' the same intermediary repo.
+claude-cage has **one canonical shared session called `default`**. Every project lands there by default — fire up claude-cage on your frontend, then on your backend, and both get their own work directory inside `default`. Both are mounted in each other's sandbox, so Claude sees the whole picture without you havin' to cram everythin' into one repo.
 
 ### Session Lifecycle
 
-Here's how it decides what to do when you run `claude-cage`:
+When you run `claude-cage`, the decision tree is short:
 
-1. **Join an active session** — If another project's already runnin' in a session, claude-cage joins it (if `isolated = false`). Your project gets its own work directory inside the same session, and both projects are mounted in the sandbox.
-2. **Reuse a clean session** — If there's an inactive session lyin' around with no uncommitted changes, claude-cage takes it over. No sense lettin' it collect dust.
-3. **Prompt on dirty sessions** — If the only available session has uncommitted work, you get asked: pick it up, wipe it clean, or start fresh.
-4. **Create a new session** — If none of the above apply, a fresh session gets spun up.
+1. **`--attach-session <name>` was passed** — resolve the user-facin' name (`default`, `session.N`, or a legacy timestamp) to a cache id and attach.
+2. **No live PID for this project in `default`** — land in `default`. This is the common case.
+3. **This project's already runnin' in `default`** — you need an alternate.
+   - If there's an inactive dirty alternate for this project, you get a prompt: pick it up, or start fresh.
+   - Otherwise, a brand-new alternate gets allocated as `session.N` (where `N` is the next available number).
 
-### Cross-Project Sharing
+That's the whole tree. No active/dirty/clean priority ladder — just default-first with alternates for the rare collision case.
 
-By default, sessions are shared across projects. Fire up claude-cage in project A, then fire it up in project B on the same machine — project B joins project A's session. Both work directories get mounted in B's sandbox, so Claude can see and work on both projects at once.
+### Alternates
 
-This is handy when your projects talk to each other — a frontend and a backend, a library and the app that uses it. Claude gets the full picture without you havin' to cram everythin' into one repo.
+An alternate is a per-project, isolated workspace named `session.2`, `session.3`, etc. It only exists when this project's already runnin' in `default`. Two key properties:
 
-**If you don't want that**, set `isolated = true` in your config. Isolated sessions are fenced off — only the same project with `isolated = true` can reuse or join them. Different projects won't even see 'em.
+- **Slot recyclin'.** `N` is picked by scannin' the cache and takin' the next available number — once every alternate for this project's been torn down, the next allocation starts back at `.2`. No persistent counter, no growin'-forever slot numbers.
+- **Ephemeral by design.** Exit cleanly and the alternate gets torn down entirely — work dir, session log, `.caged` sidecar, the lot. Exit dirty and it stays around for next time. Run `claude-cage` again from a third terminal, and you'll see your dirty alternate waitin' in the prompt.
 
-```lua
-claude_cage {
-    -- Keep this project's session to itself
-    isolated = true,
-}
-```
+### Cross-Project Visibility (Alternates Edition)
+
+Even in an alternate, you still see every other project. Mount layerin' makes it work:
+
+- Default's work tree is mounted first — every project that lives in `default` is visible.
+- Your alternate's work_dir is mounted on top at your project's path — your project sees its own isolated copy while other projects come from `default`.
+
+Default never sees alternate work dirs. Alternates see default + their own override.
+
+If you genuinely need cross-contamination prevention (say, sensitive client work), override `CLAUDE_CAGE_CACHE` per-project to put it in a separate cache tree.
 
 ### Attach & Multi-Terminal
 
-`--attach-session` lets two terminals share the exact same workspace — same work directory, same session:
+`--attach-session` lets two terminals share the exact same workspace. With no argument, it lists every session you can attach to (`default` plus each alternate for this project) and prompts:
 
 ```bash
-# Terminal 1: Start a session
+# Terminal 1: Start a session (lands in default)
 claude-cage
 
-# Terminal 2: Attach to the same session
+# Terminal 2: Attach to default — same work dir as Terminal 1
+claude-cage --attach-session default
+
+# Terminal 3: Attach to a specific alternate
+claude-cage --attach-session session.2
+
+# Terminal 4: No arg — gives you a menu
 claude-cage --attach-session
 ```
 
@@ -552,16 +565,13 @@ claude_cage {
 }
 ```
 
-Or if you want the main project completely fenced off from other claude-cage sessions, add `isolated = true`:
+Or if you want the main project completely fenced off from other claude-cage sessions, point its cache at a dedicated directory via `CLAUDE_CAGE_CACHE`:
 
-```lua
-claude_cage {
-    isolated = true,
-    additionalMounts = {
-        { source = "~/projects/open-source", mode = "ro" }
-    }
-}
+```bash
+CLAUDE_CAGE_CACHE=~/.cache/claude-cage-fenced claude-cage
 ```
+
+Different cache → different `default` session → no cross-project visibility at all. Use this for sensitive client work or anywhere you genuinely need separate worlds.
 
 Now you've got:
 - Full git workflow on your main project
@@ -634,8 +644,10 @@ exclude = {
 ├── scoped/<git-root>/<scope>/.bare/      # Scoped bare repo (subdirectory only)
 ├── logs/<session-id>.log                 # Per-session operational log
 └── sessions/
-    └── <timestamp>/                      # One per session (e.g., 2025-02-06_14-30-22)
-        └── work/<project-path>/          # Claude's working copy
+    ├── default/                          # Canonical shared session (every project joins here)
+    │   └── work/<project-path>/          # Claude's working copy for each project
+    └── <basename>-<6hex>-<N>/            # Per-project alternate (e.g. claude-cage-a3f7b2-2)
+        └── work/<project-path>/
 
 your-project/
 ├── .claude-cage                          # Your config
@@ -643,8 +655,8 @@ your-project/
 │   ├── intermediary → ~/.cache/.../intermediary/<project-path>/
 │   ├── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
 │   └── sessions/
-│       └── <timestamp>/
-│           ├── work → ~/.cache/.../sessions/<timestamp>/work/<project-path>/
+│       └── default/                      # or session.2, session.3, …
+│           ├── work → ~/.cache/.../sessions/default/work/<project-path>/
 │           └── log  → ~/.cache/.../logs/<session-id>.log
 └── .git/hooks/                          # Source hooks always added
     ├── post-commit.d/claude-cage-*      # Syncs your commits to intermediary
@@ -691,10 +703,11 @@ Easiest way. If the session still exists, fire up a new cage attached to it:
 claude-cage --attach-session
 ```
 
-This drops you right into the same work directory Claude was usin'. From there, Claude (or you) can push the commits, and the sync pipeline picks 'em up like nothin' happened. If there's more than one session lyin' around, you'll get a list to pick from. You can also pass the timestamp directly:
+This drops you right into the same work directory Claude was usin'. From there, Claude (or you) can push the commits, and the sync pipeline picks 'em up like nothin' happened. If there's more than one session lyin' around, you'll get a list to pick from. You can also pass the name directly:
 
 ```bash
-claude-cage --attach-session 2025-02-06_14-30-22
+claude-cage --attach-session default
+claude-cage --attach-session session.2
 ```
 
 ### Option 2: Shell Into It Yourself
@@ -702,7 +715,7 @@ claude-cage --attach-session 2025-02-06_14-30-22
 If you'd rather handle things personally, `--test` drops you into a shell inside the sandbox instead of launchin' Claude:
 
 ```bash
-claude-cage --attach-session 2025-02-06_14-30-22 --test
+claude-cage --attach-session session.2 --test
 ```
 
 Now you're standin' in Claude's workspace with full git access. Push what needs pushin', inspect what needs inspectin'.
@@ -716,13 +729,15 @@ Don't want to fire up the cage at all? Fine. The work directory's still on disk 
 If you've got `createCagedDir = true` in your config, the symlinks are right there in your project:
 
 ```
-your-project/.caged/sessions/<timestamp>/work → ~/.cache/.../work/<project-path>/
+your-project/.caged/sessions/default/work       → ~/.cache/.../sessions/default/work/<project-path>/
+your-project/.caged/sessions/session.2/work    → ~/.cache/.../sessions/<project-key>-2/work/<project-path>/
 ```
 
 If not, go straight to the cache:
 
 ```
-~/.cache/claude-cage/sessions/<timestamp>/work/<your-project-path>/
+~/.cache/claude-cage/sessions/default/work/<your-project-path>/
+~/.cache/claude-cage/sessions/<project-key>-2/work/<your-project-path>/
 ```
 
 **Pushing the commits:**
@@ -730,7 +745,7 @@ If not, go straight to the cache:
 The work directory is a regular git repo. Its remote points at the intermediary. So:
 
 ```bash
-cd ~/.cache/claude-cage/sessions/2025-02-06_14-30-22/work/home/you/your-project/
+cd ~/.cache/claude-cage/sessions/default/work/home/you/your-project/
 git log --oneline  # See what's there
 git push origin <branch>
 ```

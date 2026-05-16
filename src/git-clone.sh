@@ -1282,8 +1282,15 @@ cleanup_current_session_workdir() {
 
     local _git_root
     _git_root=$(get_git_root "$source_dir") || true
-    if [ -n "$_git_root" ] && [ -d "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ]; then
-        rm -rf "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
+    if [ -n "$_git_root" ]; then
+        local _display_name
+        _display_name=$(display_session_name "$CLAUDE_CAGE_SESSION")
+        [ -d "$_git_root/.caged/sessions/$_display_name" ] && \
+            rm -rf "$_git_root/.caged/sessions/$_display_name"
+        # Defensive: also remove the cache-id path if a previous run left one
+        [ "$_display_name" != "$CLAUDE_CAGE_SESSION" ] && \
+            [ -d "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION" ] && \
+            rm -rf "$_git_root/.caged/sessions/$CLAUDE_CAGE_SESSION"
     fi
 }
 
@@ -1489,7 +1496,9 @@ clean_session_cache() {
 
     local intermediary_dir
     intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$_clean_scope")
-    local caged_link="$source_dir/.caged/sessions/$session_id"
+    local _clean_display
+    _clean_display=$(display_session_name "$session_id")
+    local caged_link="$source_dir/.caged/sessions/$_clean_display"
 
     # Remove source hooks for this project (only if no other sessions active)
     local git_root
@@ -2650,8 +2659,12 @@ setup_caged_symlinks() {
         ln -s "$sync_log_target" "$sync_log_symlink"
     fi
 
-    # Create session-specific directory with work symlink
-    local session_dir="$caged_dir/sessions/$session_id"
+    # Create session-specific directory with work symlink. The directory name
+    # is the user-facing display label ("default" or "session.N"), not the
+    # on-disk cache id, so .caged/sessions/ stays readable.
+    local display_name
+    display_name=$(display_session_name "$session_id")
+    local session_dir="$caged_dir/sessions/$display_name"
     run mkdir -p "$session_dir"
 
     local work_symlink="$session_dir/work"

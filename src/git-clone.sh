@@ -742,6 +742,243 @@ get_work_branch() {
     git -C "$work_dir" branch --show-current 2>/dev/null
 }
 
+# List inactive dirty alternate sessions for a project. Scans
+# $CACHE/sessions/<project-key>-<N> dirs, skipping the ones with a live PID,
+# and reports the ones whose work tree is dirty (uncommitted or unpushed).
+# Output format (one line per alternate):
+#   <session_id> <branch> <dirty_type> <source_dir> <scope>
+# dirty_type ∈ {uncommitted, unpushed, uncommitted+unpushed}.
+# Arguments: $1 = source_dir
+list_inactive_dirty_alternates() {
+    local source_dir="$1"
+    local sessions_dir="$CLAUDE_CAGE_CACHE/sessions"
+    [ -d "$sessions_dir" ] || return 0
+
+    local key
+    key=$(get_project_key "$source_dir")
+    local our_git_root
+    our_git_root=$(get_git_root "$source_dir" 2>/dev/null) || our_git_root=""
+
+    local d session_id work branch scope
+    # Newest first via sort -r on the numeric suffix
+    for d in $(ls -1d "$sessions_dir/${key}-"* 2>/dev/null | awk -F- '{print $NF" "$0}' | sort -rn | awk '{print $2}'); do
+        [ -d "$d" ] || continue
+        session_id=$(basename "$d")
+        # Skip active alternates
+        session_is_active "$session_id" && continue
+
+        work=$(session_work_dir "$d" "$source_dir" "$our_git_root")
+        [ -d "$work/.git" ] || continue
+
+        branch=$(get_work_branch "$work")
+        scope=""
+        [ -f "$work/.git/claude-cage-scope-path" ] && \
+            scope=$(cat "$work/.git/claude-cage-scope-path")
+
+        local has_uncommitted=false has_unpushed=false dirty_type=""
+        is_work_dirty "$work" && has_uncommitted=true
+        work_has_unpushed "$work" && has_unpushed=true
+        if [ "$has_uncommitted" = true ] && [ "$has_unpushed" = true ]; then
+            dirty_type="uncommitted+unpushed"
+        elif [ "$has_uncommitted" = true ]; then
+            dirty_type="uncommitted"
+        elif [ "$has_unpushed" = true ]; then
+            dirty_type="unpushed"
+        fi
+        [ -n "$dirty_type" ] && echo "$session_id $branch $dirty_type $source_dir $scope"
+    done
+}
+
+# Single entry point for session selection. Replaces the previous find +
+# reuse_or_create_session + dispatch flow with a much smaller decision tree:
+#
+#   1) --attach-session set → resolve user-facing name to cache id, verify
+#      it exists; for the no-arg form, prompt across attachable sessions.
+#   2) "default" has no live PID for this source_dir → land in "default".
+#   3) Otherwise we need an alternate:
+#      - Interactive + at least one inactive dirty alternate for this project
+#        → prompt: pick it up, or start fresh.
+#      - Otherwise → allocate a brand-new alternate slot.
+#
+# Sets CLAUDE_CAGE_SESSION (and, when picking up an existing alternate,
+# crosses to that alternate's source/scope if it differs).
+# Arguments: $1 = source_dir
+select_session() {
+    local source_dir="$1"
+
+    if [ "${cli_attach_session_mode:-false}" = true ]; then
+        _select_attach_session "$source_dir"
+        return
+    fi
+
+    if ! session_is_active_for_source "default" "$source_dir"; then
+        CLAUDE_CAGE_SESSION="default"
+        return
+    fi
+
+    local _alternates
+    _alternates=$(list_inactive_dirty_alternates "$source_dir")
+    if [ -n "$_alternates" ] && [ -t 0 ] && [ -t 1 ]; then
+        _select_alternate_prompt "$source_dir" "$_alternates"
+        return
+    fi
+
+    CLAUDE_CAGE_SESSION=$(allocate_alternate_session "$source_dir")
+    echo "Settin' up $(display_session_name "$CLAUDE_CAGE_SESSION") (this project's already runnin' in default)."
+}
+
+# Helper for select_session: handle --attach-session in both forms (specific
+# user-facing name, or no-arg → prompt over attachable sessions).
+# Arguments: $1 = source_dir
+_select_attach_session() {
+    local source_dir="$1"
+
+    if [ -n "${cli_attach_session:-}" ]; then
+        # Specific name. Accept "default", "session.N", or a legacy cache id
+        # (timestamp form) for users mid-migration.
+        local cache_id
+        if cache_id=$(resolve_session_name "$cli_attach_session" "$source_dir" 2>/dev/null); then
+            :
+        else
+            cache_id="$cli_attach_session"
+        fi
+        if [ "$cache_id" = "default" ]; then
+            CLAUDE_CAGE_SESSION="default"
+            echo "Attachin' to the default session."
+            return
+        fi
+        if [ ! -d "$CLAUDE_CAGE_CACHE/sessions/$cache_id" ]; then
+            echo "No session named '$cli_attach_session'." >&2
+            exit 1
+        fi
+        CLAUDE_CAGE_SESSION="$cache_id"
+        echo "Attachin' to $(display_session_name "$cache_id")."
+        return
+    fi
+
+    # No-arg --attach-session: build the list of attachable sessions
+    # (default + each on-disk alternate for this project). Prompt if many.
+    local key
+    key=$(get_project_key "$source_dir")
+    local -a candidates=()
+    [ -d "$CLAUDE_CAGE_CACHE/sessions/default" ] && candidates+=("default")
+    local d
+    for d in $(ls -1d "$CLAUDE_CAGE_CACHE/sessions/${key}-"* 2>/dev/null | awk -F- '{print $NF" "$0}' | sort -n | awk '{print $2}'); do
+        [ -d "$d" ] || continue
+        candidates+=("$(basename "$d")")
+    done
+
+    if [ ${#candidates[@]} -eq 0 ]; then
+        echo "No sessions to attach to." >&2
+        exit 1
+    fi
+
+    if [ ${#candidates[@]} -eq 1 ]; then
+        CLAUDE_CAGE_SESSION="${candidates[0]}"
+        echo "Attachin' to $(display_session_name "$CLAUDE_CAGE_SESSION")."
+        return
+    fi
+
+    echo "Multiple sessions available:"
+    echo ""
+    local i=1
+    for cid in "${candidates[@]}"; do
+        local marker=""
+        session_is_active "$cid" && marker=" (active)"
+        echo "  $i) $(display_session_name "$cid")${marker}"
+        i=$((i + 1))
+    done
+    echo ""
+    while true; do
+        printf "Which session do you wanna attach to? "
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#candidates[@]} ]; then
+            CLAUDE_CAGE_SESSION="${candidates[$((choice - 1))]}"
+            return
+        fi
+        echo "Pick a number."
+    done
+}
+
+# Helper for select_session: prompt the user over inactive dirty alternates
+# for this project. Each candidate gets a number; "n" → fresh alternate; "q" → quit.
+# Picking an alternate may switch source_dir/scope to that alternate's, so
+# we update the relevant globals (cfg_source, scope_path, intermediary_dir).
+# Arguments: $1 = source_dir, $2 = newline-separated alternate list
+_select_alternate_prompt() {
+    local source_dir="$1"
+    local alternates="$2"
+
+    local count
+    count=$(echo "$alternates" | wc -l)
+
+    echo "This project's already runnin' in 'default'. Found $count inactive cage(s) with dirty work:"
+    echo ""
+    local -a alt_entries=()
+    local -a alt_ids=()
+    local idx=1
+    local sid branch dtype dsource dscope dirty_label scope_label
+    while IFS=' ' read -r sid branch dtype dsource dscope; do
+        alt_entries+=("$sid $branch $dtype $dsource $dscope")
+        alt_ids+=("$sid")
+        dirty_label="uncommitted changes"
+        case "$dtype" in
+            unpushed) dirty_label="unpushed commits" ;;
+            uncommitted+unpushed) dirty_label="uncommitted changes + unpushed commits" ;;
+        esac
+        scope_label=""
+        [ -n "$dscope" ] && scope_label=" ${_cyan}(scoped: $dscope)${_reset}"
+        printf "  %d) %s  branch: %-20s (%s)%b\n" "$idx" "$(display_session_name "$sid")" "$branch" "$dirty_label" "$scope_label"
+        idx=$((idx + 1))
+    done <<< "$alternates"
+
+    # Surface the latest alternate's git context so the user has something
+    # concrete to evaluate before picking. print_session_context handles
+    # missing pieces gracefully.
+    IFS=' ' read -r _latest_sid _latest_branch _latest_dtype _latest_source _latest_scope <<< "${alt_entries[0]}"
+    local _alt_work
+    _alt_work=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$_latest_sid" "$_latest_source" "$_latest_scope")
+    echo ""
+    echo "Latest alternate ($(display_session_name "$_latest_sid")):"
+    print_session_context "$_latest_source" "$_alt_work" "$_latest_branch"
+    echo ""
+    echo "What do you wanna do?"
+    echo "  Pick a number to pick that alternate up, or:"
+    echo "  n) Start fresh (new alternate)"
+    echo "  q) Quit"
+    echo ""
+
+    while true; do
+        printf "Choice: "
+        read -r choice
+        case "$choice" in
+            n|N)
+                CLAUDE_CAGE_SESSION=$(allocate_alternate_session "$source_dir")
+                echo "Settin' up $(display_session_name "$CLAUDE_CAGE_SESSION")."
+                return
+                ;;
+            q|Q) echo "Catch you later."; exit 0 ;;
+            *)
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#alt_ids[@]} ]; then
+                    local _sel_sid _sel_branch _sel_dtype _sel_source _sel_scope
+                    read -r _sel_sid _sel_branch _sel_dtype _sel_source _sel_scope \
+                        <<< "${alt_entries[$((choice - 1))]}"
+                    CLAUDE_CAGE_SESSION="$_sel_sid"
+                    # Cross-scope override: if the dirty alternate lives under a
+                    # different scope than this invocation, follow it.
+                    if [ "$_sel_source" != "$source_dir" ]; then
+                        cfg_source="$_sel_source"
+                        scope_path="${_sel_scope:-}"
+                        intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
+                    fi
+                    return
+                fi
+                echo "Pick a number, n, or q."
+                ;;
+        esac
+    done
+}
+
 # Find a reusable session for a source directory
 # When cfg_isolated=false: scans ALL sessions (cross-project sharing).
 # When cfg_isolated=true: scans only sessions matching our source_dir.

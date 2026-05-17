@@ -696,6 +696,14 @@ else
        [ "$cli_attach_session_mode" != true ] && \
        ! is_work_dirty "$work_dir"; then
         copy_carry_files "to_work" "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_carry"
+        # Heads-up if the project has no .caged/ dir to deposit carry-back
+        # into on exit — without it, any edits made to carry files inside the
+        # cage have nowhere to land and will be lost when the cage tears down.
+        if [ "$cfg_createCagedDir" != "true" ]; then
+            echo ""
+            echo "Heads up: createCagedDir is off, so any edits to carry files won't get saved on exit."
+            echo "  Set createCagedDir = true to drop them into .caged/carry/<session>/ when this cage closes."
+        fi
     fi
 
     # Set up .caged/ symlinks if enabled
@@ -755,9 +763,12 @@ cleanup_on_exit() {
     [ "${sandbox_launched:-false}" = false ] && exit $exit_code
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
-        # Copy carry files back to source before cleanup
+        # Carry edits made inside the cage out to .caged/carry/<session>/.
+        # Never overwrites source — sessions can collide and there's no
+        # right answer for whose write wins. The user can decide what (if
+        # anything) to integrate from .caged/.
         if [ ${#cfg_carry_entries[@]} -gt 0 ] && [ -d "$work_dir" ]; then
-            copy_carry_files "to_source" "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_carry"
+            copy_carry_files "from_cage" "$cfg_source" "$work_dir" "${scope_path:-}" "$cfg_carry"
         fi
         # Always unregister our session
         unregister_session "$cfg_source"

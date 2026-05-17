@@ -158,8 +158,12 @@ claude_cage {
         "*.key",
     },
 
-    -- Gitignored files to carry in/out of the cage (copied at startup/exit)
-    -- Git-tracked files are skipped automatically — set it globally and it just works
+    -- Gitignored files to carry into the cage at startup. On exit, anything
+    -- the cage actually edited gets deposited into .caged/carry/<session>/
+    -- (NOT back onto source — sessions can collide and there's no right
+    -- answer for whose write wins). Source is never overwritten.
+    -- Set createCagedDir = true if you want edits saved; otherwise you'll
+    -- see a heads-up at startup.
     carry = { "CLAUDE.md", ".cursorrules" },
 
     -- Sandbox mode: "bwrap" or "docker"
@@ -699,10 +703,13 @@ your-project/
 ├── .caged/                              # Optional symlinks (createCagedDir=true)
 │   ├── intermediary → ~/.cache/.../intermediary/<project-path>/
 │   ├── sync.log     → ~/.cache/.../intermediary/<project-path>/sync.log
-│   └── sessions/
-│       └── default/                      # or session.2, session.3, …
-│           ├── work → ~/.cache/.../sessions/default/work/<project-path>/
-│           └── log  → ~/.cache/.../logs/<session-id>.log
+│   ├── sessions/
+│   │   └── default/                      # or session.2, session.3, …
+│   │       ├── work → ~/.cache/.../sessions/default/work/<project-path>/
+│   │       └── log  → ~/.cache/.../logs/<session-id>.log
+│   └── carry/                            # Carry-file edits the cage made, per session.
+│       └── default/                      # Created on exit when the cage touched a carry file.
+│           └── CLAUDE.md                  # Real file (not symlink), so it survives session teardown.
 └── .git/hooks/                          # Source hooks always added
     ├── post-commit.d/claude-cage-*      # Syncs your commits to intermediary
     └── post-merge.d/claude-cage-*       # Syncs merge commits to intermediary

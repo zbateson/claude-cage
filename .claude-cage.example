@@ -39,15 +39,25 @@ claude_cage {
     },
 
     -- =========================================================================
-    -- CARRY FILES (copied outside git at startup/exit)
+    -- CARRY FILES (copied source→work at startup, deposited to .caged on exit)
     -- =========================================================================
-    -- Files listed here are copied source→work at startup and work→source
-    -- at exit, completely outside git. Useful for gitignored files like
-    -- CLAUDE.md that should persist between cage sessions.
+    -- Files listed here are copied source→work at startup, outside git, so
+    -- gitignored files like CLAUDE.md or .cursorrules end up in the cage.
     --
-    -- Git-tracked files are skipped automatically (git handles those).
-    -- This means you can set carry globally and it just works: repos that
-    -- commit the file use git, repos that gitignore it use carry.
+    -- On exit the cage hashes each carry file against a startup snapshot:
+    --   - Unchanged in the cage  → silently skipped (announced so you know).
+    --   - Changed in the cage    → deposited at
+    --     <git-root>/.caged/carry/<session>/<src-path>, never back onto
+    --     source. Multiple sessions writing to source would collide; the
+    --     deposit is the unambiguous user-visible record.
+    --
+    -- Requires createCagedDir = true for deposits to land somewhere. Without
+    -- it, you'll get a heads-up at startup and a warning on exit naming the
+    -- carry files whose edits couldn't be saved.
+    --
+    -- Git-tracked files are skipped automatically (git handles those), so
+    -- you can set carry globally: repos that commit the file use git, repos
+    -- that gitignore it use carry.
 
     -- carry = { "CLAUDE.md", ".cursorrules", ".claude/settings.json" },
 

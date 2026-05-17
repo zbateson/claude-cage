@@ -208,13 +208,58 @@ work_matches_source_dirty() {
     return 0
 }
 
+# Path to the per-work-dir snapshot manifest used by copy_carry_files for the
+# divergence check on to_source. One line per carry entry: <sha>\t<src_path>.
+# Lives inside .git so it gets removed when the work dir is torn down.
+# Arguments: $1 = work_dir
+_carry_manifest_path() {
+    echo "$1/.git/claude-cage-carry-hashes"
+}
+
+# sha256 of a regular file's contents. Returns empty (and non-zero) for
+# missing files, directories, or symlinks — those are out of scope for the
+# divergence check (dirs keep the existing merge behaviour).
+# Arguments: $1 = path
+_carry_hash_file() {
+    local p="$1"
+    [ -f "$p" ] && [ ! -L "$p" ] || return 1
+    sha256sum < "$p" 2>/dev/null | awk '{print $1}'
+}
+
+# Look up the startup snapshot hash for src_path from the manifest.
+# Echoes empty when the manifest is missing or the path isn't in it.
+# Arguments: $1 = manifest_path, $2 = src_path
+_carry_lookup_snapshot() {
+    local manifest="$1" key="$2"
+    [ -f "$manifest" ] || return 0
+    awk -v key="$key" -F'\t' '$2 == key { print $1; exit }' "$manifest"
+}
+
 # Copy carry files between source and work dir (outside git).
 # Carry files are gitignored files that should persist across sessions
 # (e.g., CLAUDE.md). Git-tracked files are skipped — git handles those.
 # Entries with explicit dest (source != dest) bypass scope filtering and
 # git-tracked checks, since the user explicitly mapped the path.
+#
+# Direction "to_work" (startup):
+#   Copy source → work, then snapshot the cage's initial hash for each file
+#   into <work>/.git/claude-cage-carry-hashes so the exit pass can tell what
+#   the cage actually edited.
+#
+# Direction "from_cage" (exit):
+#   Never touches source. For each carry entry:
+#     - Hash matches snapshot → file wasn't touched in the cage. Announce
+#       the skip so the user isn't left wondering.
+#     - Hash differs (or snapshot missing) → cage edited it. If the project
+#       has a .caged/ dir, deposit the cage's version at
+#       .caged/carry/<display-session>/<src_path>. If .caged/ isn't there
+#       (createCagedDir is off), say so out loud — those edits are lost.
+#   Directories skip the hash check (carry dirs can mix tracked/untracked
+#   entries with no reliable file-level hash) and always deposit when a
+#   .caged dir exists.
+#
 # Arguments:
-#   $1 - direction: "to_work" or "to_source"
+#   $1 - direction: "to_work" or "from_cage"
 #   $2 - source_dir: The source project directory
 #   $3 - work_dir: The cage work directory
 #   $4 - scope_path: Scope path (empty for unscoped)
@@ -228,8 +273,30 @@ copy_carry_files() {
 
     [ -z "$carry_str" ] && return 0
 
-    local -a entries carried_names=()
+    local -a entries carried_names=() unchanged_names=() lost_names=()
     IFS='^' read -ra entries <<< "$carry_str"
+
+    local manifest
+    manifest=$(_carry_manifest_path "$work_dir")
+    if [ "$direction" = "to_work" ]; then
+        # Fresh manifest for this snapshot. Parent .git always exists at this
+        # point (work dir created by clone before carry runs).
+        : > "$manifest" 2>/dev/null || manifest=""
+    fi
+
+    # Compute the .caged deposit base for exit-time carries. Per-display-name
+    # subdir keeps multiple sessions from clobbering each other and keeps
+    # deposits OUT of .caged/sessions/<display>/ so they aren't torn down
+    # when an alternate's session sidecar is removed on clean exit.
+    local caged_carry_base="" display_label=""
+    if [ "$direction" = "from_cage" ]; then
+        local git_root
+        git_root=$(get_git_root "$source_dir" 2>/dev/null) || git_root=""
+        if [ -n "$git_root" ] && [ -d "$git_root/.caged" ]; then
+            display_label=$(display_session_name "${CLAUDE_CAGE_SESSION:-default}")
+            caged_carry_base="$git_root/.caged/carry/$display_label"
+        fi
+    fi
 
     for entry in "${entries[@]}"; do
         [ -z "$entry" ] && continue
@@ -258,47 +325,95 @@ copy_carry_files() {
             fi
         fi
 
-        local from_path to_path
-        if [ "$direction" = "to_work" ]; then
-            from_path="$source_dir/$src_path"
-            to_path="$work_dir/$dest_path"
-        else
-            from_path="$work_dir/$dest_path"
-            to_path="$source_dir/$src_path"
-        fi
+        local cage_path="$work_dir/$dest_path"
+        local source_path="$source_dir/$src_path"
 
-        if [ -e "$from_path" ]; then
-            if [ -d "$from_path" ]; then
-                # Use /. to merge contents, not nest inside existing dir
-                mkdir -p "$to_path"
-                # Ensure existing dest files are writable (handles r--r--r-- files)
-                [ -d "$to_path" ] && chmod -R u+w "$to_path" 2>/dev/null || true
-                cp -a "$from_path/." "$to_path/"
+        if [ "$direction" = "to_work" ]; then
+            [ -e "$source_path" ] || continue
+
+            if [ -d "$source_path" ]; then
+                mkdir -p "$cage_path"
+                [ -d "$cage_path" ] && chmod -R u+w "$cage_path" 2>/dev/null || true
+                cp -a "$source_path/." "$cage_path/"
             else
-                mkdir -p "$(dirname "$to_path")"
-                [ -f "$to_path" ] && chmod u+w "$to_path" 2>/dev/null || true
-                cp -a "$from_path" "$to_path"
-            fi
-            if [ "$has_explicit_dest" = true ]; then
-                if [ "$direction" = "to_work" ]; then
-                    carried_names+=("$src_path -> $dest_path")
-                else
-                    carried_names+=("$dest_path -> $src_path")
+                mkdir -p "$(dirname "$cage_path")"
+                [ -f "$cage_path" ] && chmod u+w "$cage_path" 2>/dev/null || true
+                cp -a "$source_path" "$cage_path"
+                if [ -n "$manifest" ]; then
+                    local _h
+                    _h=$(_carry_hash_file "$source_path") || _h=""
+                    [ -n "$_h" ] && printf '%s\t%s\n' "$_h" "$src_path" >> "$manifest"
                 fi
+            fi
+
+            if [ "$has_explicit_dest" = true ]; then
+                carried_names+=("$src_path -> $dest_path")
             else
                 carried_names+=("$src_path")
             fi
+            continue
         fi
+
+        # direction = from_cage
+        [ -e "$cage_path" ] || continue
+
+        # Files: skip when hash matches snapshot (cage didn't touch it).
+        # Dirs: always deposit (no per-file hash check for them).
+        if [ -f "$cage_path" ] && [ ! -L "$cage_path" ]; then
+            local snap current
+            snap=$(_carry_lookup_snapshot "$manifest" "$src_path")
+            current=$(_carry_hash_file "$cage_path") || current=""
+            if [ -n "$snap" ] && [ -n "$current" ] && [ "$snap" = "$current" ]; then
+                unchanged_names+=("$src_path")
+                continue
+            fi
+        fi
+
+        # Cage modified the file/dir (or no snapshot to compare against).
+        if [ -z "$caged_carry_base" ]; then
+            lost_names+=("$src_path")
+            continue
+        fi
+
+        local deposit_path="$caged_carry_base/$src_path"
+        mkdir -p "$(dirname "$deposit_path")"
+        if [ -d "$cage_path" ]; then
+            mkdir -p "$deposit_path"
+            [ -d "$deposit_path" ] && chmod -R u+w "$deposit_path" 2>/dev/null || true
+            cp -a "$cage_path/." "$deposit_path/"
+        else
+            [ -f "$deposit_path" ] && chmod u+w "$deposit_path" 2>/dev/null || true
+            cp -a "$cage_path" "$deposit_path"
+        fi
+        carried_names+=("$src_path → .caged/carry/$display_label/$src_path")
     done
 
-    if [ ${#carried_names[@]} -gt 0 ]; then
+    if [ "$direction" = "to_work" ] && [ ${#carried_names[@]} -gt 0 ]; then
         local names_str
         names_str=$(IFS=', '; echo "${carried_names[*]}")
-        if [ "$direction" = "to_work" ]; then
-            echo "Carried $names_str into the cage."
-        else
-            echo "Carried $names_str back to source."
-        fi
+        echo "Carried $names_str into the cage."
+        return 0
+    fi
+
+    # from_cage: report each category so the user knows where things ended up.
+    local _n
+    if [ ${#carried_names[@]} -gt 0 ]; then
+        echo "Carried out of the cage:"
+        for _n in "${carried_names[@]}"; do
+            echo "  $_n"
+        done
+    fi
+    if [ ${#unchanged_names[@]} -gt 0 ]; then
+        for _n in "${unchanged_names[@]}"; do
+            echo "Skippin' $_n — wasn't touched in this cage."
+        done
+    fi
+    if [ ${#lost_names[@]} -gt 0 ]; then
+        echo "Cage edited these carry files but .caged/ ain't set up — edits ain't bein' saved:"
+        for _n in "${lost_names[@]}"; do
+            echo "  $_n"
+        done
+        echo "  Set createCagedDir = true if you want 'em preserved."
     fi
 }
 

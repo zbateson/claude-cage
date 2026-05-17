@@ -1568,21 +1568,33 @@ fi
 echo "  PASS: Carry file copied to work dir"
 
 # ============================================================================
-# Test 37: copy_carry_files to_source — basic copy back
+# Test 37: copy_carry_files from_cage — basic carry-out
 # ============================================================================
-echo "Test 37: copy_carry_files to_source should copy file back to source"
+echo "Test 37: copy_carry_files from_cage should deposit cage's version into .caged/carry"
 
-# Modify the file in work
+# Modify the file in work (carry-back from_cage continues from Test 36's setup)
 echo "updated by claude" > "$WORK_DIR/CLAUDE.md"
+mkdir -p "$SOURCE_PATH/.caged"
+source_snapshot=$(cat "$SOURCE_PATH/CLAUDE.md")
 
-copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" >/dev/null
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" >/dev/null
 
-source_content=$(cat "$SOURCE_PATH/CLAUDE.md")
-if [ "$source_content" != "updated by claude" ]; then
-    echo "FAIL: CLAUDE.md should be updated on source, got: '$source_content'"
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+deposit="$SOURCE_PATH/.caged/carry/$label/CLAUDE.md"
+if [ ! -f "$deposit" ]; then
+    echo "FAIL: cage's CLAUDE.md should have been deposited at $deposit"
     exit 1
 fi
-echo "  PASS: Carry file copied back to source"
+if [ "$(cat "$deposit")" != "updated by claude" ]; then
+    echo "FAIL: deposit content wrong: '$(cat "$deposit")'"
+    exit 1
+fi
+if [ "$(cat "$SOURCE_PATH/CLAUDE.md")" != "$source_snapshot" ]; then
+    echo "FAIL: source CLAUDE.md should NOT have been touched"
+    exit 1
+fi
+echo "  PASS: cage's edit deposited into .caged/carry, source untouched"
+rm -rf "$SOURCE_PATH/.caged"
 
 # ============================================================================
 # Test 38: copy_carry_files to_work — file doesn't exist
@@ -1800,56 +1812,71 @@ fi
 echo "  PASS: Read-only files overwritten in work dir"
 
 # ============================================================================
-# Test 46: copy_carry_files — read-only files on source overwritten by to_source
+# Test 46: copy_carry_files — read-only files in prior .caged/carry deposit overwritten
 # ============================================================================
-echo "Test 46: copy_carry_files should overwrite read-only files on source"
+echo "Test 46: copy_carry_files from_cage should overwrite read-only files in .caged/carry"
 
-# Make source files read-only
-chmod 444 "$SOURCE_PATH/.mydir/settings.json"
-chmod 444 "$SOURCE_PATH/.mydir/sub/data.txt"
+mkdir -p "$SOURCE_PATH/.caged"
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+# Pre-seed a prior deposit with read-only files (simulating a previous run's leftover).
+prior_deposit="$SOURCE_PATH/.caged/carry/$label/.mydir"
+mkdir -p "$prior_deposit/sub"
+echo "old settings" > "$prior_deposit/settings.json"
+echo "old nested" > "$prior_deposit/sub/data.txt"
+chmod 444 "$prior_deposit/settings.json" "$prior_deposit/sub/data.txt"
 
-# Update work files
+# Cage edits both
 echo "from cage rw" > "$WORK_DIR/.mydir/settings.json"
 echo "from cage nested" > "$WORK_DIR/.mydir/sub/data.txt"
 
-copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
-source_content=$(cat "$SOURCE_PATH/.mydir/settings.json")
-if [ "$source_content" != "from cage rw" ]; then
-    echo "FAIL: Read-only .mydir/settings.json on source should be overwritten, got: '$source_content'"
+if [ "$(cat "$prior_deposit/settings.json")" != "from cage rw" ]; then
+    echo "FAIL: read-only deposit settings.json should have been overwritten"
     exit 1
 fi
-source_content2=$(cat "$SOURCE_PATH/.mydir/sub/data.txt")
-if [ "$source_content2" != "from cage nested" ]; then
-    echo "FAIL: Read-only .mydir/sub/data.txt on source should be overwritten, got: '$source_content2'"
+if [ "$(cat "$prior_deposit/sub/data.txt")" != "from cage nested" ]; then
+    echo "FAIL: read-only deposit sub/data.txt should have been overwritten"
     exit 1
 fi
-echo "  PASS: Read-only files on source overwritten"
+echo "  PASS: Read-only files in prior deposit overwritten"
+rm -rf "$SOURCE_PATH/.caged"
 
 # ============================================================================
-# Test 47: copy_carry_files — directory to_source (no nesting)
+# Test 47: copy_carry_files — directory from_cage deposits to .caged/carry
 # ============================================================================
-echo "Test 47: copy_carry_files should carry directory back to source"
+echo "Test 47: copy_carry_files should deposit carry directory under .caged/carry"
 
 echo "from cage" > "$WORK_DIR/.mydir/settings.json"
 echo "new file" > "$WORK_DIR/.mydir/extra.txt"
+mkdir -p "$SOURCE_PATH/.caged"
+source_settings_before=""
+[ -f "$SOURCE_PATH/.mydir/settings.json" ] && source_settings_before=$(cat "$SOURCE_PATH/.mydir/settings.json")
 
-copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" ".mydir|.mydir" >/dev/null
 
-source_content=$(cat "$SOURCE_PATH/.mydir/settings.json")
-if [ "$source_content" != "from cage" ]; then
-    echo "FAIL: .mydir/settings.json should be updated on source, got: '$source_content'"
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+deposit_dir="$SOURCE_PATH/.caged/carry/$label/.mydir"
+if [ ! -f "$deposit_dir/settings.json" ]; then
+    echo "FAIL: cage's .mydir/settings.json should be deposited at $deposit_dir/settings.json"
     exit 1
 fi
-if [ ! -f "$SOURCE_PATH/.mydir/extra.txt" ]; then
-    echo "FAIL: .mydir/extra.txt should be carried back to source"
+if [ ! -f "$deposit_dir/extra.txt" ]; then
+    echo "FAIL: cage's .mydir/extra.txt should be deposited"
     exit 1
 fi
-if [ -e "$SOURCE_PATH/.mydir/.mydir" ]; then
-    echo "FAIL: Directory was nested on source (.mydir/.mydir exists)"
+if [ -e "$deposit_dir/.mydir" ]; then
+    echo "FAIL: Directory was nested under deposit (.mydir/.mydir)"
     exit 1
 fi
-echo "  PASS: Directory carried back to source without nesting"
+# Source should be untouched.
+if [ -n "$source_settings_before" ] && \
+   [ "$(cat "$SOURCE_PATH/.mydir/settings.json" 2>/dev/null)" != "$source_settings_before" ]; then
+    echo "FAIL: source .mydir/settings.json should NOT have been touched"
+    exit 1
+fi
+echo "  PASS: Directory deposited under .caged/carry, source untouched"
+rm -rf "$SOURCE_PATH/.caged"
 
 # ============================================================================
 # Test 48: copy_carry_files — directory with some tracked files is not skipped
@@ -1912,21 +1939,35 @@ fi
 echo "  PASS: Mapped carry file copied to different dest path"
 
 # ============================================================================
-# Test 50: copy_carry_files — mapped carry to_source
+# Test 50: copy_carry_files — mapped carry from_cage deposits under .caged
 # ============================================================================
-echo "Test 50: copy_carry_files should carry mapped file back to source path"
+echo "Test 50: copy_carry_files should deposit mapped file under .caged/carry/<session>/<src_path>"
 
-# Modify the file in work at the dest path
+# Modify the file in work at the dest path (Test 49 already set up cage with config/claude.md → CLAUDE.md)
 echo "updated from cage" > "$WORK_DIR/CLAUDE.md"
+mkdir -p "$SOURCE_PATH/.caged"
+source_before=$(cat "$SOURCE_PATH/config/claude.md")
 
-copy_carry_files "to_source" "$SOURCE_PATH" "$WORK_DIR" "" "config/claude.md|CLAUDE.md" >/dev/null
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" "config/claude.md|CLAUDE.md" >/dev/null
 
-source_content=$(cat "$SOURCE_PATH/config/claude.md")
-if [ "$source_content" != "updated from cage" ]; then
-    echo "FAIL: config/claude.md on source should be updated, got: '$source_content'"
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+# Deposit uses the source-side path (config/claude.md), regardless of mapped dest.
+deposit="$SOURCE_PATH/.caged/carry/$label/config/claude.md"
+if [ ! -f "$deposit" ]; then
+    echo "FAIL: mapped carry should deposit at $deposit"
+    ls -R "$SOURCE_PATH/.caged"
     exit 1
 fi
-echo "  PASS: Mapped carry file copied back to source path"
+if [ "$(cat "$deposit")" != "updated from cage" ]; then
+    echo "FAIL: deposit content wrong: '$(cat "$deposit")'"
+    exit 1
+fi
+if [ "$(cat "$SOURCE_PATH/config/claude.md")" != "$source_before" ]; then
+    echo "FAIL: source config/claude.md should NOT have been touched"
+    exit 1
+fi
+echo "  PASS: Mapped carry deposited under .caged/carry (source path preserved as key, source untouched)"
+rm -rf "$SOURCE_PATH/.caged"
 
 # ============================================================================
 # Test 51: copy_carry_files — mapped carry bypasses scope filtering
@@ -1997,6 +2038,71 @@ if [ "$work_content" != "$source_content" ]; then
     exit 1
 fi
 echo "  PASS: Mapped carry copies git-tracked file to different dest"
+
+# Test 53: from_cage skips files the cage didn't touch (snapshot match)
+echo ""
+echo "Test 53: from_cage announces skip when the file wasn't touched in the cage"
+setup_test_cage "source53"
+mkdir -p "$SOURCE_PATH/.caged"
+echo "the only version" > "$SOURCE_PATH/CLAUDE.md"
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" >/dev/null
+
+# Don't touch the cage copy. Exit pass should report a skip and deposit nothing.
+out=$(copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" 2>&1)
+if ! echo "$out" | grep -q "Skippin' CLAUDE.md"; then
+    echo "FAIL: expected 'Skippin' CLAUDE.md' message, got:"
+    echo "$out"
+    exit 1
+fi
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+if [ -e "$SOURCE_PATH/.caged/carry/$label/CLAUDE.md" ]; then
+    echo "FAIL: nothing should have been deposited for an untouched file"
+    exit 1
+fi
+echo "  PASS: untouched file is announced and not deposited"
+
+# Test 54: from_cage with no .caged/ dir lists files as lost
+echo ""
+echo "Test 54: from_cage warns when there's no .caged/ to deposit into"
+setup_test_cage "source54"
+echo "source ver" > "$SOURCE_PATH/CLAUDE.md"
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" >/dev/null
+# Cage edits the file but project has no .caged dir.
+echo "cage edited" > "$WORK_DIR/CLAUDE.md"
+
+out=$(copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" 2>&1)
+if ! echo "$out" | grep -q "ain't bein' saved"; then
+    echo "FAIL: expected 'ain't bein' saved' warning, got:"
+    echo "$out"
+    exit 1
+fi
+if ! echo "$out" | grep -q "CLAUDE.md"; then
+    echo "FAIL: warning should name the lost file"
+    exit 1
+fi
+if [ "$(cat "$SOURCE_PATH/CLAUDE.md")" != "source ver" ]; then
+    echo "FAIL: source should never be touched"
+    exit 1
+fi
+echo "  PASS: lost-edits warning fires when .caged/ absent"
+
+# Test 55: from_cage with no manifest (e.g. attach mode) deposits whatever is in the cage
+echo ""
+echo "Test 55: from_cage with no startup manifest deposits the cage's current content"
+setup_test_cage "source55"
+mkdir -p "$SOURCE_PATH/.caged"
+# Skip the to_work pass — simulates attach mode (work dir was set up earlier).
+echo "from cage" > "$WORK_DIR/CLAUDE.md"
+
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" "CLAUDE.md|CLAUDE.md" >/dev/null
+
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+deposit="$SOURCE_PATH/.caged/carry/$label/CLAUDE.md"
+if [ ! -f "$deposit" ] || [ "$(cat "$deposit")" != "from cage" ]; then
+    echo "FAIL: expected deposit with cage's content at $deposit"
+    exit 1
+fi
+echo "  PASS: missing manifest treats file as changed and deposits"
 
 echo ""
 echo "=== All git-sync tests passed! ==="

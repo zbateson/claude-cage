@@ -193,7 +193,7 @@ claude_cage {
 |--------|---------|-------------|
 | `launch` | `"claude"` | Command to run inside sandbox |
 | `exclude` | `{}` | Patterns to exclude from intermediary |
-| `carry` | `{}` | Files copied source↔work at startup/exit. String or `{ source, as/dest }` table. |
+| `carry` | `{}` | Gitignored files copied source→work at startup. On exit, the cage hashes each carry file against a startup snapshot; unchanged files are silently skipped (announced), changed files get deposited into `.caged/carry/<display-session>/<src_path>` (never back onto source — multiple sessions would collide). If `createCagedDir` is off, edits are lost and a heads-up fires at startup. String or `{ source, as/dest }` table. |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoSync` | `true` | Real-time sync of non-active branches via named pipe |
 | `syncActiveBranch` | `false` | **EXPERIMENTAL** Also sync active branch (stash/apply/pop) |
@@ -203,7 +203,7 @@ claude_cage {
 | `isolated` | `false` | Route this project to its own sealed `<project-key>-isolated` session instead of the shared `default`. The isolated session never mounts default's work tree, and other projects in default never see the isolated one — works in both leak directions (sensitive content in *this* project shouldn't reach others, or sensitive content in *other* projects shouldn't reach this one). Sticky: once an isolated cache exists, the project keeps using it even if the flag is removed, until the cache is cleaned. |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip confirmation prompt before entering sandbox |
-| `createCagedDir` | `false` | Create `.caged/` symlinks to session caches |
+| `createCagedDir` | `false` | Create `.caged/` symlinks to session caches. Also enables carry-back deposits under `.caged/carry/<display-session>/`; without it, edits made to carry files inside the cage have nowhere to land on exit. |
 | `additionalMounts` | `{}` | Extra mounts (`source`, `as`/`dest`, `mode: "ro"/"rw"`) |
 | `networkMode` | `"disabled"` | `"disabled"`, `"allowlist"`, or `"blocklist"` |
 | `allow` / `block` | `{}` | Network destinations (domains, ips, networks with optional ports) |

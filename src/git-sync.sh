@@ -217,13 +217,64 @@ _carry_manifest_path() {
 }
 
 # sha256 of a regular file's contents. Returns empty (and non-zero) for
-# missing files, directories, or symlinks — those are out of scope for the
-# divergence check (dirs keep the existing merge behaviour).
+# missing files, directories, or symlinks — symlinks aren't tracked by the
+# carry snapshot (carry semantics don't promise symlink fidelity).
 # Arguments: $1 = path
 _carry_hash_file() {
     local p="$1"
     [ -f "$p" ] && [ ! -L "$p" ] || return 1
     sha256sum < "$p" 2>/dev/null | awk '{print $1}'
+}
+
+# Emit per-file manifest fragments for a carry directory: one line per
+# regular file beneath it, "<sha>\t<src_path>/<relpath>". Symlinks and
+# special files are skipped. Empty dirs emit nothing. Used at startup so
+# from_cage can tell whether the dir's contents changed.
+# Arguments: $1 = dir (absolute), $2 = src_path (logical key prefix)
+_carry_hash_dir() {
+    local dir="$1" src_path="$2"
+    [ -d "$dir" ] || return 0
+    local f rel h
+    while IFS= read -r -d '' f; do
+        rel="${f#"$dir/"}"
+        h=$(sha256sum < "$f" 2>/dev/null | awk '{print $1}') || continue
+        [ -n "$h" ] && printf '%s\t%s/%s\n' "$h" "$src_path" "$rel"
+    done < <(find "$dir" -type f ! -type l -print0 2>/dev/null)
+}
+
+# Returns 0 when the cage's current contents of $cage_path match the per-file
+# snapshot recorded under $src_path/* in the manifest — meaning the cage
+# didn't touch the carry dir. Returns 1 on any mismatch: a file's hash
+# differs, the cage has a file the manifest doesn't mention, or the
+# manifest expected a file that's gone. Symlinks and special files are
+# ignored on both sides for consistency with _carry_hash_dir.
+# Arguments: $1 = manifest, $2 = cage_path (absolute), $3 = src_path
+_carry_dir_matches_manifest() {
+    local manifest="$1" cage_path="$2" src_path="$3"
+    [ -f "$manifest" ] || return 1
+    [ -d "$cage_path" ] || return 1
+
+    local -A expected=()
+    local h k
+    while IFS=$'\t' read -r h k; do
+        case "$k" in
+            "$src_path"/*) expected["$k"]="$h" ;;
+        esac
+    done < "$manifest"
+
+    local expected_count=${#expected[@]}
+    local seen=0
+    local f rel current
+    while IFS= read -r -d '' f; do
+        rel="${f#"$cage_path/"}"
+        local key="$src_path/$rel"
+        [ -n "${expected[$key]+_}" ] || return 1
+        current=$(sha256sum < "$f" 2>/dev/null | awk '{print $1}') || return 1
+        [ "$current" = "${expected[$key]}" ] || return 1
+        seen=$((seen + 1))
+    done < <(find "$cage_path" -type f ! -type l -print0 2>/dev/null)
+
+    [ "$seen" -eq "$expected_count" ]
 }
 
 # Look up the startup snapshot hash for src_path from the manifest.
@@ -335,6 +386,9 @@ copy_carry_files() {
                 mkdir -p "$cage_path"
                 [ -d "$cage_path" ] && chmod -R u+w "$cage_path" 2>/dev/null || true
                 cp -a "$source_path/." "$cage_path/"
+                # Snapshot per-file hashes so from_cage can tell if anything
+                # inside the dir was touched.
+                [ -n "$manifest" ] && _carry_hash_dir "$cage_path" "$src_path" >> "$manifest"
             else
                 mkdir -p "$(dirname "$cage_path")"
                 [ -f "$cage_path" ] && chmod u+w "$cage_path" 2>/dev/null || true
@@ -357,13 +411,19 @@ copy_carry_files() {
         # direction = from_cage
         [ -e "$cage_path" ] || continue
 
-        # Files: skip when hash matches snapshot (cage didn't touch it).
-        # Dirs: always deposit (no per-file hash check for them).
+        # Skip when nothing inside the cage's copy changed since startup.
+        # Files compare against a single hash; dirs compare against the
+        # per-file fragments _carry_hash_dir wrote.
         if [ -f "$cage_path" ] && [ ! -L "$cage_path" ]; then
             local snap current
             snap=$(_carry_lookup_snapshot "$manifest" "$src_path")
             current=$(_carry_hash_file "$cage_path") || current=""
             if [ -n "$snap" ] && [ -n "$current" ] && [ "$snap" = "$current" ]; then
+                unchanged_names+=("$src_path")
+                continue
+            fi
+        elif [ -d "$cage_path" ]; then
+            if _carry_dir_matches_manifest "$manifest" "$cage_path" "$src_path"; then
                 unchanged_names+=("$src_path")
                 continue
             fi

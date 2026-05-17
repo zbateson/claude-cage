@@ -193,7 +193,7 @@ claude_cage {
 |--------|---------|-------------|
 | `launch` | `"claude"` | Command to run inside sandbox |
 | `exclude` | `{}` | Patterns to exclude from intermediary |
-| `carry` | `{}` | Gitignored files copied source→work at startup. On exit, the cage hashes each carry file against a startup snapshot; unchanged files are silently skipped (announced), changed files get deposited into `.caged/carry/<display-session>/<src_path>` (never back onto source — multiple sessions would collide). If `createCagedDir` is off, edits are lost and a heads-up fires at startup. String or `{ source, as/dest }` table. |
+| `carry` | `{}` | Gitignored files (or dirs) copied source→work at startup. On exit, the cage hashes each entry against a startup snapshot — files compare against a single hash; directories compare per-file across the tree (also detects added/removed files). Unchanged entries are announced as skipped; changed ones get deposited into `.caged/carry/<display-session>/<src_path>` (never back onto source — multiple sessions would collide). If `createCagedDir` is off, edits are lost and a heads-up fires at startup. String or `{ source, as/dest }` table. |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoSync` | `true` | Real-time sync of non-active branches via named pipe |
 | `syncActiveBranch` | `false` | **EXPERIMENTAL** Also sync active branch (stash/apply/pop) |

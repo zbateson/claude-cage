@@ -2104,5 +2104,100 @@ if [ ! -f "$deposit" ] || [ "$(cat "$deposit")" != "from cage" ]; then
 fi
 echo "  PASS: missing manifest treats file as changed and deposits"
 
+# Test 56: dir carry — cage didn't touch contents, skip the deposit
+echo ""
+echo "Test 56: from_cage skips a carry directory the cage didn't touch"
+setup_test_cage "source56"
+mkdir -p "$SOURCE_PATH/.claude" "$SOURCE_PATH/.caged"
+echo "a content" > "$SOURCE_PATH/.claude/a.md"
+echo "b content" > "$SOURCE_PATH/.claude/b.md"
+mkdir -p "$SOURCE_PATH/.claude/sub"
+echo "nested" > "$SOURCE_PATH/.claude/sub/c.md"
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" >/dev/null
+
+# Cage doesn't touch any of the files inside .claude/.
+out=$(copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" 2>&1)
+if ! echo "$out" | grep -q "Skippin' .claude"; then
+    echo "FAIL: untouched dir should produce a Skippin' message, got:"
+    echo "$out"
+    exit 1
+fi
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+if [ -e "$SOURCE_PATH/.caged/carry/$label/.claude" ]; then
+    echo "FAIL: untouched dir should not be deposited"
+    exit 1
+fi
+echo "  PASS: unchanged dir announced as skip, no deposit"
+
+# Test 57: dir carry — file inside got edited → deposit fires
+echo ""
+echo "Test 57: from_cage deposits a carry directory whose file content changed"
+setup_test_cage "source57"
+mkdir -p "$SOURCE_PATH/.claude" "$SOURCE_PATH/.caged"
+echo "a content" > "$SOURCE_PATH/.claude/a.md"
+echo "b content" > "$SOURCE_PATH/.claude/b.md"
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" >/dev/null
+
+# Cage edits one file inside.
+echo "edited in cage" > "$WORK_DIR/.claude/a.md"
+
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" >/dev/null
+
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+deposit="$SOURCE_PATH/.caged/carry/$label/.claude"
+if [ ! -f "$deposit/a.md" ] || [ "$(cat "$deposit/a.md")" != "edited in cage" ]; then
+    echo "FAIL: edited file not deposited (expected at $deposit/a.md)"
+    ls -R "$SOURCE_PATH/.caged" 2>/dev/null
+    exit 1
+fi
+# The unchanged b.md gets carried along since the whole dir is deposited.
+if [ ! -f "$deposit/b.md" ]; then
+    echo "FAIL: full dir should be deposited once any file inside changed"
+    exit 1
+fi
+echo "  PASS: edited file inside dir triggers deposit"
+
+# Test 58: dir carry — file added in cage → deposit fires
+echo ""
+echo "Test 58: from_cage deposits when a new file appears in a carry dir"
+setup_test_cage "source58"
+mkdir -p "$SOURCE_PATH/.claude" "$SOURCE_PATH/.caged"
+echo "a content" > "$SOURCE_PATH/.claude/a.md"
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" >/dev/null
+
+# Cage adds a brand-new file inside (no edits to existing ones).
+echo "new in cage" > "$WORK_DIR/.claude/new.md"
+
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" >/dev/null
+
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+deposit="$SOURCE_PATH/.caged/carry/$label/.claude"
+[ -f "$deposit/new.md" ] || { echo "FAIL: new file not deposited"; exit 1; }
+echo "  PASS: new file in dir triggers deposit"
+
+# Test 59: dir carry — file removed in cage → deposit fires
+echo ""
+echo "Test 59: from_cage deposits when a file vanishes from a carry dir"
+setup_test_cage "source59"
+mkdir -p "$SOURCE_PATH/.claude" "$SOURCE_PATH/.caged"
+echo "a content" > "$SOURCE_PATH/.claude/a.md"
+echo "b content" > "$SOURCE_PATH/.claude/b.md"
+
+copy_carry_files "to_work" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" >/dev/null
+
+# Cage removes a file (mimics rm inside the cage).
+rm "$WORK_DIR/.claude/b.md"
+
+copy_carry_files "from_cage" "$SOURCE_PATH" "$WORK_DIR" "" ".claude|.claude" >/dev/null
+
+label=$(display_session_name "$CLAUDE_CAGE_SESSION")
+deposit="$SOURCE_PATH/.caged/carry/$label/.claude"
+[ -f "$deposit/a.md" ] || { echo "FAIL: surviving file not deposited"; exit 1; }
+[ -e "$deposit/b.md" ] && { echo "FAIL: deleted file should not show up in deposit"; exit 1; }
+echo "  PASS: file removed from dir triggers deposit"
+
 echo ""
 echo "=== All git-sync tests passed! ==="

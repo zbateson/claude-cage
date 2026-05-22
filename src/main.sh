@@ -650,6 +650,24 @@ else
                 # Branches were updated - refresh work dir's remote-tracking refs
                 git -C "$work_dir" fetch "$intermediary_dir" '+refs/heads/*:refs/remotes/origin/*' --quiet 2>/dev/null || true
             fi
+            # Reused work dirs keep whatever branch they last had checked out.
+            # When the user has switched source to a different branch since
+            # last time, realign the cage so it opens where they expect.
+            # Skip when sharing a live cage with another session/attach — we'd
+            # be yanking HEAD out from under them.
+            if [ "$other_session_active" = false ] && [ "$cli_attach_session_mode" != true ]; then
+                src_branch=$(get_source_branch "$cfg_source")
+                work_branch=$(git -C "$work_dir" branch --show-current 2>/dev/null)
+                if [ -n "$src_branch" ] && [ -n "$work_branch" ] && [ "$src_branch" != "$work_branch" ]; then
+                    if is_work_dirty "$work_dir"; then
+                        echo "Source is on '$src_branch' but the cage is on '$work_branch' with uncommitted changes — leavin' it be."
+                    elif git -C "$work_dir" rev-parse --verify "$src_branch" >/dev/null 2>&1 \
+                        || git -C "$work_dir" rev-parse --verify "origin/$src_branch" >/dev/null 2>&1; then
+                        echo "Source is on '$src_branch' — switchin' the cage over from '$work_branch'."
+                        run_quiet git -C "$work_dir" checkout --quiet "$src_branch"
+                    fi
+                fi
+            fi
             ;;
         "needs_work_dir")
             if [ "$other_session_active" = true ] && [ "$cli_attach_session_mode" = true ]; then

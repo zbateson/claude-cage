@@ -1440,6 +1440,13 @@ if git rev-parse --verify "${COMMIT_HASH}^2" >/dev/null 2>&1; then
     done
 fi
 
+# Ensure marks files exist before fast-export. --import-marks is strict (unlike
+# --import-marks-if-exists) and fatals on a missing path. An empty marks file
+# is a valid "no prior marks" input and fast-export handles it fine. This
+# self-heals intermediaries bootstrapped from an empty source repo, where
+# create_intermediary_clone's fast-export errored out before writing them.
+touch "$SOURCE_MARKS" "$IMPORT_MARKS"
+
 # Export to temp file first so we can detect excluded-only commits before fast-import.
 # git fast-export --export-marks only writes commit marks (blobs are ignored per docs).
 # This means incremental exports lose blob marks from source-marks. For excluded-only
@@ -1454,7 +1461,13 @@ EXPORT_RC=$?
 if [ "$EXPORT_RC" -ne 0 ]; then
     _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-export FAILED rc=$EXPORT_RC"
     [ -s "$EXPORT_ERR" ] && _sync_log "$COMMIT_SHORT" ">>intermediary" "export stderr: $(cat "$EXPORT_ERR")"
+    # Surface the actual reason to the user, not just the rc. Hooks print to
+    # the terminal git commit was invoked from; sync.log is for the deeper trail.
+    _ERR_LINE=""
+    [ -s "$EXPORT_ERR" ] && _ERR_LINE=$(head -1 "$EXPORT_ERR")
     echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL (export=$EXPORT_RC)"
+    [ -n "$_ERR_LINE" ] && echo "  $_ERR_LINE"
+    echo "  Details in: $SYNC_LOG"
     rm -f "$EXPORT_ERR" "$EXPORT_OUT"
     exit 1
 fi
@@ -2116,6 +2129,12 @@ create_intermediary_clone() {
                 --export-marks="$import_marks_path" \
                 --quiet <"$export_tmp" 2>/dev/null
             rm -f "$export_tmp"
+
+            # Ensure marks files exist even if fast-export/fast-import wrote
+            # nothing (empty source repos error out before --export-marks gets
+            # a chance to write). Downstream hooks pass these as --import-marks
+            # and will fatal-error if they're absent.
+            touch "$source_marks_path" "$import_marks_path"
 
             # Fix bare HEAD to point to default branch
             git -C "$intermediary_dir" symbolic-ref HEAD "refs/heads/$default_branch"

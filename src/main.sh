@@ -61,6 +61,7 @@ for i in "$@"; do
         --verbose|-v) ;; # handled by helpers.sh
         --debug) ;; # handled by helpers.sh
         git-merge) git_merge_mode=true ;;
+        --force) cli_force=true ;;
         clean) clean_mode=true ;;
         --all) clean_all=true ;;
         --attach-session)
@@ -94,10 +95,14 @@ fi
 # If in git-merge mode, treat passthrough args as branch name
 git_merge_branch=""
 git_merge_all=false
+git_merge_force=false
 if [ "$git_merge_mode" = true ]; then
     if [ "$clean_all" = true ]; then
         git_merge_all=true
         clean_all=false  # don't let it bleed into clean mode
+    fi
+    if [ "${cli_force:-}" = true ]; then
+        git_merge_force=true
     fi
     if [ ${#passthrough_args[@]} -gt 0 ]; then
         git_merge_branch="${passthrough_args[0]}"
@@ -221,7 +226,7 @@ if [ "$git_merge_mode" = true ]; then
         echo "Can't do git-merge in direct mount mode. Nothin' to merge."
         exit 1
     fi
-    manual_git_merge "$cfg_source" "$scope_path" "$git_merge_branch" "$git_merge_all"
+    manual_git_merge "$cfg_source" "$scope_path" "$git_merge_branch" "$git_merge_all" "$git_merge_force"
     exit 0
 fi
 

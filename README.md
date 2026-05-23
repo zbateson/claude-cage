@@ -261,6 +261,7 @@ claude-cage --verbose
 claude-cage git-merge
 claude-cage git-merge feature-branch
 claude-cage git-merge --all
+claude-cage git-merge --force                    # Bypass the divergence guard
 
 # Attach to a session
 claude-cage --attach-session                     # No arg — pick from a list
@@ -406,16 +407,25 @@ claude-cage git-merge feature-branch
 
 # Sync everything at once
 claude-cage git-merge --all
+
+# Source has wandered off the cage's map? Force the merge anyway.
+claude-cage git-merge --force
 ```
 
 **How it works:** `git-merge` walks the intermediary branch, finds what hasn't been synced yet, and applies those commits to your source repo one at a time via `git am --3way`. Same mechanism as auto-sync — just triggered when *you* say so.
 
 **Dirty tree?** If you're mergin' to your current branch and there are uncommitted changes, claude-cage won't touch it. Stash or commit first, then run it again.
 
+**Diverged source?** When source has commits the cage never saw — usually because a sync hook got tripped up by something — claude-cage refuses to silently splice the cage's work on top via 3-way merge, and tells you where the gap is. Three ways out:
+- `claude-cage git-merge --force` — apply the cage's commits via 3-way merge anyway. Same lucky merge the old behavior gave you, but now you opted in.
+- `claude-cage clean --all` — nuke the cages and start fresh from source as it stands. The hammer for when the divergence is too tangled to reconcile.
+- Manually reconcile (pull source commits into the cage by hand, or rebase the cage's work onto source) — the surgical option.
+
 **When to use it:**
 - `autoSync = false` — You want full control over all branches
 - Active branch with `syncActiveBranch = false` (the default) — Auto-sync handles other branches, but your active branch waits for you
 - After reviewin' Claude's work — Check the diff first, merge when you're satisfied
+- Source has diverged — `--force` is the explicit version of what the old behavior did silently
 
 ### Bringin' Dirty Files Into the Cage
 

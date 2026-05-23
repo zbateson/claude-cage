@@ -2277,4 +2277,110 @@ fi
 echo "  PASS: root commit + follow-on commit synced to fresh source"
 
 echo ""
+echo "Test 61: sync_to_source bails on divergence, --force bypasses"
+
+# Reproduce the IsisVue divergence: source advances independently with real
+# (not excluded-only) commits while the cage builds on the old base. The
+# default sync must refuse loudly; the force flag must let it through via
+# the same git am --3way path as before the guard existed.
+setup_test_cage "source61"
+
+# Sync the cage's branch tip back to source so commit_map has an anchor we can
+# diverge from. Empty oldrev makes sync_to_source map the intermediary tip.
+intermediary_anchor=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "0000000000000000000000000000000000000000" >/dev/null 2>&1
+
+# User commits directly on source — never reaches intermediary (hook not wired
+# in this test harness). This is the divergence: source has a real commit
+# the cage doesn't know about, and it isn't an excluded-only `0` mapping.
+echo "user edit" > "$SOURCE_PATH/user-only.txt"
+git -C "$SOURCE_PATH" add user-only.txt
+git -C "$SOURCE_PATH" commit -q -m "User commit on source"
+source_diverged=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+# Cage builds a commit on top of the original intermediary tip.
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" reset -q --hard "origin/$BRANCH_NAME"
+echo "cage edit" > "$WORK_DIR/cage-only.txt"
+git -C "$WORK_DIR" add cage-only.txt
+git -C "$WORK_DIR" commit -q -m "Cage commit"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+
+cage_oldrev="$intermediary_anchor"
+
+# Auto-sync path: should bail without touching source.
+divergence_out=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$cage_oldrev" 2>&1) || true
+if ! echo "$divergence_out" | grep -q "diverged from the cage"; then
+    echo "FAIL: expected divergence message, got: $divergence_out"
+    exit 1
+fi
+src_head_after_guard=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if [ "$src_head_after_guard" != "$source_diverged" ]; then
+    echo "FAIL: source HEAD moved despite divergence guard ($src_head_after_guard != $source_diverged)"
+    exit 1
+fi
+if [ -f "$SOURCE_PATH/cage-only.txt" ]; then
+    echo "FAIL: cage-only.txt landed on source despite divergence guard"
+    exit 1
+fi
+echo "  PASS: divergence detected, source left untouched"
+
+# Force path: cfg_forceMerge=true bypasses the guard and uses --3way.
+cfg_forceMerge="true"
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$cage_oldrev" >/dev/null 2>&1
+cfg_forceMerge=""
+
+if [ ! -f "$SOURCE_PATH/cage-only.txt" ]; then
+    echo "FAIL: --force didn't apply the cage's commit"
+    exit 1
+fi
+if [ ! -f "$SOURCE_PATH/user-only.txt" ]; then
+    echo "FAIL: user's prior commit got dropped during forced merge"
+    exit 1
+fi
+src_head_after_force=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if [ "$src_head_after_force" = "$source_diverged" ]; then
+    echo "FAIL: source HEAD didn't move after --force apply"
+    exit 1
+fi
+echo "  PASS: --force applies the cage's commit via 3-way merge"
+
+echo ""
+echo "Test 62: sync_to_source allows excluded-only gaps without --force"
+
+# When the only commits between expected and actual source HEAD are mapped to
+# 0 in commit_map (excluded-only), it's not real divergence — the cage was
+# told to ignore them. The guard must let this through.
+setup_test_cage "source62"
+
+# Anchor the cage commit on source.
+intermediary_anchor62=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "0000000000000000000000000000000000000000" >/dev/null 2>&1
+
+# Advance source with a commit; map it to 0 to simulate an excluded-only sync.
+echo "excluded file edit" > "$SOURCE_PATH/excluded.txt"
+git -C "$SOURCE_PATH" add excluded.txt
+git -C "$SOURCE_PATH" commit -q -m "Excluded-only commit"
+excluded_src=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+commit_map_path62=$(get_commit_map_path "$INTERMEDIARY_DIR")
+echo "0 $excluded_src" >> "$commit_map_path62"
+
+# Cage builds on top of the original intermediary tip (doesn't see source's
+# excluded-only commit).
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" reset -q --hard "origin/$BRANCH_NAME"
+echo "cage payload" > "$WORK_DIR/cage-payload.txt"
+git -C "$WORK_DIR" add cage-payload.txt
+git -C "$WORK_DIR" commit -q -m "Cage commit over excluded gap"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$intermediary_anchor62" >/dev/null 2>&1
+
+if [ ! -f "$SOURCE_PATH/cage-payload.txt" ]; then
+    echo "FAIL: cage commit didn't land on source despite excluded-only gap being allowed"
+    exit 1
+fi
+echo "  PASS: excluded-only gap doesn't trip the divergence guard"
+
+echo ""
 echo "=== All git-sync tests passed! ==="

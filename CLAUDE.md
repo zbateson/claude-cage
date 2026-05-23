@@ -64,6 +64,8 @@ make clean  # Remove built file
 
 When `autoSync = true` (default): Claude commits + pushes → intermediary's `post-receive` hook writes to named pipe → pipe listener calls `sync_to_source()` → walks `oldrev..newrev`, skips commits already in mapping (loop prevention), applies each via `git format-patch` + `git am --3way` (same branch) or temp-index + `git update-ref` (user switched branches). New branches created on source from mapped parent. If user is on the target branch and `syncActiveBranch` is not `true`: skip (suggest `claude-cage git-merge`). With `syncActiveBranch`: stash/apply/pop cycle around the sync.
 
+**Divergence guard.** Before applying, `sync_to_source` compares source's branch HEAD to `commit_map[oldrev]` (the source commit the cage believes its parent is at). Mismatch means source has moved independently — usually a hook on the source side failed to sync earlier commits. The guard bails with a clear "source ahead by N / behind / unrelated" message instead of silently splicing the cage's commits onto an unexpected base via `--3way`. Exception: if the gap is composed entirely of commits already mapped to `0` (excluded-only), the cage was told to ignore them and proceeds normally. Recovery paths: `claude-cage git-merge --force` (opts in to the `--3way` apply on top of source's actual HEAD) or `claude-cage clean --all` (start over). `--force` sets `cfg_forceMerge=true` which makes `sync_to_source` skip the guard.
+
 ### Inbound (Source → Intermediary)
 
 Source `post-commit` / `post-merge` hooks fire → check commit mapping (skip if already mapped) → call `claude-cage-sync-commit` helper → `git fast-export -1 <hash>` with pathspec excludes to temp file → detect excluded-only commits (no `commit` or no `from` line) → if valid, `git fast-import` on intermediary → update marks + commit mapping. Claude runs `git pull` when ready.
@@ -225,7 +227,7 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 ./claude-cage --test                               # Shell inside sandbox
 ./claude-cage --direct-mount                       # Skip git sync
 ./claude-cage --with-dirty                         # Carry uncommitted source files into the cage
-./claude-cage git-merge [<branch>|--all]            # Sync intermediary commits to source
+./claude-cage git-merge [<branch>|--all] [--force]  # Sync intermediary commits to source (--force bypasses divergence guard)
 ./claude-cage --attach-session [default|session.N] # Attach to a session (no arg = pick)
 ./claude-cage clean [default|session.N|--all]      # Clean cached sessions
 ./claude-cage completion bash|zsh                  # Output completion script

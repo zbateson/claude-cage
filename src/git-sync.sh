@@ -740,14 +740,17 @@ update_marks_after_sync() {
     local source_hash="$1" intermediary_hash="$2"
     local commit_map_path="$3" source_marks_path="$4" import_marks_path="$5"
     echo "$intermediary_hash $source_hash" >> "$commit_map_path"
-    if [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
-        local _max_mark _new_mark
-        _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
-            "$source_marks_path" "$import_marks_path" 2>/dev/null)
-        _new_mark=$((_max_mark + 1))
-        echo ":$_new_mark $source_hash" >> "$source_marks_path"
-        echo ":$_new_mark $intermediary_hash" >> "$import_marks_path"
-    fi
+    # Self-heal: if either marks file is missing (e.g., intermediary was
+    # bootstrapped from an empty source repo so fast-export never wrote them),
+    # create empty ones so subsequent appends and downstream fast-export
+    # --import-marks calls don't fatal.
+    touch "$source_marks_path" "$import_marks_path"
+    local _max_mark _new_mark
+    _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
+        "$source_marks_path" "$import_marks_path" 2>/dev/null)
+    _new_mark=$((_max_mark + 1))
+    echo ":$_new_mark $source_hash" >> "$source_marks_path"
+    echo ":$_new_mark $intermediary_hash" >> "$import_marks_path"
 }
 
 # Apply changes from intermediary to source
@@ -843,6 +846,67 @@ sync_to_source() {
         echo "Run 'claude-cage git-merge' when you're ready to bring changes in."
         sync_log "$log_file" "$newrev_short" ">>source" "skipped: $branch_name is active branch (syncActiveBranch off)"
         return 0
+    fi
+
+    # Divergence guard: if source's branch HEAD doesn't match where the cage
+    # last left it (commit_map[oldrev]), source has moved independently —
+    # either commits a hook failed to sync, or the user rewrote history.
+    # Applying the cage's patches via git am --3way here would silently splice
+    # the cage's commits onto a parent it never built on. Bail loudly instead
+    # and let the user pick a recovery path.
+    #
+    # Exception: source commits already mapped to "0" in commit_map are
+    # excluded-only — the cage was told about them and chose to ignore them.
+    # If the entire gap between expected and actual is excluded-only commits,
+    # there's no real divergence; let the apply proceed.
+    if [ "${cfg_forceMerge:-}" != "true" ] \
+       && [ "$oldrev" != "0000000000000000000000000000000000000000" ] \
+       && [ -n "$oldrev" ]; then
+        local _expected_source=""
+        if [ -f "$commit_map_path" ]; then
+            _expected_source=$(awk -v ih="$oldrev" '$1 == ih { print $2; exit }' "$commit_map_path")
+        fi
+        if [ -n "$_expected_source" ] && [ "$_expected_source" != "0" ]; then
+            local _source_branch_hash=""
+            _source_branch_hash=$(git -C "$source_dir" rev-parse --verify "refs/heads/$branch_name" 2>/dev/null) || true
+            if [ -n "$_source_branch_hash" ] && [ "$_source_branch_hash" != "$_expected_source" ]; then
+                local _gap_desc="moved off the cage's map"
+                local _real_divergence=true
+                if git -C "$source_dir" merge-base --is-ancestor "$_expected_source" "$_source_branch_hash" 2>/dev/null; then
+                    # Source is strictly ahead. Are the intermediate commits all excluded-only?
+                    local _gap_total=0 _gap_excluded=0
+                    local _ic
+                    while IFS= read -r _ic; do
+                        [ -z "$_ic" ] && continue
+                        _gap_total=$((_gap_total + 1))
+                        if grep -q "^0 ${_ic}$" "$commit_map_path" 2>/dev/null; then
+                            _gap_excluded=$((_gap_excluded + 1))
+                        fi
+                    done < <(git -C "$source_dir" rev-list --reverse "${_expected_source}..${_source_branch_hash}" 2>/dev/null)
+                    if [ "$_gap_total" -gt 0 ] && [ "$_gap_excluded" = "$_gap_total" ]; then
+                        _real_divergence=false
+                        sync_log "$log_file" "$newrev_short" ">>source" "source advanced by $_gap_total excluded-only commit(s), ok"
+                    else
+                        _gap_desc="ahead by $_gap_total commit(s) ($_gap_excluded excluded-only)"
+                    fi
+                elif git -C "$source_dir" merge-base --is-ancestor "$_source_branch_hash" "$_expected_source" 2>/dev/null; then
+                    _gap_desc="behind the cage"
+                else
+                    _gap_desc="on unrelated history"
+                fi
+
+                if [ "$_real_divergence" = true ]; then
+                    echo -e "${_red}claude-cage:${_reset} Hold on. Source's $branch_name has diverged from the cage." >&2
+                    echo "  Cage expected:   ${_expected_source:0:8}" >&2
+                    echo "  Source actually: ${_source_branch_hash:0:8} ($_gap_desc)" >&2
+                    echo "  Pick your poison:" >&2
+                    echo "    claude-cage git-merge --force      apply the cage's commits anyway via 3-way merge" >&2
+                    echo "    claude-cage clean --all            start over with the source as it stands" >&2
+                    sync_log "$log_file" "$newrev_short" ">>source" "DIVERGED: source=${_source_branch_hash:0:8} expected=${_expected_source:0:8} ($_gap_desc)"
+                    return 0
+                fi
+            fi
+        fi
     fi
 
     if [ "$current_branch" = "$branch_name" ] && source_is_dirty "$source_dir"; then
@@ -1372,11 +1436,19 @@ _sync_branch_to_source() {
 #   $2 - scope_path: (optional) scope path for scoped intermediaries
 #   $3 - target_branch: (optional) specific branch to merge, empty for current
 #   $4 - all_flag: "true" to sync all branches
+#   $5 - force_flag: "true" to bypass the divergence guard (applies via 3-way merge)
 manual_git_merge() {
     local source_dir="$1"
     local scope_path="${2:-}"
     local target_branch="${3:-}"
     local all_flag="${4:-false}"
+    local force_flag="${5:-false}"
+
+    # Plumb force through to sync_to_source via cfg_forceMerge. main.sh exits
+    # right after manual_git_merge returns, so no need to restore.
+    if [ "$force_flag" = true ]; then
+        cfg_forceMerge="true"
+    fi
 
     local intermediary_dir
     intermediary_dir=$(get_scoped_intermediary_path "$source_dir" "$scope_path")

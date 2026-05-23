@@ -165,6 +165,7 @@ Usage: claude-cage [options] [subcommand] [-- args...]
 Subcommands:
   git-merge [BRANCH]      Sync unmerged intermediary commits to source (default: current branch)
   git-merge --all         Sync all branches with unmerged commits
+  git-merge --force       Apply via 3-way merge even when source has diverged
   clean [ID...]           Remove cached session(s) (interactive if no ID given)
   clean --all             Remove all cached sessions for this project
   completion SHELL        Output shell completion script (bash or zsh)
@@ -177,6 +178,7 @@ Options:
   --with-dirty            Copy uncommitted source files into the cage at startup
   --attach-session [NAME] Attach to a session (default | isolated | session.<N>; no arg = pick)
   --all                   Remove all sessions (with clean subcommand)
+  --force                 Bypass the divergence guard (with git-merge subcommand)
   --dry-run               Show commands without executing
   --verbose, -v           Show commands as they execute
   --debug                 Show command output (implies --verbose)
@@ -219,7 +221,7 @@ _claude_cage() {
     _init_completion 2>/dev/null || return
 
     local subcommands="git-merge clean completion install-completions"
-    local flags="--test --direct-mount --scoped --with-dirty --attach-session --all --dry-run --verbose -v --debug --help -h --version"
+    local flags="--test --direct-mount --scoped --with-dirty --attach-session --all --force --dry-run --verbose -v --debug --help -h --version"
 
     # Check if a subcommand is present in the command line
     local has_clean=false has_git_merge=false
@@ -276,7 +278,7 @@ _claude_cage() {
         if [ -d "$intermediary" ]; then
             branches=$(git -C "$intermediary" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
         fi
-        COMPREPLY=($(compgen -W "$branches --all" -- "$cur"))
+        COMPREPLY=($(compgen -W "$branches --all --force" -- "$cur"))
         return
     fi
 
@@ -342,6 +344,7 @@ _claude_cage() {
         '--with-dirty[Copy uncommitted source files into the cage at startup]'
         '--attach-session[Attach to an active session]:session:_claude_cage_sessions'
         '--all[Remove all sessions (with clean subcommand)]'
+        '--force[Bypass divergence guard (with git-merge subcommand)]'
         '--dry-run[Show commands without executing]'
         '(-v --verbose)'{-v,--verbose}'[Show commands as they execute]'
         '--debug[Show command output (implies --verbose)]'
@@ -380,6 +383,7 @@ _claude_cage_branches() {
             [ -n "$branch" ] && branches+=("$branch")
         done < <(git -C "$intermediary" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
         branches+=('--all:Sync all branches with unmerged commits')
+        branches+=('--force:Apply via 3-way merge even when source has diverged')
         _describe -t branches 'branch' branches
     fi
 }

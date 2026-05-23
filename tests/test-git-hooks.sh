@@ -882,4 +882,75 @@ echo "  PASS: source root commit synced into empty intermediary"
 cleanup_source_hooks "$EMPTY24_SRC"
 
 echo ""
+echo "Test 25: Source post-commit hook self-heals when marks files are missing"
+
+# Reproduce the IsisVue corruption shape: intermediary exists with hooks
+# installed but source-marks/import-marks are gone (e.g., create_intermediary_clone
+# bootstrapped from an empty repo so fast-export errored out without writing
+# them). Source's first real commit used to fatal with "could not open
+# claude-cage-source-marks". The fix is to touch those files before the
+# fast-export call and let an empty-marks input sail through.
+EMPTY25_SRC="$TEST_TMP/source25"
+rm -rf "$EMPTY25_SRC"
+mkdir -p "$EMPTY25_SRC"
+git -C "$EMPTY25_SRC" init -q
+git -C "$EMPTY25_SRC" config user.email "test@test.com"
+git -C "$EMPTY25_SRC" config user.name "Test"
+
+EMPTY25_INT=$(get_intermediary_path "$EMPTY25_SRC")
+EMPTY25_BRANCH=$(git -C "$EMPTY25_SRC" symbolic-ref --short HEAD)
+
+rm -rf "$EMPTY25_INT"
+mkdir -p "$(dirname "$EMPTY25_INT")"
+git init --bare "$EMPTY25_INT" --quiet
+git -C "$EMPTY25_INT" symbolic-ref HEAD "refs/heads/$EMPTY25_BRANCH"
+install_sync_commit_script "$EMPTY25_INT"
+install_strip_prefix_script "$EMPTY25_INT"
+: > "$(get_exclude_pathspecs_file "$EMPTY25_INT")"
+: > "$(get_scope_path_file "$EMPTY25_INT")"
+: > "$(get_commit_map_path "$EMPTY25_INT")"
+# Deliberately do NOT create marks files — that's the bug shape.
+
+setup_source_post_commit "$EMPTY25_SRC" "" "$EMPTY25_INT"
+
+# Sanity: marks files really are absent before the commit.
+src_marks_path=$(get_source_marks_path "$EMPTY25_INT")
+imp_marks_path=$(get_import_marks_path "$EMPTY25_INT")
+if [ -f "$src_marks_path" ] || [ -f "$imp_marks_path" ]; then
+    echo "FAIL: test precondition broken — marks files should be absent before commit"
+    exit 1
+fi
+
+echo "scaffold" > "$EMPTY25_SRC/README.md"
+git -C "$EMPTY25_SRC" add README.md
+git -C "$EMPTY25_SRC" commit -q -m "Initial commit"
+
+# Hook should have created the marks files and synced the commit.
+if [ ! -f "$src_marks_path" ]; then
+    echo "FAIL: source-marks not created by hook"
+    exit 1
+fi
+if [ ! -f "$imp_marks_path" ]; then
+    echo "FAIL: import-marks not created by hook"
+    exit 1
+fi
+
+int_head=$(git -C "$EMPTY25_INT" rev-parse --verify "$EMPTY25_BRANCH" 2>/dev/null) || int_head=""
+if [ -z "$int_head" ]; then
+    echo "FAIL: intermediary $EMPTY25_BRANCH not created — sync didn't actually run"
+    echo "  sync.log:"
+    cat "$EMPTY25_INT/sync.log" 2>/dev/null
+    exit 1
+fi
+
+src_head=$(git -C "$EMPTY25_SRC" rev-parse HEAD)
+if ! grep -q " ${src_head}$" "$(get_commit_map_path "$EMPTY25_INT")" 2>/dev/null; then
+    echo "FAIL: source commit $src_head not in commit map"
+    exit 1
+fi
+echo "  PASS: missing marks files were created and the commit synced"
+
+cleanup_source_hooks "$EMPTY25_SRC"
+
+echo ""
 echo "=== All git-hooks tests passed! ==="

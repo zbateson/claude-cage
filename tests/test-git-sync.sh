@@ -2200,4 +2200,81 @@ deposit="$SOURCE_PATH/.caged/carry/$label/.claude"
 echo "  PASS: file removed from dir triggers deposit"
 
 echo ""
+echo "Test 60: sync_to_source brings root commit back to a freshly-initialized source"
+
+# Source: brand-new repo, no commits. Cage scaffolds a project; every cage
+# commit (including the root) must land on source. Production runs this code
+# path without `set -e`; fast-export on an empty repo errors out but
+# create_intermediary_clone keeps going and leaves an empty intermediary.
+# Match that here.
+EMPTY_SRC="$TEST_TMP/source60"
+rm -rf "$EMPTY_SRC"
+mkdir -p "$EMPTY_SRC"
+git -C "$EMPTY_SRC" init -q
+git -C "$EMPTY_SRC" config user.email "test@test.com"
+git -C "$EMPTY_SRC" config user.name "Test"
+
+CLAUDE_CAGE_SESSION="test-session-$$-60"
+export CLAUDE_CAGE_SESSION
+
+EMPTY_INT=$(get_intermediary_path "$EMPTY_SRC")
+EMPTY_WORK=$(get_work_path "$EMPTY_SRC")
+
+set +e
+create_intermediary_clone "$EMPTY_SRC" >/dev/null 2>&1
+set -e
+
+# Empty source → intermediary HEAD points at a branch with no commits.
+# Detect that branch and have the cage push it.
+EMPTY_BRANCH=$(git -C "$EMPTY_SRC" symbolic-ref --short HEAD)
+
+# Cage clones intermediary, makes scaffold commits including the root.
+rm -rf "$EMPTY_WORK"
+git clone -q "$EMPTY_INT" "$EMPTY_WORK"
+git -C "$EMPTY_WORK" config user.email "test@test.com"
+git -C "$EMPTY_WORK" config user.name "Claude"
+git -C "$EMPTY_WORK" checkout -q -b "$EMPTY_BRANCH" 2>/dev/null || git -C "$EMPTY_WORK" checkout -q "$EMPTY_BRANCH"
+echo "scaffold" > "$EMPTY_WORK/README.md"
+git -C "$EMPTY_WORK" add README.md
+git -C "$EMPTY_WORK" commit -q -m "Scaffold project"
+mkdir -p "$EMPTY_WORK/src"
+echo "console.log('hi')" > "$EMPTY_WORK/src/index.js"
+git -C "$EMPTY_WORK" add src/index.js
+git -C "$EMPTY_WORK" commit -q -m "Add entry point"
+
+git -C "$EMPTY_WORK" push -q origin "$EMPTY_BRANCH" 2>/dev/null
+
+# Sync as the post-receive hook would: oldrev=zeros for a new branch.
+sync_to_source "$EMPTY_SRC" "$EMPTY_INT" "refs/heads/$EMPTY_BRANCH" "0000000000000000000000000000000000000000" >/dev/null 2>&1
+
+# Source must now have both commits, the root included, on $EMPTY_BRANCH.
+src_commit_count=$(git -C "$EMPTY_SRC" rev-list --count "$EMPTY_BRANCH" 2>/dev/null || echo 0)
+if [ "$src_commit_count" != "2" ]; then
+    echo "FAIL: source should have 2 commits on $EMPTY_BRANCH after sync, has: $src_commit_count"
+    exit 1
+fi
+src_readme=$(git -C "$EMPTY_SRC" show "$EMPTY_BRANCH:README.md" 2>/dev/null)
+if [ "$src_readme" != "scaffold" ]; then
+    echo "FAIL: source README.md content wrong: '$src_readme'"
+    exit 1
+fi
+src_index=$(git -C "$EMPTY_SRC" show "$EMPTY_BRANCH:src/index.js" 2>/dev/null)
+if [ "$src_index" != "console.log('hi')" ]; then
+    echo "FAIL: source src/index.js content wrong: '$src_index'"
+    exit 1
+fi
+
+# Root commit must have no parent on source.
+src_root=$(git -C "$EMPTY_SRC" rev-list --max-parents=0 "$EMPTY_BRANCH" 2>/dev/null)
+if [ -z "$src_root" ]; then
+    echo "FAIL: no root commit on source $EMPTY_BRANCH after sync"
+    exit 1
+fi
+
+# Working tree should reflect the synced commits (source had no HEAD before).
+[ -f "$EMPTY_SRC/README.md" ] || { echo "FAIL: README.md missing from source working tree"; exit 1; }
+[ -f "$EMPTY_SRC/src/index.js" ] || { echo "FAIL: src/index.js missing from source working tree"; exit 1; }
+echo "  PASS: root commit + follow-on commit synced to fresh source"
+
+echo ""
 echo "=== All git-sync tests passed! ==="

@@ -789,16 +789,29 @@ sync_to_source() {
     # Determine which commits to process
     local commits
     if [ "$oldrev" = "0000000000000000000000000000000000000000" ] || [ -z "$oldrev" ]; then
-        # New branch - find first parent in mapping to determine base
-        local first_parent
-        first_parent=$(git -C "$intermediary_dir" rev-parse "${newrev}^" 2>/dev/null) || true
-        if [ -z "$first_parent" ]; then
-            # Root commit
-            echo "First commit on new branch, nothin' to sync yet"
-            sync_log "$log_file" "$newrev_short" ">>source" "skipped root commit on $branch_name"
-            return 0
+        # New branch - walk first-parents back to the most recent ancestor
+        # that's already on source (either a sync_to_source mapping, or a
+        # commit that was originally fast-imported from source). Sync
+        # everything after that. For a brand-new repo with no such ancestor,
+        # this includes the root commit.
+        local _base=""
+        local _walker="$newrev"
+        while [ -n "$_walker" ]; do
+            if [ -f "$commit_map_path" ] && grep -q "^${_walker} " "$commit_map_path" 2>/dev/null; then
+                _base="$_walker"
+                break
+            fi
+            if [ -f "$import_marks_path" ] && grep -q " ${_walker}$" "$import_marks_path" 2>/dev/null; then
+                _base="$_walker"
+                break
+            fi
+            _walker=$(git -C "$intermediary_dir" rev-parse --verify "${_walker}^" 2>/dev/null) || _walker=""
+        done
+        if [ -n "$_base" ]; then
+            commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "${_base}..${newrev}" 2>/dev/null)
+        else
+            commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "$newrev" 2>/dev/null)
         fi
-        commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "${first_parent}..${newrev}" 2>/dev/null)
     else
         commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "${oldrev}..${newrev}" 2>/dev/null)
     fi
@@ -877,13 +890,11 @@ sync_to_source() {
             last_mapped_source_hash=""
         fi
 
-        # Check if this is the initial import commit (has no meaningful source equivalent)
-        if ! git -C "$intermediary_dir" rev-parse "${commit}^" >/dev/null 2>&1; then
-            sync_log "$log_file" "$commit_short" ">>source" "skipped initial commit"
-            continue
-        fi
-
         echo "  ${commit_short}: ${commit_msg:0:50}"
+
+        # First parent on intermediary (empty = root commit from the cage)
+        local cage_first_parent=""
+        cage_first_parent=$(git -C "$intermediary_dir" rev-parse --verify "${commit}^" 2>/dev/null) || true
 
         # Check if this is a merge commit (has second parent)
         local cage_second_parent=""
@@ -993,13 +1004,83 @@ sync_to_source() {
             continue
         fi
 
+        # Root commit from the cage (no parent on intermediary). Apply with no
+        # parent via commit-tree so a brand-new source repo gets its history.
+        if [ -z "$cage_first_parent" ]; then
+            local source_branch_hash=""
+            source_branch_hash=$(git -C "$source_dir" rev-parse --verify "refs/heads/$branch_name" 2>/dev/null) || true
+
+            if [ -n "$source_branch_hash" ]; then
+                echo "  Cage has a root commit but source already has history on $branch_name."
+                save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
+                sync_log "$log_file" "$commit_short" ">>source" "root commit FAILED: $branch_name has history on source"
+                break
+            fi
+
+            local git_root
+            git_root=$(git -C "$source_dir" rev-parse --show-toplevel)
+            local tmp_index="$git_root/.git/claude-cage-tmp-index"
+
+            local author_name author_email author_date
+            author_name=$(echo "$patch" | grep "^From:" | head -1 | sed 's/^From: //' | sed 's/ <.*//')
+            author_email=$(echo "$patch" | grep "^From:" | head -1 | sed 's/.*<\(.*\)>/\1/')
+            author_date=$(echo "$patch" | grep "^Date:" | head -1 | sed 's/^Date: //')
+
+            local commit_full_msg
+            commit_full_msg=$(git -C "$intermediary_dir" log -1 --format=%B "$commit" 2>/dev/null)
+
+            (
+                export GIT_INDEX_FILE="$tmp_index"
+                cd "$git_root"
+                git read-tree --empty
+
+                local -a apply_args=(--cached)
+                [ -n "$scope_path" ] && apply_args+=(--directory="$scope_path")
+                local apply_output apply_rc
+                apply_output=$(echo "$patch" | git apply "${apply_args[@]}" 2>&1) && apply_rc=0 || apply_rc=$?
+
+                if [ "$apply_rc" -eq 0 ]; then
+                    local tree new_commit
+                    tree=$(git write-tree)
+
+                    export GIT_AUTHOR_NAME="$author_name"
+                    export GIT_AUTHOR_EMAIL="$author_email"
+                    [ -n "$author_date" ] && export GIT_AUTHOR_DATE="$author_date"
+
+                    new_commit=$(git commit-tree "$tree" -m "$commit_full_msg")
+
+                    unset GIT_INDEX_FILE
+                    CLAUDE_CAGE_SYNCING="$_sync_hash" git update-ref "refs/heads/$branch_name" "$new_commit"
+
+                    local _current
+                    _current=$(git branch --show-current 2>/dev/null)
+                    if [ "$_current" = "$branch_name" ]; then
+                        git reset --hard 2>/dev/null
+                    fi
+
+                    update_marks_after_sync "$new_commit" "$commit" "$commit_map_path" "$source_marks_path" "$import_marks_path"
+                    echo "  Got it. First commit's in on $branch_name."
+                    sync_log "$log_file" "$commit_short" ">>source" "root commit ok on $branch_name new=${new_commit:0:8}"
+                else
+                    echo "  Root commit didn't apply clean to $branch_name."
+                    save_failed_patch "$source_dir" "from-intermediary" "$patch" "$branch_name" "$commit_msg" "" "$scope_path"
+                    sync_log "$log_file" "$commit_short" ">>source" "root commit FAILED on $branch_name: $(echo "$apply_output" | tail -1)"
+                    exit 1
+                fi
+            )
+            local _root_rc=$?
+            rm -f "$tmp_index"
+            [ "$_root_rc" -ne 0 ] && break
+            continue
+        fi
+
         # Check if source has this branch
         local source_has_branch=true
         if ! git -C "$source_dir" rev-parse --verify "$branch_name" >/dev/null 2>&1; then
             source_has_branch=false
             # New branch - find parent in mapping
             local parent_hash
-            parent_hash=$(git -C "$intermediary_dir" rev-parse "${commit}^" 2>/dev/null)
+            parent_hash="$cage_first_parent"
             local source_parent=""
             if [ -f "$commit_map_path" ]; then
                 source_parent=$(awk -v ih="$parent_hash" '$1 == ih { print $2; exit }' "$commit_map_path")

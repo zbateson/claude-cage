@@ -1482,36 +1482,43 @@ if ! grep -q '^commit ' "$EXPORT_OUT"; then
     exit 0
 fi
 
-# No from line: either excluded-only (parent in marks, all changes filtered out)
-# or marks gap (parent not in marks, e.g. from sync_to_source/git-am or prior
-# excluded-only commit). Check parent to distinguish.
+# No from line: root commit (no parent expected), excluded-only (parent in
+# marks, all changes filtered out), or marks gap (parent not in marks, e.g.
+# from sync_to_source/git-am or prior excluded-only commit). Check parent to
+# distinguish. --verify is required: bare rev-parse on a missing ref prints
+# the literal arg to stdout and exits non-zero, fooling [ -z "$_PARENT" ].
 if ! grep -q '^from ' "$EXPORT_OUT"; then
-    _PARENT=$(git rev-parse "${COMMIT_HASH}^" 2>/dev/null) || true
-    _PARENT_MARKED=false
-    if [ -n "$_PARENT" ] && [ -f "$SOURCE_MARKS" ] && grep -q " ${_PARENT}$" "$SOURCE_MARKS" 2>/dev/null; then
-        _PARENT_MARKED=true
-    fi
-    if [ "$_PARENT_MARKED" = true ] || [ -z "$_PARENT" ]; then
-        # Parent IS in marks (or root commit) but no from line -> truly excluded-only
-        echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
-        _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
-        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
-        rm -f "$EXPORT_ERR" "$EXPORT_OUT"
-        exit 0
-    fi
-    # Parent NOT in marks — marks gap. Inject intermediary branch HEAD as parent.
-    # The deleteall + full-tree reconstruction produces the correct tree state.
-    _INT_HEAD=$(git -C "$INTERMEDIARY" rev-parse "$current_branch" 2>/dev/null)
-    if [ -n "$_INT_HEAD" ]; then
-        _sync_log "$COMMIT_SHORT" ">>intermediary" "marks gap: injecting parent ${_INT_HEAD:0:8}"
-        awk -v parent="$_INT_HEAD" '/^(merge |deleteall$)/ && !done { print "from " parent; done=1 } { print }' \
-            "$EXPORT_OUT" > "$EXPORT_OUT.fix" && mv "$EXPORT_OUT.fix" "$EXPORT_OUT"
+    _PARENT=$(git rev-parse --verify "${COMMIT_HASH}^" 2>/dev/null) || _PARENT=""
+    if [ -z "$_PARENT" ]; then
+        # Root commit. Fast-export's lack of from line is correct — import as-is.
+        _sync_log "$COMMIT_SHORT" ">>intermediary" "root commit, importing as-is"
     else
-        echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
-        _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only (no intermediary HEAD for $current_branch)"
-        echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
-        rm -f "$EXPORT_ERR" "$EXPORT_OUT"
-        exit 0
+        _PARENT_MARKED=false
+        if [ -f "$SOURCE_MARKS" ] && grep -q " ${_PARENT}$" "$SOURCE_MARKS" 2>/dev/null; then
+            _PARENT_MARKED=true
+        fi
+        if [ "$_PARENT_MARKED" = true ]; then
+            # Parent IS in marks but no from line -> truly excluded-only
+            echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
+            _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+            echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
+            rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+            exit 0
+        fi
+        # Parent NOT in marks — marks gap. Inject intermediary branch HEAD as parent.
+        # The deleteall + full-tree reconstruction produces the correct tree state.
+        _INT_HEAD=$(git -C "$INTERMEDIARY" rev-parse --verify "$current_branch" 2>/dev/null) || _INT_HEAD=""
+        if [ -n "$_INT_HEAD" ]; then
+            _sync_log "$COMMIT_SHORT" ">>intermediary" "marks gap: injecting parent ${_INT_HEAD:0:8}"
+            awk -v parent="$_INT_HEAD" '/^(merge |deleteall$)/ && !done { print "from " parent; done=1 } { print }' \
+                "$EXPORT_OUT" > "$EXPORT_OUT.fix" && mv "$EXPORT_OUT.fix" "$EXPORT_OUT"
+        else
+            echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
+            _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only (no intermediary HEAD for $current_branch)"
+            echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
+            rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+            exit 0
+        fi
     fi
 fi
 

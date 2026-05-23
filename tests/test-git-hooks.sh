@@ -810,4 +810,76 @@ fi
 echo "  PASS: Result is a proper merge commit"
 
 echo ""
+echo "Test 24: Source's first commit on empty intermediary syncs as a root commit"
+
+# Symmetric to git-sync.sh Test 60: cage→source direction had a bug where root
+# commits never came back; here the source→intermediary post-commit helper
+# had the same `git rev-parse "${COMMIT_HASH}^"` (missing --verify) gotcha.
+# A literal "hash^" left the "no from line" branch treating the root commit as
+# a marks gap instead of a legitimate import.
+EMPTY24_SRC="$TEST_TMP/source24"
+rm -rf "$EMPTY24_SRC"
+mkdir -p "$EMPTY24_SRC"
+git -C "$EMPTY24_SRC" init -q
+git -C "$EMPTY24_SRC" config user.email "test@test.com"
+git -C "$EMPTY24_SRC" config user.name "Test"
+
+EMPTY24_INT=$(get_intermediary_path "$EMPTY24_SRC")
+EMPTY24_BRANCH=$(git -C "$EMPTY24_SRC" symbolic-ref --short HEAD)
+
+rm -rf "$EMPTY24_INT"
+mkdir -p "$(dirname "$EMPTY24_INT")"
+git init --bare "$EMPTY24_INT" --quiet
+git -C "$EMPTY24_INT" symbolic-ref HEAD "refs/heads/$EMPTY24_BRANCH"
+
+install_sync_commit_script "$EMPTY24_INT"
+install_strip_prefix_script "$EMPTY24_INT"
+: > "$(get_exclude_pathspecs_file "$EMPTY24_INT")"
+: > "$(get_scope_path_file "$EMPTY24_INT")"
+: > "$(get_source_marks_path "$EMPTY24_INT")"
+: > "$(get_import_marks_path "$EMPTY24_INT")"
+: > "$(get_commit_map_path "$EMPTY24_INT")"
+
+setup_source_post_commit "$EMPTY24_SRC" "" "$EMPTY24_INT"
+
+# User makes their first commit on the previously-empty source.
+echo "scaffold" > "$EMPTY24_SRC/README.md"
+git -C "$EMPTY24_SRC" add README.md
+git -C "$EMPTY24_SRC" commit -q -m "Initial commit"
+
+src_head=$(git -C "$EMPTY24_SRC" rev-parse HEAD)
+
+# Intermediary's branch should now point at a commit with the same tree.
+int_head=$(git -C "$EMPTY24_INT" rev-parse --verify "$EMPTY24_BRANCH" 2>/dev/null) || int_head=""
+if [ -z "$int_head" ]; then
+    echo "FAIL: intermediary $EMPTY24_BRANCH not created by source post-commit hook"
+    echo "  sync.log:"
+    cat "$EMPTY24_INT/sync.log" 2>/dev/null || echo "  (no sync.log)"
+    exit 1
+fi
+
+# Root commit must have no parent on intermediary.
+int_root=$(git -C "$EMPTY24_INT" rev-list --max-parents=0 "$EMPTY24_BRANCH" 2>/dev/null)
+if [ -z "$int_root" ]; then
+    echo "FAIL: intermediary $EMPTY24_BRANCH has no root commit after sync"
+    exit 1
+fi
+
+int_readme=$(git -C "$EMPTY24_INT" show "$EMPTY24_BRANCH:README.md" 2>/dev/null)
+if [ "$int_readme" != "scaffold" ]; then
+    echo "FAIL: intermediary README.md content wrong: '$int_readme'"
+    exit 1
+fi
+
+# Commit map must connect the new intermediary commit to source's commit.
+if ! grep -q " ${src_head}$" "$(get_commit_map_path "$EMPTY24_INT")" 2>/dev/null; then
+    echo "FAIL: source commit $src_head not in commit map after sync"
+    cat "$(get_commit_map_path "$EMPTY24_INT")"
+    exit 1
+fi
+echo "  PASS: source root commit synced into empty intermediary"
+
+cleanup_source_hooks "$EMPTY24_SRC"
+
+echo ""
 echo "=== All git-hooks tests passed! ==="

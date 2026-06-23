@@ -180,7 +180,13 @@ PS1="\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\$ "
 EOF
 exec bash --rcfile /tmp/.cage-bashrc')
     else
-        bwrap_args+=(/bin/bash -l -c "unset -f command_not_found_handle 2>/dev/null; $*")
+        # Non-login shell on purpose: bwrap already injects HOME/USER/SHELL/PATH/
+        # TERM/LANG above, so there's nothing for a login shell to establish. A
+        # login shell would only source /etc/profile.d/* (and ~/.profile), which
+        # on modern systemd spawns helpers that try to connect to the journald
+        # socket /run/systemd/journal/stdout — absent in the cage — printing
+        # "Failed to create stream fd: No such file or directory" to stderr.
+        bwrap_args+=(/bin/bash -c "unset -f command_not_found_handle 2>/dev/null; $*")
     fi
 
     # Run bwrap

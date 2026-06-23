@@ -2383,4 +2383,158 @@ fi
 echo "  PASS: excluded-only gap doesn't trip the divergence guard"
 
 echo ""
+echo "Test 63: sync_to_source auto-recovers when source is strictly behind"
+
+# Scenario: cage synced commit-A to source successfully, then source got
+# reset back (e.g., manual reset, or an earlier sync was missed somewhere).
+# Cage adds commit-B on top of A. The push's oldrev points at A — whose
+# commit_map entry is the now-orphaned source hash — so the divergence
+# guard would flag "behind the cage". With source HEAD mapped in
+# commit_map, the recovery path recomputes oldrev from source's actual
+# HEAD and applies BOTH A and B (not just B as the buggy range produced).
+setup_test_cage "source63"
+
+source_anchor=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+# Cage commit A — sync to source so commit_map[I_A] = S_A.
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" reset -q --hard "origin/$BRANCH_NAME"
+echo "A content" > "$WORK_DIR/a.txt"
+git -C "$WORK_DIR" add a.txt
+git -C "$WORK_DIR" commit -q -m "Cage commit A"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+intermediary_A=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "0000000000000000000000000000000000000000" >/dev/null 2>&1
+source_after_A=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if [ "$source_after_A" = "$source_anchor" ]; then
+    echo "FAIL: source didn't advance after cage commit A sync"
+    exit 1
+fi
+
+# User resets source back to the anchor — orphaning S_A but leaving it in
+# the object store so the FF logic can still reach it via update-ref.
+git -C "$SOURCE_PATH" reset -q --hard "$source_anchor"
+
+# Cage adds commit B on top of A.
+echo "B content" > "$WORK_DIR/b.txt"
+git -C "$WORK_DIR" add b.txt
+git -C "$WORK_DIR" commit -q -m "Cage commit B"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+intermediary_B=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+
+# Auto-sync path: push's oldrev is I_A. With the recovery, the guard
+# detects "behind", looks up source HEAD's mapping (the anchor), and
+# applies both A and B.
+recovery_out=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$intermediary_A" 2>&1)
+if ! echo "$recovery_out" | grep -q "catchin' up"; then
+    echo "FAIL: expected 'catchin' up' message, got: $recovery_out"
+    exit 1
+fi
+if [ ! -f "$SOURCE_PATH/a.txt" ]; then
+    echo "FAIL: commit A's file missing — recovery dropped the missing commit"
+    exit 1
+fi
+if [ ! -f "$SOURCE_PATH/b.txt" ]; then
+    echo "FAIL: commit B's file missing — recovery didn't apply the new commit"
+    exit 1
+fi
+echo "  PASS: auto-sync recovers behind divergence and replays missing commits"
+
+echo ""
+echo "Test 64: claude-cage git-merge (no --force) recovers behind divergence"
+
+# Same shape as test 63, but exercised through _sync_branch_to_source —
+# the path manual_git_merge uses. Before the fix, this called
+# _find_last_mapped_on_branch which returned I_A even though source had
+# drifted off S_A; only I_B got applied. With the fix, it prefers the
+# intermediary commit that maps to source's actual HEAD.
+setup_test_cage "source64"
+
+source_anchor64=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" reset -q --hard "origin/$BRANCH_NAME"
+echo "A content" > "$WORK_DIR/a.txt"
+git -C "$WORK_DIR" add a.txt
+git -C "$WORK_DIR" commit -q -m "Cage commit A (64)"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "0000000000000000000000000000000000000000" >/dev/null 2>&1
+
+# Reset source back to the anchor.
+git -C "$SOURCE_PATH" reset -q --hard "$source_anchor64"
+
+# Cage adds B.
+echo "B content" > "$WORK_DIR/b.txt"
+git -C "$WORK_DIR" add b.txt
+git -C "$WORK_DIR" commit -q -m "Cage commit B (64)"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+
+# Drive git-merge path. cfg_forceMerge stays unset on purpose — recovery
+# must work without --force.
+commit_map_64=$(get_commit_map_path "$INTERMEDIARY_DIR")
+_sync_branch_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "$BRANCH_NAME" "$commit_map_64" >/dev/null 2>&1
+
+if [ ! -f "$SOURCE_PATH/a.txt" ]; then
+    echo "FAIL: git-merge recovery dropped commit A"
+    exit 1
+fi
+if [ ! -f "$SOURCE_PATH/b.txt" ]; then
+    echo "FAIL: git-merge recovery dropped commit B"
+    exit 1
+fi
+echo "  PASS: git-merge picks the source-HEAD-mapped base, replays both commits"
+
+echo ""
+echo "Test 65: behind divergence still flagged when source HEAD is unmapped"
+
+# Recovery is conservative: it only kicks in when source's HEAD has a
+# commit_map entry, because that's the only way we can pick the correct
+# intermediary base. If source HEAD is unmapped (history outside the
+# cage's window, or a manual checkout to an un-synced commit), recovery
+# can't safely guess — the guard must still bail.
+setup_test_cage "source65"
+
+source_anchor65=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+# Cage commit A — sync so commit_map[I_A] = S_A exists.
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" reset -q --hard "origin/$BRANCH_NAME"
+echo "A" > "$WORK_DIR/a.txt"
+git -C "$WORK_DIR" add a.txt
+git -C "$WORK_DIR" commit -q -m "A (65)"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+intermediary_A65=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "0000000000000000000000000000000000000000" >/dev/null 2>&1
+
+# Reset source back to anchor, then strip the anchor's commit_map entry —
+# this simulates source HEAD being on a commit the cage doesn't know about,
+# while still satisfying the "behind" condition (anchor is ancestor of S_A).
+git -C "$SOURCE_PATH" reset -q --hard "$source_anchor65"
+commit_map_65=$(get_commit_map_path "$INTERMEDIARY_DIR")
+grep -v " ${source_anchor65}$" "$commit_map_65" > "$commit_map_65.tmp" && mv "$commit_map_65.tmp" "$commit_map_65"
+
+# Cage adds B on top of A.
+echo "B" > "$WORK_DIR/b.txt"
+git -C "$WORK_DIR" add b.txt
+git -C "$WORK_DIR" commit -q -m "B (65)"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+
+# Auto-sync: behind branch fires, recovery lookup of source HEAD returns
+# nothing, so we fall through to the divergence message.
+guard_out=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$intermediary_A65" 2>&1) || true
+if ! echo "$guard_out" | grep -q "diverged from the cage"; then
+    echo "FAIL: expected divergence message when source HEAD is unmapped, got: $guard_out"
+    exit 1
+fi
+if ! echo "$guard_out" | grep -q "no map for source HEAD"; then
+    echo "FAIL: expected 'no map for source HEAD' detail, got: $guard_out"
+    exit 1
+fi
+if [ -f "$SOURCE_PATH/b.txt" ]; then
+    echo "FAIL: cage commit landed on source despite divergence with unmapped HEAD"
+    exit 1
+fi
+echo "  PASS: behind divergence still flagged when source HEAD has no commit_map entry"
+
+echo ""
 echo "=== All git-sync tests passed! ==="

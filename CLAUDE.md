@@ -64,7 +64,12 @@ make clean  # Remove built file
 
 When `autoSync = true` (default): Claude commits + pushes → intermediary's `post-receive` hook writes to named pipe → pipe listener calls `sync_to_source()` → walks `oldrev..newrev`, skips commits already in mapping (loop prevention), applies each via `git format-patch` + `git am --3way` (same branch) or temp-index + `git update-ref` (user switched branches). New branches created on source from mapped parent. If user is on the target branch and `syncActiveBranch` is not `true`: skip (suggest `claude-cage git-merge`). With `syncActiveBranch`: stash/apply/pop cycle around the sync.
 
-**Divergence guard.** Before applying, `sync_to_source` compares source's branch HEAD to `commit_map[oldrev]` (the source commit the cage believes its parent is at). Mismatch means source has moved independently — usually a hook on the source side failed to sync earlier commits. The guard bails with a clear "source ahead by N / behind / unrelated" message instead of silently splicing the cage's commits onto an unexpected base via `--3way`. Exception: if the gap is composed entirely of commits already mapped to `0` (excluded-only), the cage was told to ignore them and proceeds normally. Recovery paths: `claude-cage git-merge --force` (opts in to the `--3way` apply on top of source's actual HEAD) or `claude-cage clean --all` (start over). `--force` sets `cfg_forceMerge=true` which makes `sync_to_source` skip the guard.
+**Divergence guard.** Before applying, `sync_to_source` compares source's branch HEAD to `commit_map[oldrev]` (the source commit the cage believes its parent is at). Mismatch means source has moved independently — usually a hook on the source side failed to sync earlier commits. The guard bails with a clear "source ahead by N / behind / unrelated" message instead of silently splicing the cage's commits onto an unexpected base via `--3way`. Two exceptions let the sync proceed:
+
+- **Excluded-only gap.** If the gap between expected and actual source HEAD is composed entirely of commits already mapped to `0` in `commit_map` (excluded-only), the cage was told to ignore them — no real divergence.
+- **Strictly-behind auto-recovery.** When source is a strict ancestor of `commit_map[oldrev]` (source missed N commits the cage already synced once), the guard looks up source's actual HEAD via `_find_intermediary_for_source_head` — walks the intermediary branch's first-parent chain for a commit whose `commit_map` entry equals source HEAD. If found, that's the real base: `oldrev` is rewritten to it, the commits range is recomputed, and the sync proceeds with a "Source was behind by N commit(s) — catchin' up." note. If source HEAD has no `commit_map` entry, recovery can't safely guess a base and the guard still bails (`behind the cage (no map for source HEAD ...)`).
+
+Recovery paths when the guard fires: `claude-cage git-merge --force` (opts in to the `--3way` apply on top of source's actual HEAD) or `claude-cage clean --all` (start over). `--force` sets `cfg_forceMerge=true` which makes `sync_to_source` skip the guard. Independently, `_sync_branch_to_source` (the path `claude-cage git-merge` uses, force or not) prefers `_find_intermediary_for_source_head` over `_find_last_mapped_on_branch` when computing its base — without that, a drifted source would silently lose every commit between source's mapped HEAD and the latest-mapped commit on the branch.
 
 ### Inbound (Source → Intermediary)
 
@@ -291,7 +296,7 @@ bash tests/run-all.sh
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
 | test-git-hooks.sh | git-hooks.sh | 29 |
 | test-git-patches.sh | git-patches.sh | 13 |
-| test-git-sync.sh | git-sync.sh | 82 |
+| test-git-sync.sh | git-sync.sh | 86 |
 | test-network.sh | network.sh | 1 |
 | test-bwrap.sh | bwrap.sh | 15 |
 | test-docker.sh | docker.sh | 18 |
@@ -303,7 +308,7 @@ bash tests/run-all.sh
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 | test-session-naming.sh | session naming + allocation | 19 |
 
-**~407 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
+**~411 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

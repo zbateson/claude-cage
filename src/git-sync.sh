@@ -890,7 +890,26 @@ sync_to_source() {
                         _gap_desc="ahead by $_gap_total commit(s) ($_gap_excluded excluded-only)"
                     fi
                 elif git -C "$source_dir" merge-base --is-ancestor "$_source_branch_hash" "$_expected_source" 2>/dev/null; then
-                    _gap_desc="behind the cage"
+                    # Source is strictly behind expected — an earlier sync
+                    # was missed (failed hook, manual reset) and the cage
+                    # is now N commits ahead of where source actually is.
+                    # If source's HEAD has a mapping on this branch, we
+                    # can recover by recomputing oldrev from it: the new
+                    # range covers every commit source needs to catch up,
+                    # not just the ones since the push's stale oldrev.
+                    local _recovered=""
+                    _recovered=$(_find_intermediary_for_source_head "$intermediary_dir" "$refname" "$commit_map_path" "$_source_branch_hash")
+                    if [ -n "$_recovered" ]; then
+                        local _gap_count
+                        _gap_count=$(git -C "$intermediary_dir" rev-list --first-parent --count "${_recovered}..${newrev}" 2>/dev/null)
+                        echo "Source was behind by ${_gap_count} commit(s) — catchin' up."
+                        sync_log "$log_file" "$newrev_short" ">>source" "source behind, recovered oldrev=${_recovered:0:8} (gap=${_gap_count})"
+                        oldrev="$_recovered"
+                        commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "${oldrev}..${newrev}" 2>/dev/null)
+                        _real_divergence=false
+                    else
+                        _gap_desc="behind the cage (no map for source HEAD ${_source_branch_hash:0:8})"
+                    fi
                 else
                     _gap_desc="on unrelated history"
                 fi
@@ -1386,6 +1405,38 @@ _find_last_mapped_on_branch() {
     done
 }
 
+# Find the intermediary commit on a branch's first-parent chain whose
+# commit_map entry equals the given source hash. This is the "real base"
+# when source's branch HEAD has drifted from where commit_map says it
+# should be — e.g., an earlier sync was missed (failed hook) or source
+# was manually reset. Using this as oldrev produces a range that covers
+# every commit source actually needs to catch up.
+# Arguments:
+#   $1 - intermediary_dir
+#   $2 - branch ref or name
+#   $3 - commit_map_path
+#   $4 - source_hash to look up
+# Outputs: intermediary hash, or empty if no match.
+_find_intermediary_for_source_head() {
+    local intermediary_dir="$1"
+    local branch="$2"
+    local commit_map_path="$3"
+    local source_hash="$4"
+
+    [ ! -f "$commit_map_path" ] && return 0
+    [ -z "$source_hash" ] && return 0
+
+    local ancestor
+    for ancestor in $(git -C "$intermediary_dir" rev-list --first-parent "$branch" 2>/dev/null); do
+        local mapped
+        mapped=$(awk -v ih="$ancestor" '$1 == ih { print $2; exit }' "$commit_map_path")
+        if [ "$mapped" = "$source_hash" ]; then
+            echo "$ancestor"
+            return 0
+        fi
+    done
+}
+
 # Check if an intermediary branch has unmerged commits.
 # Returns 0 (true) if there are unmerged commits, 1 (false) if fully synced.
 # Arguments:
@@ -1418,8 +1469,23 @@ _sync_branch_to_source() {
     local branch="$3"
     local commit_map_path="$4"
 
-    local oldrev
-    oldrev=$(_find_last_mapped_on_branch "$intermediary_dir" "$branch" "$commit_map_path")
+    # Prefer the intermediary commit that maps to source's actual branch
+    # HEAD — that's the real base. _find_last_mapped_on_branch returns
+    # the latest commit with ANY mapping, which silently drops commits
+    # when source has drifted (failed hook, manual reset on source).
+    # Fall back to the latest-mapped commit when source HEAD isn't in
+    # commit_map (e.g., user committed directly on source without hooks
+    # firing — the "ahead with real commits" case, which --force still
+    # handles via 3-way merge onto source's current HEAD).
+    local oldrev=""
+    local source_head
+    source_head=$(git -C "$source_dir" rev-parse --verify "refs/heads/$branch" 2>/dev/null) || true
+    if [ -n "$source_head" ]; then
+        oldrev=$(_find_intermediary_for_source_head "$intermediary_dir" "$branch" "$commit_map_path" "$source_head")
+    fi
+    if [ -z "$oldrev" ]; then
+        oldrev=$(_find_last_mapped_on_branch "$intermediary_dir" "$branch" "$commit_map_path")
+    fi
     [ -z "$oldrev" ] && oldrev="0000000000000000000000000000000000000000"
 
     # Force syncActiveBranch so sync_to_source doesn't skip the active branch.

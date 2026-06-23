@@ -416,7 +416,9 @@ claude-cage git-merge --force
 
 **Dirty tree?** If you're mergin' to your current branch and there are uncommitted changes, claude-cage won't touch it. Stash or commit first, then run it again.
 
-**Diverged source?** When source has commits the cage never saw — usually because a sync hook got tripped up by something — claude-cage refuses to silently splice the cage's work on top via 3-way merge, and tells you where the gap is. Three ways out:
+**Source fell behind?** If the cage already synced commits source somehow lost — a missed hook, a reset, whatever the reason — claude-cage figures out where source actually is and catches it up automatically. You'll see "Source was behind by N commit(s) — catchin' up." in the output. No `--force` needed.
+
+**Source wandered off?** When source has commits the cage never saw, or its HEAD is on a hash the cage doesn't recognize, claude-cage can't safely auto-recover and refuses to silently splice the cage's work on top via 3-way merge. It tells you where the gap is. Three ways out:
 - `claude-cage git-merge --force` — apply the cage's commits via 3-way merge anyway. Same lucky merge the old behavior gave you, but now you opted in.
 - `claude-cage clean --all` — nuke the cages and start fresh from source as it stands. The hammer for when the divergence is too tangled to reconcile.
 - Manually reconcile (pull source commits into the cage by hand, or rebase the cage's work onto source) — the surgical option.
@@ -425,7 +427,7 @@ claude-cage git-merge --force
 - `autoSync = false` — You want full control over all branches
 - Active branch with `syncActiveBranch = false` (the default) — Auto-sync handles other branches, but your active branch waits for you
 - After reviewin' Claude's work — Check the diff first, merge when you're satisfied
-- Source has diverged — `--force` is the explicit version of what the old behavior did silently
+- Source has diverged in a way the cage can't auto-recover — `--force` is the explicit version of what the old behavior did silently
 
 ### Bringin' Dirty Files Into the Cage
 

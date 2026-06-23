@@ -122,10 +122,15 @@ run_in_bwrap() {
     fi
 
     # Special filesystems
+    # --dev mounts a fresh devpts instance (newinstance,ptmxmode=0666) owned by
+    # this sandbox's user namespace, with a working /dev/ptmx. Do NOT bind the
+    # host's /dev/pts or /dev/ptmx over it: opening a host-namespace ptmx from an
+    # unprivileged user namespace can't allocate a slave PTY, so openpty() fails
+    # ("Failed to create stream fd: No such file or directory"). This surfaced on
+    # Ubuntu 26.04, where /dev/ptmx is a symlink to pts/ptmx. Only /dev/tty (the
+    # controlling terminal) is bound through, since --dev doesn't provide it.
     bwrap_args+=(--proc /proc)
     bwrap_args+=(--dev /dev)
-    bwrap_args+=(--dev-bind /dev/pts /dev/pts)
-    bwrap_args+=(--dev-bind /dev/ptmx /dev/ptmx)
     bwrap_args+=(--dev-bind-try /dev/tty /dev/tty)
 
     # Environment variables

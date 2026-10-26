@@ -545,6 +545,37 @@ show_cage_diff() {
     echo ""
 }
 
+# Print the intermediary commit standing in for a source commit: its own
+# mapping, or for one mapped only to 0 (excluded-only, or a merge a range
+# export dropped), that of its nearest ancestor with the same in-scope tree.
+# Prints nothing if none is found.
+# Arguments: $1 = export_dir, $2 = commit_map_path, $3 = source commit,
+#            $4... = pathspec args
+find_stand_in_commit() {
+    local export_dir="$1" commit_map_path="$2" commit="$3"
+    shift 3
+    local _i _p _next _int
+    for ((_i = 0; _i < 50; _i++)); do
+        _int=$(awk -v sh="$commit" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path" 2>/dev/null)
+        if [ -n "$_int" ]; then
+            echo "$_int"
+            return 0
+        fi
+        _next=""
+        for _p in $(git -C "$export_dir" rev-list --parents -1 "$commit" | cut -d' ' -f2-); do
+            if git -C "$export_dir" diff --quiet "$_p" "$commit" ${1:+-- "$@"}; then
+                _next="$_p"
+                break
+            fi
+        done
+        if [ -z "$_next" ]; then
+            return 0
+        fi
+        commit="$_next"
+    done
+    return 0
+}
+
 # Apply source commits to intermediary using fast-export with pathspec excludes
 # Used for catching up the intermediary to source state
 # Arguments:
@@ -614,14 +645,14 @@ apply_source_to_intermediary() {
             if [ -f "$source_marks_path" ] && grep -q " ${_parent_hash}$" "$source_marks_path" 2>/dev/null; then
                 continue
             fi
-            _int_parent=$(awk -v sh="$_parent_hash" '$2 == sh && $1 != "0" { print $1; exit }' "$commit_map_path" 2>/dev/null)
+            _int_parent=$(find_stand_in_commit "$export_dir" "$commit_map_path" "$_parent_hash" "${pathspec_args[@]}")
             if [ -n "$_int_parent" ] && [ -f "$source_marks_path" ] && [ -f "$import_marks_path" ]; then
                 _max_mark=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
                     "$source_marks_path" "$import_marks_path" 2>/dev/null)
                 _new_mark=$((_max_mark + 1))
                 echo ":$_new_mark $_parent_hash" >> "$source_marks_path"
                 echo ":$_new_mark $_int_parent" >> "$import_marks_path"
-                sync_log "$log_file" "$source_short" ">>intermediary" "added missing parent mark :$_new_mark for ${_parent_hash:0:8}"
+                sync_log "$log_file" "$source_short" ">>intermediary" "added missing parent mark :$_new_mark for ${_parent_hash:0:8} (as ${_int_parent:0:8})"
             fi
         done
     fi
@@ -629,24 +660,26 @@ apply_source_to_intermediary() {
     # Excluded-only: a non-merge commit with no in-scope changes. Merges are
     # always imported so the intermediary keeps their topology.
     if ! git -C "$source_dir" rev-parse --verify -q "HEAD^2" >/dev/null \
-        && git -C "$export_dir" diff-tree --quiet -r --root "$source_head" ${pathspec_args:+-- "${pathspec_args[@]}"}; then
+        && git -C "$export_dir" diff-tree --quiet --no-commit-id -r --root "$source_head" ${pathspec_args:+-- "${pathspec_args[@]}"}; then
         echo "0 $source_head" >> "$commit_map_path"
         sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"
         return 0
     fi
 
-    local export_err export_out marks_in
+    local export_err export_out marks_in marks_out
     export_err=$(make_temp_file "export-err")
     export_out=$(make_temp_file "export-out")
     marks_in=$(make_temp_file "marks-in")
+    marks_out=$(make_temp_file "marks-out")
     touch "$source_marks_path"
 
     # See claude-cage-sync-commit: without --full-history --sparse and with
     # this commit's own mark present, fast-export can pick an older commit.
+    # New marks only replace source-marks once importing.
     grep -v " ${source_head}$" "$source_marks_path" > "$marks_in"
     git -C "$export_dir" fast-export \
         --import-marks="$marks_in" \
-        --export-marks="$source_marks_path" \
+        --export-marks="$marks_out" \
         --full-history --sparse --show-original-ids \
         -1 HEAD \
         ${pathspec_args:+-- "${pathspec_args[@]}"} \
@@ -657,7 +690,7 @@ apply_source_to_intermediary() {
     if [ "$export_rc" -ne 0 ]; then
         sync_log "$log_file" "$source_short" ">>intermediary" "fast-export FAILED rc=$export_rc"
         [ -s "$export_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "export stderr: $(cat "$export_err")"
-        rm -f "$export_err" "$export_out"
+        rm -f "$export_err" "$export_out" "$marks_out"
         return 1
     fi
 
@@ -674,7 +707,7 @@ apply_source_to_intermediary() {
     if [ "$_exported_oid" != "$source_head" ]; then
         sync_log "$log_file" "$source_short" ">>intermediary" "fast-export produced ${_exported_oid:-no commit} instead, not importing"
         echo -e "\033[1;31mclaude-cage:\033[0m fast-export picked ${_exported_oid:0:8} instead of $source_short, not importing" >&2
-        rm -f "$export_err" "$export_out"
+        rm -f "$export_err" "$export_out" "$marks_out"
         return 1
     fi
 
@@ -709,11 +742,12 @@ apply_source_to_intermediary() {
         else
             echo "0 $source_head" >> "$commit_map_path"
             sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only (no intermediary HEAD)"
-            rm -f "$export_err" "$export_out"
+            rm -f "$export_err" "$export_out" "$marks_out"
             return 0
         fi
     fi
 
+    mv "$marks_out" "$source_marks_path"
     local import_err
     import_err=$(make_temp_file "import-err")
     git -C "$intermediary_dir" fast-import \
@@ -723,6 +757,8 @@ apply_source_to_intermediary() {
     local import_rc=$?
 
     if [ "$import_rc" -ne 0 ]; then
+        # Left in source-marks it counts as exported; forget it so it's retried
+        sed -i "/ ${source_head}$/d" "$source_marks_path"
         sync_log "$log_file" "$source_short" ">>intermediary" "fast-import FAILED rc=$import_rc"
         [ -s "$import_err" ] && sync_log "$log_file" "$source_short" ">>intermediary" "import stderr: $(cat "$import_err")"
         local _import_msg="fast-import failed for $source_short (rc=$import_rc)"

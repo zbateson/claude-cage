@@ -744,6 +744,53 @@ if [ "$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")" != "$int_st_head" 
 fi
 echo "  PASS: Same-tree merge imported as a merge at source HEAD, excluded-only skipped"
 git -C "$SOURCE_PATH" branch -D same-tree-sim same-tree-pr --quiet
+
+echo "Test 17f: Merge onto an excluded-only commit imports as a two-parent merge"
+# The merge's first parent (the excluded-only commit) has no intermediary
+# counterpart; it must stand in as the local real commit before it, or the
+# merge lands on the upstream commit alone and isn't a fast-forward.
+ex_fork=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+echo "local real" > "$SOURCE_PATH/local-real.txt"
+git -C "$SOURCE_PATH" add -A
+git -C "$SOURCE_PATH" commit -m "Local real commit" --quiet
+int_local=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")
+echo "secret again" > "$SOURCE_PATH/.env"
+git -C "$SOURCE_PATH" add .env
+git -C "$SOURCE_PATH" commit -m "Local excluded-only" --quiet
+git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null checkout -b ex-upstream "$ex_fork" --quiet
+echo "upstream" > "$SOURCE_PATH/upstream.txt"
+git -C "$SOURCE_PATH" add -A
+git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null commit -m "Upstream commit" --quiet
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+ex_out=$(git -C "$SOURCE_PATH" merge --no-ff --no-edit ex-upstream 2>&1)
+ex_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+if echo "$ex_out" | grep -q "Sync failed"; then
+    echo "FAIL: Merge onto excluded-only commit reported a sync failure"
+    echo "$ex_out"
+    exit 1
+fi
+int_ex_head=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")
+if ! grep -q "^${int_ex_head} ${ex_head}$" "$local_commit_map"; then
+    echo "FAIL: Intermediary $BRANCH_NAME doesn't map to the merge"
+    git -C "$INTERMEDIARY_DIR" log --graph --oneline -5 "$BRANCH_NAME"
+    exit 1
+fi
+if [ "$(git -C "$INTERMEDIARY_DIR" rev-parse "${int_ex_head}^1")" != "$int_local" ] \
+    || ! git -C "$INTERMEDIARY_DIR" rev-parse --verify -q "${int_ex_head}^2" >/dev/null; then
+    echo "FAIL: Merge isn't (local real commit, upstream) in the intermediary"
+    git -C "$INTERMEDIARY_DIR" log --graph --oneline -5 "$BRANCH_NAME"
+    exit 1
+fi
+src_files=$(git -C "$SOURCE_PATH" ls-tree -r --name-only HEAD | grep -vx '.env')
+int_files=$(git -C "$INTERMEDIARY_DIR" ls-tree -r --name-only "$BRANCH_NAME" | grep -vx '.env')
+if [ "$src_files" != "$int_files" ]; then
+    echo "FAIL: Intermediary tree differs from source after merge onto excluded-only"
+    diff <(echo "$src_files") <(echo "$int_files")
+    exit 1
+fi
+echo "  PASS: Merge imported with the local real commit standing in as first parent"
+git -C "$SOURCE_PATH" branch -D ex-upstream --quiet
 : > "$exclude_pathspecs_file"
 
 echo "Test 18: Post-merge hook skips squash merges"

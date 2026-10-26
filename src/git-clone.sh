@@ -1422,20 +1422,43 @@ fi
 # If a parent was synced via sync_to_source (git-am path), its mark may be missing from
 # source-marks. Without it, fast-export misattributes the from line (uses the second
 # parent) and the merge topology is lost, causing non-fast-forward errors on import.
+# A parent mapped only to 0 (excluded-only, or a merge a range export dropped)
+# stands in as its nearest ancestor with the same in-scope tree.
+_stand_in() {
+    local _c="$1" _i _p _next _int
+    for ((_i = 0; _i < 50; _i++)); do
+        _int=$(awk -v sh="$_c" '$2 == sh && $1 != "0" { print $1; exit }' "$COMMIT_MAP" 2>/dev/null)
+        if [ -n "$_int" ]; then
+            echo "$_int"
+            return 0
+        fi
+        _next=""
+        for _p in $(git rev-list --parents -1 "$_c" | cut -d' ' -f2-); do
+            if git diff --quiet "$_p" "$_c" ${PATHSPEC_ARGS:+-- "${PATHSPEC_ARGS[@]}"}; then
+                _next="$_p"
+                break
+            fi
+        done
+        if [ -z "$_next" ]; then
+            return 0
+        fi
+        _c="$_next"
+    done
+    return 0
+}
 if git rev-parse --verify "${COMMIT_HASH}^2" >/dev/null 2>&1; then
     for _PARENT_HASH in $(git rev-list --parents -1 "$COMMIT_HASH" | cut -d' ' -f2-); do
         if [ -f "$SOURCE_MARKS" ] && grep -q " ${_PARENT_HASH}$" "$SOURCE_MARKS" 2>/dev/null; then
             continue
         fi
-        # Parent not in source-marks — look up its intermediary hash from commit map
-        _INT_PARENT=$(awk -v sh="$_PARENT_HASH" '$2 == sh && $1 != "0" { print $1; exit }' "$COMMIT_MAP" 2>/dev/null)
+        _INT_PARENT=$(_stand_in "$_PARENT_HASH")
         if [ -n "$_INT_PARENT" ] && [ -f "$SOURCE_MARKS" ] && [ -f "$IMPORT_MARKS" ]; then
             _MAX_MARK=$(awk '{ gsub(/^:/,"",$1); id=$1+0; if(id>m) m=id } END { print m+0 }' \
                 "$SOURCE_MARKS" "$IMPORT_MARKS" 2>/dev/null)
             _NEW_MARK=$((_MAX_MARK + 1))
             echo ":$_NEW_MARK $_PARENT_HASH" >> "$SOURCE_MARKS"
             echo ":$_NEW_MARK $_INT_PARENT" >> "$IMPORT_MARKS"
-            _sync_log "$COMMIT_SHORT" ">>intermediary" "added missing parent mark :$_NEW_MARK for ${_PARENT_HASH:0:8}"
+            _sync_log "$COMMIT_SHORT" ">>intermediary" "added missing parent mark :$_NEW_MARK for ${_PARENT_HASH:0:8} (as ${_INT_PARENT:0:8})"
         fi
     done
 fi
@@ -1450,7 +1473,7 @@ touch "$SOURCE_MARKS" "$IMPORT_MARKS"
 # Excluded-only: a non-merge commit with no in-scope changes. Merges are always
 # imported so the intermediary keeps their topology.
 if ! git rev-parse --verify -q "${COMMIT_HASH}^2" >/dev/null \
-    && git diff-tree --quiet -r --root "$COMMIT_HASH" ${PATHSPEC_ARGS:+-- "${PATHSPEC_ARGS[@]}"}; then
+    && git diff-tree --quiet --no-commit-id -r --root "$COMMIT_HASH" ${PATHSPEC_ARGS:+-- "${PATHSPEC_ARGS[@]}"}; then
     echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
     _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
     echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL - commit only touches excluded or out-of-scope files"
@@ -1463,10 +1486,11 @@ fi
 # commits, landing on some older unmarked commit. --full-history --sparse
 # stops the simplifying, and dropping this commit's own mark (left by an
 # earlier failed import) stops the skipping. The original-oid check below
-# refuses anything else.
+# refuses anything else. New marks only replace source-marks once importing.
 MARKS_IN=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-marks-in.$$")
+MARKS_OUT=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-marks-out.$$")
 grep -v " ${COMMIT_HASH}$" "$SOURCE_MARKS" > "$MARKS_IN"
-git fast-export --import-marks="$MARKS_IN" --export-marks="$SOURCE_MARKS" \
+git fast-export --import-marks="$MARKS_IN" --export-marks="$MARKS_OUT" \
     --full-history --sparse --show-original-ids -1 "$COMMIT_HASH" \
     ${PATHSPEC_ARGS:+-- "${PATHSPEC_ARGS[@]}"} \
     >"$EXPORT_OUT" 2>"$EXPORT_ERR"
@@ -1483,7 +1507,7 @@ if [ "$EXPORT_RC" -ne 0 ]; then
     echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL (export=$EXPORT_RC)"
     [ -n "$_ERR_LINE" ] && echo "  $_ERR_LINE"
     echo "  Details in: $SYNC_LOG"
-    rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+    rm -f "$EXPORT_ERR" "$EXPORT_OUT" "$MARKS_OUT"
     exit 1
 fi
 
@@ -1511,7 +1535,7 @@ if [ "$EXPORTED_OID" != "$COMMIT_HASH" ]; then
     _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-export produced ${EXPORTED_OID:-no commit} instead, not importing"
     echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL: fast-export picked ${EXPORTED_OID:0:8} instead, not importing"
     echo "  Details in: $SYNC_LOG"
-    rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+    rm -f "$EXPORT_ERR" "$EXPORT_OUT" "$MARKS_OUT"
     exit 1
 fi
 
@@ -1535,12 +1559,13 @@ if ! grep -q '^from ' "$EXPORT_OUT"; then
             echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
             _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only (no intermediary HEAD for $current_branch)"
             echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
-            rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+            rm -f "$EXPORT_ERR" "$EXPORT_OUT" "$MARKS_OUT"
             exit 0
         fi
     fi
 fi
 
+mv "$MARKS_OUT" "$SOURCE_MARKS"
 echo -e "\033[1;31mclaude-cage:\033[0m Updating intermediary$SCOPE_LABEL, run 'git pull' from claude-cage"
 
 IMPORT_ERR=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.$$")
@@ -1550,7 +1575,14 @@ IMPORT_RC=$?
 NEW_TIP=$(git -C "$INTERMEDIARY" rev-parse --verify -q "$IMPORT_REF") || NEW_TIP=""
 git -C "$INTERMEDIARY" update-ref -d "$IMPORT_REF" 2>/dev/null
 
+# A commit left in source-marks counts as exported, and range catch-ups would
+# skip it. Forget it on failure so the next catch-up retries it.
+_forget_source_mark() {
+    sed -i "/ ${COMMIT_HASH}$/d" "$SOURCE_MARKS"
+}
+
 if [ "$IMPORT_RC" -ne 0 ]; then
+    _forget_source_mark
     _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=$IMPORT_RC"
     [ -s "$IMPORT_ERR" ] && _sync_log "$COMMIT_SHORT" ">>intermediary" "import stderr: $(cat "$IMPORT_ERR")"
     _IMPORT_MSG="Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL (import=$IMPORT_RC)"
@@ -1569,6 +1601,7 @@ if [ -n "$current_branch" ] && [ -n "$NEW_TIP" ]; then
     if [ -z "$OLD_TIP" ] || git -C "$INTERMEDIARY" merge-base --is-ancestor "$OLD_TIP" "$NEW_TIP"; then
         git -C "$INTERMEDIARY" update-ref "refs/heads/$current_branch" "$NEW_TIP" $OLD_TIP
     elif [ "$(git rev-parse --verify -q "refs/heads/$current_branch")" = "$COMMIT_HASH" ]; then
+        _forget_source_mark
         _sync_log "$COMMIT_SHORT" ">>intermediary" "not a fast-forward of $current_branch (${OLD_TIP:0:8}), branch not updated"
         echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL: $current_branch on the intermediary (${OLD_TIP:0:8}) isn't an ancestor of it"
         echo "  Details in: $SYNC_LOG"

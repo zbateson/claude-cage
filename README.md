@@ -328,6 +328,7 @@ A few things to know:
 - **`~/.local/bin` needs to be on your `PATH`.** You'll hear about it if it ain't.
 - **The launcher remembers where claude-cage lives.** Move claude-cage and the launcher's lost; run `add-launcher` again to fix it up.
 - **Launchers only touch their own kind.** `add-launcher` won't overwrite a file it didn't write, and `remove-launcher` won't delete one.
+- **Tab-completion comes along for the ride.** If you've run `claude-cage install-completions`, each launcher gets its own completion hook, so `copilot-cage --att<TAB>` works like it does for claude-cage. `remove-launcher` cleans the hook up too. Made launchers before installin' completions? `install-completions` hooks those up as well.
 
 ## Sessions
 

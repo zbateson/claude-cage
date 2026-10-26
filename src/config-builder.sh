@@ -107,29 +107,23 @@ config_builder_install_completions() {
     local install_path=""
     local completion_content=""
 
-    # Detect shell
-    if [ -n "$BASH_VERSION" ]; then
-        shell_name="bash"
-        install_path="$HOME/.local/share/bash-completion/completions/claude-cage"
-    elif [ -n "$ZSH_VERSION" ]; then
-        shell_name="zsh"
-        install_path="$HOME/.zsh/completions/_claude-cage"
-    else
-        # Try to detect from $SHELL
-        case "$SHELL" in
-            */bash) shell_name="bash"; install_path="$HOME/.local/share/bash-completion/completions/claude-cage" ;;
-            */zsh) shell_name="zsh"; install_path="$HOME/.zsh/completions/_claude-cage" ;;
-        esac
-    fi
+    # This script always runs under bash, so $SHELL is the only signal for
+    # the user's interactive shell.
+    case "${SHELL:-}" in
+        */bash) shell_name="bash" ;;
+        */zsh) shell_name="zsh" ;;
+    esac
 
     if [ -z "$shell_name" ]; then
         echo "Couldn't figure out your shell. Run 'claude-cage completion bash' or 'claude-cage completion zsh' to grab the script yourself."
         return 0
     fi
+    install_path=$(completion_file_path "$shell_name" claude-cage)
 
     # Check if already installed
     if [ -f "$install_path" ]; then
         echo "Completions already installed at $install_path — you're all set."
+        hook_existing_launchers
         return 0
     fi
 
@@ -186,9 +180,84 @@ ZSH_WRAPPER
             echo "Completions will be available in new zsh sessions."
         fi
     fi
+    hook_existing_launchers
 }
 
 LAUNCHER_MARKER="# claude-cage launcher"
+LAUNCHER_COMPLETION_MARKER="# claude-cage launcher completion"
+
+completion_file_path() {
+    local shell_name="$1"
+    local name="$2"
+    case "$shell_name" in
+        bash) echo "$HOME/.local/share/bash-completion/completions/$name" ;;
+        zsh) echo "$HOME/.zsh/completions/_$name" ;;
+    esac
+}
+
+claude_cage_completions_installed() {
+    [ -f "$(completion_file_path bash claude-cage)" ] || [ -f "$(completion_file_path zsh claude-cage)" ]
+}
+
+# Shells load completions per command name, so each launcher needs its own
+# file. Written only for shells that have claude-cage's completions
+# installed; prints each file written.
+install_launcher_completion() {
+    local name="$1"
+    local shell_name target
+    for shell_name in bash zsh; do
+        if [ ! -f "$(completion_file_path "$shell_name" claude-cage)" ]; then
+            continue
+        fi
+        target=$(completion_file_path "$shell_name" "$name")
+        if [ -e "$target" ] && ! grep -qx "$LAUNCHER_COMPLETION_MARKER" "$target" 2>/dev/null; then
+            continue
+        fi
+        if [ "$shell_name" = "bash" ]; then
+            {
+                echo "$LAUNCHER_COMPLETION_MARKER"
+                echo 'eval "$(claude-cage completion bash 2>/dev/null)"'
+                echo "complete -F _claude_cage $name"
+            } > "$target"
+        else
+            {
+                echo "#compdef $name"
+                echo "$LAUNCHER_COMPLETION_MARKER"
+                echo 'eval "$(claude-cage completion zsh 2>/dev/null)"'
+            } > "$target"
+        fi
+        echo "$target"
+    done
+}
+
+remove_launcher_completion() {
+    local name="$1"
+    local shell_name target
+    for shell_name in bash zsh; do
+        target=$(completion_file_path "$shell_name" "$name")
+        if [ -f "$target" ] && grep -qx "$LAUNCHER_COMPLETION_MARKER" "$target" 2>/dev/null; then
+            rm -f "$target"
+        fi
+    done
+}
+
+hook_existing_launchers() {
+    local f
+    local hooked=""
+    for f in "$HOME/.local/bin/"*; do
+        if is_cage_launcher "$f" && [ -n "$(install_launcher_completion "${f##*/}")" ]; then
+            hooked="$hooked ${f##*/}"
+        fi
+    done
+    if [ -n "$hooked" ]; then
+        echo "Hooked up completions for your launchers:$hooked"
+    fi
+}
+
+# Launcher names land in PATH and in completion files, so keep them plain
+valid_launcher_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]
+}
 
 # True if $1 is a wrapper written by add_launcher (marker on line 2)
 is_cage_launcher() {
@@ -212,12 +281,11 @@ add_launcher() {
     if [ -z "$name" ]; then
         name="$(basename "$launch_cmd")-cage"
     fi
-    case "$name" in
-        */*|.|..)
-            echo "Hold on now. '$name' ain't a usable launcher name - no slashes."
-            return 1
-            ;;
-    esac
+    if ! valid_launcher_name "$name"; then
+        echo "Hold on now. '$name' ain't a usable launcher name."
+        echo "Stick to letters, numbers, dots, dashes, underscores and pluses."
+        return 1
+    fi
 
     local bin_dir="$HOME/.local/bin"
     local target="$bin_dir/$name"
@@ -248,6 +316,12 @@ add_launcher() {
     fi
     echo "Run '$name' anywhere you'd run claude-cage, and '$launch_cmd' goes in the cage."
 
+    if [ -n "$(install_launcher_completion "$name")" ]; then
+        echo "Tab-completion's hooked up too, startin' with your next shell."
+    elif ! claude_cage_completions_installed; then
+        echo "Want tab-completion for it? Run 'claude-cage install-completions'."
+    fi
+
     if ! command -v "$launch_cmd" >/dev/null 2>&1; then
         echo ""
         echo "Heads up: I can't find '$launch_cmd' on this machine. It has to be reachable"
@@ -270,15 +344,14 @@ remove_launcher() {
         echo "Usage: claude-cage remove-launcher <name>"
         return 1
     fi
-    case "$name" in
-        */*|.|..)
-            echo "Hold on now. '$name' ain't a usable launcher name - no slashes."
-            return 1
-            ;;
-    esac
+    if ! valid_launcher_name "$name"; then
+        echo "Hold on now. '$name' ain't a usable launcher name."
+        return 1
+    fi
 
     local target="$HOME/.local/bin/$name"
     if [ ! -e "$target" ]; then
+        remove_launcher_completion "$name"
         echo "There's no launcher at $target."
         return 1
     fi
@@ -288,6 +361,7 @@ remove_launcher() {
     fi
 
     rm -f "$target"
+    remove_launcher_completion "$name"
     echo "Launcher's gone: $target"
 }
 

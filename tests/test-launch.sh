@@ -26,7 +26,7 @@ trap cleanup EXIT
 
 # Run claude-cage in a clean env from the test source repo
 run_cage() {
-    env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" SHELL=/bin/bash \
         CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
         bash -c 'cd "$1" && shift && "$@" 2>&1' _ "$TEST_TMP/source" "$@"
 }
@@ -149,10 +149,12 @@ echo "$output" | grep -q "^Launchin': copilot a\\\\ b$" \
     || fail "wrapper should launch copilot with args" "$output"
 echo "  PASS: wrapper launches"
 
-echo "Test 13: add-launcher accepts a custom name and quotes safely"
-output=$(run_cage "$CAGE" add-launcher "my tool" "it's-mine") || fail "add-launcher failed" "$output"
-[ -x "$BIN_DIR/it's-mine" ] || fail "custom-named launcher not created" "$output"
-sh -n "$BIN_DIR/it's-mine" || fail "launcher is not valid sh" "$(cat "$BIN_DIR/it's-mine")"
+echo "Test 13: add-launcher accepts a custom name and quotes the command"
+output=$(run_cage "$CAGE" add-launcher "it's tool" mytool) || fail "add-launcher failed" "$output"
+[ -x "$BIN_DIR/mytool" ] || fail "custom-named launcher not created" "$output"
+sh -n "$BIN_DIR/mytool" || fail "launcher is not valid sh" "$(cat "$BIN_DIR/mytool")"
+grep -qF -- "--launch 'it'\\''s tool'" "$BIN_DIR/mytool" \
+    || fail "command should be single-quoted" "$(cat "$BIN_DIR/mytool")"
 echo "  PASS: custom name"
 
 echo "Test 14: add-launcher updates its own launcher"
@@ -170,14 +172,16 @@ fi
 [ "$(cat "$BIN_DIR/other")" = "keep me" ] || fail "foreign file was modified"
 echo "  PASS: foreign file left alone"
 
-echo "Test 16: launcher names with slashes are rejected"
-if output=$(run_cage "$CAGE" add-launcher copilot a/b); then
-    fail "slash in name should be rejected" "$output"
-fi
+echo "Test 16: unsafe launcher names are rejected"
+for bad in a/b "it's-mine" "two words" ".hidden" -dash; do
+    if output=$(run_cage "$CAGE" add-launcher copilot "$bad"); then
+        fail "name '$bad' should be rejected" "$output"
+    fi
+done
 if output=$(run_cage "$CAGE" remove-launcher ../other); then
     fail "slash in remove name should be rejected" "$output"
 fi
-echo "  PASS: slashes rejected"
+echo "  PASS: unsafe names rejected"
 
 echo "Test 17: remove-launcher refuses a foreign file"
 if output=$(run_cage "$CAGE" remove-launcher other); then
@@ -196,6 +200,75 @@ if output=$(run_cage "$CAGE" remove-launcher copilot-cage); then
     fail "removing a missing launcher should exit non-zero" "$output"
 fi
 echo "  PASS: missing launcher reported"
+
+echo ""
+echo "=== Testing launcher completions ==="
+echo ""
+
+BASH_COMP_DIR="$TEST_TMP/.local/share/bash-completion/completions"
+ZSH_COMP_DIR="$TEST_TMP/.zsh/completions"
+
+echo "Test 20: without claude-cage completions, add-launcher only hints"
+output=$(run_cage "$CAGE" add-launcher copilot) || fail "add-launcher failed" "$output"
+echo "$output" | grep -q "claude-cage install-completions" \
+    || fail "expected install-completions hint" "$output"
+[ ! -e "$BASH_COMP_DIR/copilot-cage" ] && [ ! -e "$ZSH_COMP_DIR/_copilot-cage" ] \
+    || fail "no completion files should be written"
+run_cage "$CAGE" remove-launcher copilot-cage >/dev/null
+echo "  PASS: hint only"
+
+mkdir -p "$BASH_COMP_DIR" "$ZSH_COMP_DIR"
+echo "# installed" > "$BASH_COMP_DIR/claude-cage"
+echo "# installed" > "$ZSH_COMP_DIR/_claude-cage"
+
+echo "Test 21: add-launcher writes bash and zsh completion files"
+output=$(run_cage "$CAGE" add-launcher copilot) || fail "add-launcher failed" "$output"
+echo "$output" | grep -q "Tab-completion's hooked up" \
+    || fail "expected completion message" "$output"
+[ -f "$BASH_COMP_DIR/copilot-cage" ] || fail "bash completion file missing" "$output"
+[ "$(sed -n 1p "$ZSH_COMP_DIR/_copilot-cage")" = "#compdef copilot-cage" ] \
+    || fail "zsh completion should start with #compdef copilot-cage" "$(cat "$ZSH_COMP_DIR/_copilot-cage")"
+echo "  PASS: completion files written"
+
+echo "Test 22: bash completion file registers the launcher"
+registered=$(bash -c 'PATH="$1:$PATH"; source "$2"; complete -p copilot-cage' \
+    _ "$CAGE_DIR/dist" "$BASH_COMP_DIR/copilot-cage" 2>&1) || true
+[ "$registered" = "complete -F _claude_cage copilot-cage" ] \
+    || fail "expected copilot-cage registered with _claude_cage" "$registered"
+echo "  PASS: launcher registered"
+
+echo "Test 23: remove-launcher removes its completion files"
+output=$(run_cage "$CAGE" remove-launcher copilot-cage) || fail "remove-launcher failed" "$output"
+[ ! -e "$BASH_COMP_DIR/copilot-cage" ] && [ ! -e "$ZSH_COMP_DIR/_copilot-cage" ] \
+    || fail "completion files should be removed"
+echo "  PASS: completion files removed"
+
+echo "Test 24: foreign completion files are left alone"
+echo "foreign" > "$BASH_COMP_DIR/foreign-cage"
+run_cage "$CAGE" add-launcher foreign >/dev/null || fail "add-launcher failed"
+[ "$(cat "$BASH_COMP_DIR/foreign-cage")" = "foreign" ] \
+    || fail "foreign completion file was overwritten"
+run_cage "$CAGE" remove-launcher foreign-cage >/dev/null || fail "remove-launcher failed"
+[ -f "$BASH_COMP_DIR/foreign-cage" ] || fail "foreign completion file was removed"
+[ ! -e "$ZSH_COMP_DIR/_foreign-cage" ] || fail "own zsh completion file should be removed"
+echo "  PASS: foreign completion files kept"
+
+echo "Test 25: install-completions hooks up existing launchers"
+rm -f "$BASH_COMP_DIR/claude-cage" "$ZSH_COMP_DIR/_claude-cage"
+run_cage "$CAGE" add-launcher early >/dev/null || fail "add-launcher failed"
+[ ! -e "$BASH_COMP_DIR/early-cage" ] || fail "no hook expected before completions exist"
+echo "# installed" > "$BASH_COMP_DIR/claude-cage"
+output=$(run_cage "$CAGE" install-completions) || fail "install-completions failed" "$output"
+echo "$output" | grep -q "Hooked up completions for your launchers: early-cage" \
+    || fail "expected existing launcher hooked" "$output"
+[ -f "$BASH_COMP_DIR/early-cage" ] || fail "bash completion for early-cage missing" "$output"
+echo "  PASS: existing launchers hooked"
+
+echo "Test 26: remove-launcher cleans a stale completion file"
+rm -f "$BIN_DIR/early-cage"
+run_cage "$CAGE" remove-launcher early-cage >/dev/null || true
+[ ! -e "$BASH_COMP_DIR/early-cage" ] || fail "stale completion file should be removed"
+echo "  PASS: stale completion cleaned"
 
 echo ""
 echo "=== All launch tests passed ==="

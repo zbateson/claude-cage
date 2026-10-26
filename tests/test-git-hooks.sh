@@ -623,6 +623,47 @@ echo "  PASS: Merge commit with marks-gap parent synced, subsequent commits work
 # Clean up the marks-gap feature branch
 git -C "$SOURCE_PATH" branch -D marks-gap-feature 2>/dev/null || true
 
+echo "Test 17b: FF pull of PR merges with stale-base side commits syncs cleanly"
+# Upstream PRs all forked from the same base and merged in turn. The second
+# PR's side commit isn't a fast-forward of master once the first is merged.
+# Build them with hooks off (as a fetch would), then fast-forward master.
+pr_base=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+git -C "$SOURCE_PATH" checkout -b upstream-sim --quiet
+for pr in 1 2 3; do
+    git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null checkout -b "pr$pr" "$pr_base" --quiet
+    echo "pr$pr" > "$SOURCE_PATH/pr$pr.txt"
+    git -C "$SOURCE_PATH" add -A
+    git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null commit -m "PR $pr" --quiet
+    git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null checkout upstream-sim --quiet
+    git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null merge --no-ff --no-edit "pr$pr" --quiet
+done
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+pr_merge_out=$(git -C "$SOURCE_PATH" merge --ff-only upstream-sim 2>&1)
+pr_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+if echo "$pr_merge_out" | grep -q "Sync failed"; then
+    echo "FAIL: Side commits reported as sync failures"
+    echo "$pr_merge_out"
+    exit 1
+fi
+for c in $(git -C "$SOURCE_PATH" rev-list "${pr_base}..${pr_head}"); do
+    if ! grep -q "^[0-9a-f]\{40\} ${c}$" "$local_commit_map"; then
+        echo "FAIL: Commit ${c:0:8} not mapped after PR-merge pull"
+        exit 1
+    fi
+done
+int_pr_head=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")
+if ! grep -q "^${int_pr_head} ${pr_head}$" "$local_commit_map"; then
+    echo "FAIL: Intermediary master doesn't map to source HEAD after PR-merge pull"
+    exit 1
+fi
+if git -C "$INTERMEDIARY_DIR" for-each-ref --format='%(refname)' refs/claude-cage/ | grep -q .; then
+    echo "FAIL: Scratch import ref left behind in intermediary"
+    exit 1
+fi
+echo "  PASS: PR merges synced without failures, intermediary master at source HEAD"
+git -C "$SOURCE_PATH" branch -D upstream-sim pr1 pr2 pr3 --quiet
+
 echo "Test 18: Post-merge hook skips squash merges"
 # Squash merges pass $1=1 to post-merge hook. The hook should skip and let
 # post-commit handle the eventual commit.

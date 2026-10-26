@@ -294,7 +294,7 @@ bash tests/run-all.sh
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 34 |
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
-| test-git-hooks.sh | git-hooks.sh | 29 |
+| test-git-hooks.sh | git-hooks.sh | 30 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 86 |
 | test-network.sh | network.sh | 1 |
@@ -308,7 +308,7 @@ bash tests/run-all.sh
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 | test-session-naming.sh | session naming + allocation | 19 |
 
-**~411 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
+**~412 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

@@ -1472,13 +1472,12 @@ if [ "$EXPORT_RC" -ne 0 ]; then
     exit 1
 fi
 
-# Rewrite hash-based refs to proper branch refs.
-# git fast-export -1 <hash> uses the hash as the ref name (e.g. "commit <hash>")
-# instead of "commit refs/heads/<branch>". fast-import needs a proper ref to
-# update the branch pointer.
-if [ -n "$current_branch" ]; then
-    sed -i "s|^commit ${COMMIT_HASH}$|commit refs/heads/${current_branch}|;s|^reset ${COMMIT_HASH}$|reset refs/heads/${current_branch}|" "$EXPORT_OUT"
-fi
+# git fast-export -1 <hash> names the ref after the hash. Import into a scratch
+# ref instead of the branch: a merged-in side commit isn't a fast-forward of the
+# branch, and fast-import would refuse the update. The branch moves after import.
+IMPORT_REF="refs/claude-cage/sync-import-$$"
+git -C "$INTERMEDIARY" update-ref -d "$IMPORT_REF" 2>/dev/null
+sed -i "s|^commit ${COMMIT_HASH}$|commit ${IMPORT_REF}|;s|^reset ${COMMIT_HASH}$|reset ${IMPORT_REF}|" "$EXPORT_OUT"
 
 # Strip scope prefix from fast-export paths (scoped intermediaries only).
 # Uses the shared strip-prefix script installed in the intermediary.
@@ -1541,6 +1540,8 @@ IMPORT_ERR=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-import-err.$$")
 git -C "$INTERMEDIARY" fast-import --import-marks="$IMPORT_MARKS" --export-marks="$IMPORT_MARKS" --quiet \
     <"$EXPORT_OUT" 2>"$IMPORT_ERR"
 IMPORT_RC=$?
+NEW_TIP=$(git -C "$INTERMEDIARY" rev-parse --verify -q "$IMPORT_REF") || NEW_TIP=""
+git -C "$INTERMEDIARY" update-ref -d "$IMPORT_REF" 2>/dev/null
 
 if [ "$IMPORT_RC" -ne 0 ]; then
     _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-import FAILED rc=$IMPORT_RC"
@@ -1552,6 +1553,23 @@ if [ "$IMPORT_RC" -ne 0 ]; then
     exit 1
 fi
 rm -f "$EXPORT_ERR" "$IMPORT_ERR" "$EXPORT_OUT"
+
+# Advance the branch on fast-forward only. A non-fast-forward commit that isn't
+# the source branch tip is a side commit a later merge brings in; leave the
+# branch where it is. One that IS the tip means the two have diverged.
+if [ -n "$current_branch" ] && [ -n "$NEW_TIP" ]; then
+    OLD_TIP=$(git -C "$INTERMEDIARY" rev-parse --verify -q "refs/heads/$current_branch") || OLD_TIP=""
+    if [ -z "$OLD_TIP" ] || git -C "$INTERMEDIARY" merge-base --is-ancestor "$OLD_TIP" "$NEW_TIP"; then
+        git -C "$INTERMEDIARY" update-ref "refs/heads/$current_branch" "$NEW_TIP" $OLD_TIP
+    elif [ "$(git rev-parse --verify -q "refs/heads/$current_branch")" = "$COMMIT_HASH" ]; then
+        _sync_log "$COMMIT_SHORT" ">>intermediary" "not a fast-forward of $current_branch (${OLD_TIP:0:8}), branch not updated"
+        echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL: $current_branch on the intermediary (${OLD_TIP:0:8}) isn't an ancestor of it"
+        echo "  Details in: $SYNC_LOG"
+        exit 1
+    else
+        _sync_log "$COMMIT_SHORT" ">>intermediary" "side commit, $current_branch left at ${OLD_TIP:0:8}"
+    fi
+fi
 
 # Update commit mapping from marks
 if [ -f "$SOURCE_MARKS" ] && [ -f "$IMPORT_MARKS" ]; then

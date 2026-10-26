@@ -2239,9 +2239,6 @@ create_intermediary_clone() {
         echo ""
         echo "Intermediary exists, checkin' for updates..."
 
-        if [ "$dry_run" != true ]; then
-            compact_commit_map "$(get_commit_map_path "$intermediary_dir")"
-        fi
         catchup_intermediary_branches "$source_dir" "$intermediary_dir" || true
     fi
 

@@ -644,6 +644,10 @@ else
     # Register our session early (before any destructive operations)
     register_session "$cfg_source"
 
+    if [ "$dry_run" != true ]; then
+        compact_commit_map "$(get_commit_map_path "$intermediary_dir")"
+    fi
+
     # Check if existing cage is in sync with source
     cage_state=$(check_cage_state "$cfg_source" "$intermediary_dir" "$work_dir")
 

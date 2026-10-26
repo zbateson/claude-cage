@@ -689,6 +689,63 @@ if ls "$compact_map".compact.* >/dev/null 2>&1; then
 fi
 echo "  PASS: Duplicates dropped, order kept"
 
+echo "Test 17e: Same-tree merge and excluded-only commit never import older history"
+# With exclude pathspecs, fast-export -1 used to simplify these commits away
+# and export the newest unmarked ancestor instead, rewinding the branch.
+build_exclude_pathspecs ".env" > "$exclude_pathspecs_file"
+# Unmark older history, as a depth-limited intermediary has it
+for c in $(git -C "$SOURCE_PATH" rev-list "${pr_base}~1"); do
+    sed -i "/ ${c}$/d" "$local_source_marks"
+done
+
+git -C "$SOURCE_PATH" checkout -b same-tree-sim --quiet
+git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null checkout -b same-tree-pr --quiet
+echo "same tree" > "$SOURCE_PATH/same-tree.txt"
+git -C "$SOURCE_PATH" add -A
+git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null commit -m "Same-tree PR" --quiet
+git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null checkout same-tree-sim --quiet
+git -C "$SOURCE_PATH" -c core.hooksPath=/dev/null merge --no-ff --no-edit same-tree-pr --quiet
+git -C "$SOURCE_PATH" checkout "$BRANCH_NAME" --quiet
+st_out=$(git -C "$SOURCE_PATH" merge --ff-only same-tree-sim 2>&1)
+st_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+
+int_st_head=$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")
+if ! grep -q "^${int_st_head} ${st_head}$" "$local_commit_map"; then
+    echo "FAIL: Intermediary $BRANCH_NAME doesn't map to the same-tree merge"
+    echo "$st_out"
+    git -C "$INTERMEDIARY_DIR" log --oneline -3 "$BRANCH_NAME"
+    exit 1
+fi
+src_files=$(git -C "$SOURCE_PATH" ls-tree -r --name-only HEAD | grep -vx '.env')
+# This intermediary predates the exclude, so it still carries the old .env
+int_files=$(git -C "$INTERMEDIARY_DIR" ls-tree -r --name-only "$BRANCH_NAME" | grep -vx '.env')
+if [ "$src_files" != "$int_files" ]; then
+    echo "FAIL: Intermediary tree differs from source after same-tree merge"
+    diff <(echo "$src_files") <(echo "$int_files")
+    exit 1
+fi
+if ! git -C "$INTERMEDIARY_DIR" rev-parse --verify -q "${int_st_head}^2" >/dev/null; then
+    echo "FAIL: Same-tree merge lost its merge topology in the intermediary"
+    exit 1
+fi
+
+echo "changed secret" > "$SOURCE_PATH/.env"
+git -C "$SOURCE_PATH" add .env
+git -C "$SOURCE_PATH" commit -m "Excluded-only commit" --quiet
+excl_head=$(git -C "$SOURCE_PATH" rev-parse HEAD)
+if ! grep -q "^0 ${excl_head}$" "$local_commit_map"; then
+    echo "FAIL: Excluded-only commit not mapped to 0"
+    exit 1
+fi
+if [ "$(git -C "$INTERMEDIARY_DIR" rev-parse "$BRANCH_NAME")" != "$int_st_head" ]; then
+    echo "FAIL: Excluded-only commit moved intermediary $BRANCH_NAME"
+    git -C "$INTERMEDIARY_DIR" log --oneline -3 "$BRANCH_NAME"
+    exit 1
+fi
+echo "  PASS: Same-tree merge imported as a merge at source HEAD, excluded-only skipped"
+git -C "$SOURCE_PATH" branch -D same-tree-sim same-tree-pr --quiet
+: > "$exclude_pathspecs_file"
+
 echo "Test 18: Post-merge hook skips squash merges"
 # Squash merges pass $1=1 to post-merge hook. The hook should skip and let
 # post-commit handle the eventual commit.

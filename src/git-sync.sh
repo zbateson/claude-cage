@@ -626,19 +626,33 @@ apply_source_to_intermediary() {
         done
     fi
 
-    # Export to temp file first so we can detect excluded-only commits before
-    # fast-import. See comment in post-commit hook for full explanation.
-    local export_err export_out
+    # Excluded-only: a non-merge commit with no in-scope changes. Merges are
+    # always imported so the intermediary keeps their topology.
+    if ! git -C "$source_dir" rev-parse --verify -q "HEAD^2" >/dev/null \
+        && git -C "$export_dir" diff-tree --quiet -r --root "$source_head" ${pathspec_args:+-- "${pathspec_args[@]}"}; then
+        echo "0 $source_head" >> "$commit_map_path"
+        sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"
+        return 0
+    fi
+
+    local export_err export_out marks_in
     export_err=$(make_temp_file "export-err")
     export_out=$(make_temp_file "export-out")
+    marks_in=$(make_temp_file "marks-in")
+    touch "$source_marks_path"
 
+    # See claude-cage-sync-commit: without --full-history --sparse and with
+    # this commit's own mark present, fast-export can pick an older commit.
+    grep -v " ${source_head}$" "$source_marks_path" > "$marks_in"
     git -C "$export_dir" fast-export \
-        --import-marks="$source_marks_path" \
+        --import-marks="$marks_in" \
         --export-marks="$source_marks_path" \
+        --full-history --sparse --show-original-ids \
         -1 HEAD \
         ${pathspec_args:+-- "${pathspec_args[@]}"} \
         >"$export_out" 2>"$export_err"
     local export_rc=$?
+    rm -f "$marks_in"
 
     if [ "$export_rc" -ne 0 ]; then
         sync_log "$log_file" "$source_short" ">>intermediary" "fast-export FAILED rc=$export_rc"
@@ -650,27 +664,29 @@ apply_source_to_intermediary() {
     # Strip scope prefix from fast-export paths (scoped intermediaries only)
     [ -n "$scope_path" ] && strip_scope_prefix "$export_out" "$scope_path/" "$intermediary_dir"
 
-    # Excluded-only detection: no commit line means fast-export dropped it entirely.
-    if ! grep -q '^commit ' "$export_out"; then
-        echo "0 $source_head" >> "$commit_map_path"
-        sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit (no commit line), mapped to 0"
+    local _exported_oid
+    _exported_oid=$(LC_ALL=C awk '
+        dr > 0 { dr -= length($0) + 1; next }
+        /^data [0-9]+$/ { dr = substr($0, 6) + 0; next }
+        /^commit / { c = 1; next }
+        c && /^original-oid / { print $2; exit }
+    ' "$export_out")
+    if [ "$_exported_oid" != "$source_head" ]; then
+        sync_log "$log_file" "$source_short" ">>intermediary" "fast-export produced ${_exported_oid:-no commit} instead, not importing"
+        echo -e "\033[1;31mclaude-cage:\033[0m fast-export picked ${_exported_oid:0:8} instead of $source_short, not importing" >&2
         rm -f "$export_err" "$export_out"
-        return 0
+        return 1
     fi
 
-    # No from line: check if parent is in marks to distinguish excluded-only from marks gap.
+    # No from line: root commit, or a marks gap (parent not in marks)
+    local _parent=""
     if ! grep -q '^from ' "$export_out"; then
-        local _parent _parent_marked=false
-        _parent=$(git -C "$source_dir" rev-parse HEAD^ 2>/dev/null) || true
-        if [ -n "$_parent" ] && [ -f "$source_marks_path" ] && grep -q " ${_parent}$" "$source_marks_path" 2>/dev/null; then
-            _parent_marked=true
+        _parent=$(git -C "$source_dir" rev-parse --verify -q "HEAD^" 2>/dev/null) || true
+        if [ -z "$_parent" ]; then
+            sync_log "$log_file" "$source_short" ">>intermediary" "root commit, importing as-is"
         fi
-        if [ "$_parent_marked" = true ] || [ -z "$_parent" ]; then
-            echo "0 $source_head" >> "$commit_map_path"
-            sync_log "$log_file" "$source_short" ">>intermediary" "excluded-only commit, mapped to 0"
-            rm -f "$export_err" "$export_out"
-            return 0
-        fi
+    fi
+    if [ -n "$_parent" ]; then
         # Marks gap: inject intermediary branch HEAD as parent
         local _current_branch _int_head
         _current_branch=$(git -C "$source_dir" branch --show-current 2>/dev/null)

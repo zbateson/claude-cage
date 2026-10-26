@@ -1447,16 +1447,31 @@ fi
 # create_intermediary_clone's fast-export errored out before writing them.
 touch "$SOURCE_MARKS" "$IMPORT_MARKS"
 
-# Export to temp file first so we can detect excluded-only commits before fast-import.
-# git fast-export --export-marks only writes commit marks (blobs are ignored per docs).
-# This means incremental exports lose blob marks from source-marks. For excluded-only
-# commits, fast-export can't reference parent blobs -> emits an orphan root commit
-# instead of a proper child. Piping that to fast-import would fail with
-# "new tip does not contain old tip". Detecting and skipping avoids this.
-git fast-export --import-marks="$SOURCE_MARKS" --export-marks="$SOURCE_MARKS" -1 "$COMMIT_HASH" \
+# Excluded-only: a non-merge commit with no in-scope changes. Merges are always
+# imported so the intermediary keeps their topology.
+if ! git rev-parse --verify -q "${COMMIT_HASH}^2" >/dev/null \
+    && git diff-tree --quiet -r --root "$COMMIT_HASH" ${PATHSPEC_ARGS:+-- "${PATHSPEC_ARGS[@]}"}; then
+    echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
+    echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL - commit only touches excluded or out-of-scope files"
+    rm -f "$EXPORT_ERR" "$EXPORT_OUT"
+    exit 0
+fi
+
+# fast-export walks history to pick its one commit, and that walk skips marked
+# commits and (with a pathspec) simplifies away merges and excluded-only
+# commits, landing on some older unmarked commit. --full-history --sparse
+# stops the simplifying, and dropping this commit's own mark (left by an
+# earlier failed import) stops the skipping. The original-oid check below
+# refuses anything else.
+MARKS_IN=$(mktemp 2>/dev/null || echo "/tmp/claude-cage-marks-in.$$")
+grep -v " ${COMMIT_HASH}$" "$SOURCE_MARKS" > "$MARKS_IN"
+git fast-export --import-marks="$MARKS_IN" --export-marks="$SOURCE_MARKS" \
+    --full-history --sparse --show-original-ids -1 "$COMMIT_HASH" \
     ${PATHSPEC_ARGS:+-- "${PATHSPEC_ARGS[@]}"} \
     >"$EXPORT_OUT" 2>"$EXPORT_ERR"
 EXPORT_RC=$?
+rm -f "$MARKS_IN"
 
 if [ "$EXPORT_RC" -ne 0 ]; then
     _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-export FAILED rc=$EXPORT_RC"
@@ -1485,40 +1500,32 @@ if [ -n "$SCOPE_PATH" ]; then
     "$INTERMEDIARY/claude-cage-strip-prefix" "${SCOPE_PATH}/" "$EXPORT_OUT"
 fi
 
-# Excluded-only detection: no commit line means fast-export dropped it entirely (small repos).
-if ! grep -q '^commit ' "$EXPORT_OUT"; then
-    echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
-    _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit (no commit line), mapped to 0"
-    echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
+# Data sections are skipped so blob content can't fake a commit header.
+EXPORTED_OID=$(LC_ALL=C awk '
+    dr > 0 { dr -= length($0) + 1; next }
+    /^data [0-9]+$/ { dr = substr($0, 6) + 0; next }
+    /^commit / { c = 1; next }
+    c && /^original-oid / { print $2; exit }
+' "$EXPORT_OUT")
+if [ "$EXPORTED_OID" != "$COMMIT_HASH" ]; then
+    _sync_log "$COMMIT_SHORT" ">>intermediary" "fast-export produced ${EXPORTED_OID:-no commit} instead, not importing"
+    echo -e "\033[1;31mclaude-cage:\033[0m Sync failed for commit $COMMIT_SHORT$SCOPE_LABEL: fast-export picked ${EXPORTED_OID:0:8} instead, not importing"
+    echo "  Details in: $SYNC_LOG"
     rm -f "$EXPORT_ERR" "$EXPORT_OUT"
-    exit 0
+    exit 1
 fi
 
-# No from line: root commit (no parent expected), excluded-only (parent in
-# marks, all changes filtered out), or marks gap (parent not in marks, e.g.
-# from sync_to_source/git-am or prior excluded-only commit). Check parent to
-# distinguish. --verify is required: bare rev-parse on a missing ref prints
-# the literal arg to stdout and exits non-zero, fooling [ -z "$_PARENT" ].
+# No from line: root commit, or a marks gap (parent not in marks, e.g. after
+# sync_to_source/git-am or an excluded-only commit). --verify is required:
+# bare rev-parse on a missing ref prints the literal arg to stdout.
 if ! grep -q '^from ' "$EXPORT_OUT"; then
     _PARENT=$(git rev-parse --verify "${COMMIT_HASH}^" 2>/dev/null) || _PARENT=""
     if [ -z "$_PARENT" ]; then
-        # Root commit. Fast-export's lack of from line is correct — import as-is.
+        # Root commit. Fast-export's lack of from line is correct; import as-is.
         _sync_log "$COMMIT_SHORT" ">>intermediary" "root commit, importing as-is"
     else
-        _PARENT_MARKED=false
-        if [ -f "$SOURCE_MARKS" ] && grep -q " ${_PARENT}$" "$SOURCE_MARKS" 2>/dev/null; then
-            _PARENT_MARKED=true
-        fi
-        if [ "$_PARENT_MARKED" = true ]; then
-            # Parent IS in marks but no from line -> truly excluded-only
-            echo "0 $COMMIT_HASH" >> "$COMMIT_MAP"
-            _sync_log "$COMMIT_SHORT" ">>intermediary" "excluded-only commit, mapped to 0"
-            echo -e "\033[1;31mclaude-cage:\033[0m Nothin' in scope$SCOPE_LABEL — commit only touches excluded or out-of-scope files"
-            rm -f "$EXPORT_ERR" "$EXPORT_OUT"
-            exit 0
-        fi
-        # Parent NOT in marks — marks gap. Inject intermediary branch HEAD as parent.
-        # The deleteall + full-tree reconstruction produces the correct tree state.
+        # Marks gap. Inject intermediary branch HEAD as parent; the deleteall +
+        # full-tree reconstruction produces the correct tree state.
         _INT_HEAD=$(git -C "$INTERMEDIARY" rev-parse --verify "$current_branch" 2>/dev/null) || _INT_HEAD=""
         if [ -n "$_INT_HEAD" ]; then
             _sync_log "$COMMIT_SHORT" ">>intermediary" "marks gap: injecting parent ${_INT_HEAD:0:8}"

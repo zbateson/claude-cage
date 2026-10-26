@@ -73,7 +73,9 @@ Recovery paths when the guard fires: `claude-cage git-merge --force` (opts in to
 
 ### Inbound (Source → Intermediary)
 
-Source `post-commit` / `post-merge` hooks fire → check commit mapping (skip if already mapped) → call `claude-cage-sync-commit` helper → `git fast-export -1 <hash>` with pathspec excludes to temp file → detect excluded-only commits (no `commit` or no `from` line) → if valid, `git fast-import` on intermediary → update marks + commit mapping. Claude runs `git pull` when ready.
+Source `post-commit` / `post-merge` hooks fire → check commit mapping (skip if already mapped) → call `claude-cage-sync-commit` helper → non-merge commit with no in-scope changes (`git diff-tree --quiet` with the pathspecs) is excluded-only, mapped to `0` → otherwise `git fast-export --full-history --sparse --show-original-ids -1 <hash>` with pathspec excludes to temp file → refuse if the exported `original-oid` isn't `<hash>` → `git fast-import` into a scratch ref → fast-forward the branch to it (side commits a later merge brings in leave the branch alone) → update marks + commit mapping. Claude runs `git pull` when ready.
+
+**Why the fast-export flags matter.** `fast-export -1` picks its commit via a revision walk that skips already-marked commits and, with a pathspec, simplifies away merges whose filtered tree matches a parent and commits with no in-scope changes. Without `--full-history --sparse`, those land the walk on the newest *unmarked* ancestor, and the marks-gap path then grafts that old commit's full tree onto the branch. The helper also imports from a marks copy without the commit's own mark, so a commit left marked by an earlier failed import is re-exported rather than skipped.
 
 ### Sessions
 
@@ -294,7 +296,7 @@ bash tests/run-all.sh
 | test-banner.sh | banner.sh | 6 |
 | test-git-clone.sh | git-clone.sh | 34 |
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
-| test-git-hooks.sh | git-hooks.sh | 32 |
+| test-git-hooks.sh | git-hooks.sh | 33 |
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 86 |
 | test-network.sh | network.sh | 1 |
@@ -308,7 +310,7 @@ bash tests/run-all.sh
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 | test-session-naming.sh | session naming + allocation | 19 |
 
-**~414 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
+**~415 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

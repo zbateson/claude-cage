@@ -157,6 +157,16 @@ grep -qF -- "--launch 'it'\\''s tool'" "$BIN_DIR/mytool" \
     || fail "command should be single-quoted" "$(cat "$BIN_DIR/mytool")"
 echo "  PASS: custom name"
 
+echo "Test 13b: a shell-line command is named and checked by its first word"
+output=$(run_cage "$CAGE" add-launcher 'ls -d . >/dev/null || ls; ls') || fail "add-launcher failed" "$output"
+[ -x "$BIN_DIR/ls-cage" ] || fail "launcher should be named ls-cage" "$output"
+if echo "$output" | grep -q "can't find"; then
+    fail "installed first word should not trigger the missing-command warning" "$output"
+fi
+sh -n "$BIN_DIR/ls-cage" || fail "launcher is not valid sh" "$(cat "$BIN_DIR/ls-cage")"
+run_cage "$CAGE" remove-launcher ls-cage >/dev/null
+echo "  PASS: shell-line command"
+
 echo "Test 14: add-launcher updates its own launcher"
 output=$(run_cage "$CAGE" add-launcher aider copilot-cage) || fail "re-add failed" "$output"
 echo "$output" | grep -q "Launcher updated" || fail "expected update message" "$output"

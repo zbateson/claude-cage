@@ -109,7 +109,7 @@ Display layer: every user-facing surface (`Joinin'…`, dirty prompt, `claude-ca
 
 `cfg_launch` (config `launch`, or `--launch` which overrides it after `init_config`) is a shell command string. `main.sh` appends passthrough args with `printf %q` and hands the result to the sandbox as a single argument; bwrap and Docker both run it through `bash -c`, so args with spaces or shell metacharacters arrive intact. Docker re-quotes the whole command with `%q` for its `su -c` hop. Arguments after `--` always pass through; `helpers.sh`'s early flag scan also stops at `--`.
 
-`add-launcher <cmd> [<name>]` (`src/config-builder.sh`) writes `~/.local/bin/<name>` (default `<cmd>-cage`): a `#!/bin/sh` script with the marker `# claude-cage launcher` on line 2 and `exec '<realpath of claude-cage>' --launch '<cmd>' "$@"`. The absolute path avoids depending on PATH order (and can't recurse into itself). `add-launcher` only overwrites, and `remove-launcher` only deletes, files carrying the marker (`is_cage_launcher`). Completions for `remove-launcher` use the same marker check. Launcher names are restricted to `[A-Za-z0-9][A-Za-z0-9._+-]*` (`valid_launcher_name`) since they're written unquoted into completion files.
+`add-launcher <cmd> [<name>]` (`src/config-builder.sh`) writes `~/.local/bin/<name>` (default `<cmd>-cage`, from the first word of `<cmd>` since it may be a whole shell line; the installed-command heads-up checks that word too): a `#!/bin/sh` script with the marker `# claude-cage launcher` on line 2 and `exec '<realpath of claude-cage>' --launch '<cmd>' "$@"`. The absolute path avoids depending on PATH order (and can't recurse into itself). `add-launcher` only overwrites, and `remove-launcher` only deletes, files carrying the marker (`is_cage_launcher`). Completions for `remove-launcher` use the same marker check. Launcher names are restricted to `[A-Za-z0-9][A-Za-z0-9._+-]*` (`valid_launcher_name`) since they're written unquoted into completion files.
 
 **Launcher completions.** bash-completion and zsh's compinit both look up completions by command name, so `copilot-cage` never loads `claude-cage`'s. `install_launcher_completion` writes a per-launcher file for each shell whose claude-cage completions are installed: bash gets `~/.local/share/bash-completion/completions/<name>` (eval the completion script, then `complete -F _claude_cage <name>`), zsh gets `~/.zsh/completions/_<name>` (`#compdef <name>` plus the same eval). Both carry `# claude-cage launcher completion`; only marked files are overwritten or removed. `remove-launcher` removes them (even when the launcher itself is already gone), and `install-completions` calls `hook_existing_launchers` so launchers created before completions were installed get hooked up. `install-completions` picks the shell from `$SHELL` only, since the script itself always runs under bash.
 
@@ -321,9 +321,9 @@ bash tests/run-all.sh
 | test-cross-session.sh | cross-project session sharing | 11 |
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 | test-session-naming.sh | session naming + allocation | 19 |
-| test-launch.sh | --launch, passthrough quoting, add/remove-launcher, launcher completions | 26 |
+| test-launch.sh | --launch, passthrough quoting, add/remove-launcher, launcher completions | 27 |
 
-**~442 assertions across 19 files.** bwrap tests skipped if user namespaces unavailable.
+**~443 assertions across 19 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

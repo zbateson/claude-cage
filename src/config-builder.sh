@@ -278,8 +278,10 @@ add_launcher() {
         echo "Creates ~/.local/bin/<name> (default: <command>-cage) that runs <command> in the cage."
         return 1
     fi
+    # The launch command may be a whole shell line; the program is its first word
+    local program="${launch_cmd%%[[:space:]]*}"
     if [ -z "$name" ]; then
-        name="$(basename "$launch_cmd")-cage"
+        name="$(basename "$program")-cage"
     fi
     if ! valid_launcher_name "$name"; then
         echo "Hold on now. '$name' ain't a usable launcher name."
@@ -322,9 +324,9 @@ add_launcher() {
         echo "Want tab-completion for it? Run 'claude-cage install-completions'."
     fi
 
-    if ! command -v "$launch_cmd" >/dev/null 2>&1; then
+    if ! command -v "$program" >/dev/null 2>&1; then
         echo ""
-        echo "Heads up: I can't find '$launch_cmd' on this machine. It has to be reachable"
+        echo "Heads up: I can't find '$program' on this machine. It has to be reachable"
         echo "inside the sandbox (or installed in the Docker image) to run."
     fi
     case ":$PATH:" in

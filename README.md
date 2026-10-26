@@ -325,6 +325,13 @@ claude-cage remove-launcher pair
 A few things to know:
 
 - **The tool's gotta be reachable inside the sandbox.** Mount it in with `additionalMounts` (bwrap mode) or install it in your image (Docker mode), same as Claude. `add-launcher` gives you a heads-up if it can't find the command on your machine.
+- **The launch command can be a whole shell line.** Handy when a tool needs a step before it starts, like kiro-cli wantin' you logged in first. This one logs in only when you're logged out:
+
+  ```bash
+  claude-cage add-launcher 'kiro-cli whoami >/dev/null 2>&1 || kiro-cli login; kiro-cli'
+  ```
+
+  The launcher's named after the first word (`kiro-cli-cage`), and extra args land on the last command, so `kiro-cli-cage chat --resume` runs `kiro-cli chat --resume`.
 - **`~/.local/bin` needs to be on your `PATH`.** You'll hear about it if it ain't.
 - **The launcher remembers where claude-cage lives.** Move claude-cage and the launcher's lost; run `add-launcher` again to fix it up.
 - **Launchers only touch their own kind.** `add-launcher` won't overwrite a file it didn't write, and `remove-launcher` won't delete one.

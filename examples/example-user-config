@@ -104,6 +104,14 @@ claude_cage {
         { source = "~/.claude", mode = "rw" },        -- Claude config (needs write access)
         { source = "~/.claude.json", mode = "rw" },   -- Claude auth/settings
         "~/.gitconfig",                               -- Git config (for commits)
+
+        -- Other launchers need their binaries and state mounted the same way.
+        -- Mount the directory holding a tool's login state rw, or it will ask
+        -- you to log in every session. For example, kiro-cli:
+        -- "~/.local/bin/kiro-cli",
+        -- "~/.local/bin/kiro-cli-chat",
+        -- { source = "~/.kiro", mode = "rw" },
+        -- { source = "~/.local/share/kiro-cli", mode = "rw" },  -- login state
     },
 
     -- =========================================================================

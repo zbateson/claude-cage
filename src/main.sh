@@ -635,6 +635,18 @@ else
     intermediary_dir=$(get_scoped_intermediary_path "$cfg_source" "$scope_path")
     intermediary_root=$(get_intermediary_root)
 
+    # Checked on every start, not just when a rebuild is already planned: a
+    # reused cage would otherwise keep files that were since excluded.
+    excludes_changed=false
+    if [ "$dry_run" != true ] && intermediary_excludes_changed "$intermediary_dir" "$cfg_exclude"; then
+        excludes_changed=true
+        _other_active=false
+        if has_other_sessions "$cfg_source"; then
+            _other_active=true
+        fi
+        guard_exclude_rebuild "$cfg_source" "$intermediary_dir" "$_other_active"
+    fi
+
     # Session selection: routes between default and per-project alternates.
     # When cfg_isolated=true (or a <project-key>-isolated cache already exists
     # for this project), select_session sticks the project in a dedicated
@@ -671,6 +683,9 @@ else
 
     # Check if existing cage is in sync with source
     cage_state=$(check_cage_state "$cfg_source" "$intermediary_dir" "$work_dir")
+    if [ "$excludes_changed" = true ]; then
+        cage_state="excludes_changed"
+    fi
 
     case "$cage_state" in
         "in_sync")
@@ -707,6 +722,14 @@ else
                 create_intermediary_clone "$cfg_source" "$scope_path"
             fi
             ;;
+        "stale_work")
+            if [ "$other_session_active" = true ]; then
+                echo "This cage was cloned from an older build of the intermediary, but another session's runnin'. Joinin' it as-is."
+            else
+                echo "This cage was cloned from an older build of the intermediary. Settin' it up fresh..."
+                create_intermediary_clone "$cfg_source" "$scope_path"
+            fi
+            ;;
         "needs_update")
             if [ "$other_session_active" = true ]; then
                 echo "Source moved ahead, but another session's runnin'. Joinin' the existing cage."
@@ -715,8 +738,8 @@ else
                 create_intermediary_clone "$cfg_source" "$scope_path"
             fi
             ;;
-        "no_cage"|*)
-            # No existing cage, create fresh
+        "no_cage"|"excludes_changed"|*)
+            # No usable cage: create fresh (rebuilds a stale intermediary)
             create_intermediary_clone "$cfg_source" "$scope_path"
             ;;
     esac
@@ -863,12 +886,8 @@ cleanup_on_exit() {
                 [ "$dirty_matched" = true ] && \
                     echo "Alternate $_display_name was just trackin' source — clearin' it out."
             elif [ -d "$work_dir/.git" ]; then
-                local _reasons=""
-                is_work_dirty "$work_dir" && _reasons="uncommitted changes"
-                if work_has_unpushed "$work_dir"; then
-                    [ -n "$_reasons" ] && _reasons="$_reasons and "
-                    _reasons="${_reasons}unpushed commits"
-                fi
+                local _reasons
+                _reasons=$(describe_unsaved_work "$work_dir")
                 echo ""
                 echo "Alternate $(display_session_name "$CLAUDE_CAGE_SESSION") has $_reasons — leavin' it around for pickup."
                 echo "Run 'claude-cage clean' to wipe it later."
@@ -879,12 +898,8 @@ cleanup_on_exit() {
                 [ "$dirty_matched" = true ] && \
                     echo "Cage's dirty files all match your source — clearin' it out."
             else
-                local _reasons=""
-                is_work_dirty "$work_dir" && _reasons="uncommitted changes"
-                if work_has_unpushed "$work_dir"; then
-                    [ -n "$_reasons" ] && _reasons="$_reasons and "
-                    _reasons="${_reasons}unpushed commits"
-                fi
+                local _reasons
+                _reasons=$(describe_unsaved_work "$work_dir")
                 echo ""
                 echo "This cage's got $_reasons — leavin' it around so nothin' gets lost."
                 echo "Run 'claude-cage clean' to sort it out later."

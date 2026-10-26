@@ -45,7 +45,7 @@ But a git clone ain't the whole story. The sandbox also locks down your filesyst
 2. **Intermediary** — A persistent bare repo with real commit history (configurable depth, default 50). Your excluded files get stripped out durin' `git fast-export` — no secrets touchin' the object store.
 3. **Work** — This is Claude's playground inside the sandbox. When Claude pushes, changes sync right back to source.
 
-The intermediary sticks around in `~/.cache/`, shared across all your sessions. It only gets rebuilt when your exclude patterns change — otherwise it's ready to go.
+The intermediary sticks around in `~/.cache/`, shared across all your sessions. It only gets rebuilt when your exclude patterns change — otherwise it's ready to go. And it won't rebuild out from under you: if another session's still usin' it, or a cage has work that hasn't made it back to source, you'll hear about it first.
 
 **Git hooks do the heavy liftin':**
 

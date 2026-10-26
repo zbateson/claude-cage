@@ -753,6 +753,54 @@ work_has_unpushed() {
     [ "$ahead" -gt 0 ]
 }
 
+# Print what a work dir would lose if deleted ("uncommitted changes",
+# "unpushed commits", or both); prints nothing if it's safe to drop.
+describe_unsaved_work() {
+    local work_dir="$1"
+    local reasons=""
+    if is_work_dirty "$work_dir"; then
+        reasons="uncommitted changes"
+    fi
+    if work_has_unpushed "$work_dir"; then
+        if [ -n "$reasons" ]; then
+            reasons="$reasons and "
+        fi
+        reasons="${reasons}unpushed commits"
+    fi
+    printf '%s' "$reasons"
+}
+
+# List cached work dirs cloned from this intermediary that hold unsaved work,
+# one "<session display name>|<what would be lost>" per line.
+# Arguments: $1 = source_dir, $2 = intermediary_dir
+list_unsaved_work_for_intermediary() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local sid branch ssource sscope work reasons
+    while IFS=' ' read -r sid branch ssource sscope; do
+        if [ -z "$sid" ]; then
+            continue
+        fi
+        if [ "$(get_scoped_intermediary_path "$ssource" "$sscope")" != "$intermediary_dir" ]; then
+            continue
+        fi
+        work=$(session_work_dir_by_scope "$CLAUDE_CAGE_CACHE/sessions/$sid" "$ssource" "$sscope")
+        reasons=$(describe_unsaved_work "$work")
+        if [ -n "$reasons" ]; then
+            echo "$(display_session_name "$sid")|$reasons"
+        fi
+    done < <(list_cached_sessions "$source_dir")
+}
+
+# Ask before throwing work away. Non-interactive runs always get "no".
+confirm_discard_work() {
+    local question="$1"
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        return 1
+    fi
+    config_builder_prompt_yesno "$question" "n"
+}
+
 # Get the current branch of a work directory
 get_work_branch() {
     local work_dir="$1"
@@ -1683,6 +1731,64 @@ compute_exclude_hash() {
     fi
 }
 
+# True when an existing intermediary was built with different exclude patterns
+# Arguments: $1 = intermediary_dir, $2 = exclude patterns (pipe-separated)
+intermediary_excludes_changed() {
+    local intermediary_dir="$1"
+    local exclude_patterns="$2"
+    if [ ! -f "$intermediary_dir/HEAD" ]; then
+        return 1
+    fi
+    local stored=""
+    local hash_path
+    hash_path=$(get_exclude_hash_path "$intermediary_dir")
+    if [ -f "$hash_path" ]; then
+        stored=$(cat "$hash_path")
+    fi
+    [ "$stored" != "$(compute_exclude_hash "$exclude_patterns")" ]
+}
+
+# Before rebuilding an intermediary for changed excludes, make sure nothing
+# depends on it: a live session would lose its remote mid-run, and cached work
+# dirs would be left with history unrelated to the rebuilt one. Exits when the
+# rebuild can't go ahead; sets work_discard_confirmed when the user okays it.
+# Arguments: $1 = source_dir, $2 = intermediary_dir, $3 = other_session_active
+guard_exclude_rebuild() {
+    local source_dir="$1"
+    local intermediary_dir="$2"
+    local other_session_active="$3"
+
+    echo ""
+    echo "Your exclude patterns changed, so this cage needs a fresh intermediary."
+
+    if [ "$other_session_active" = true ]; then
+        echo "Hold on now. Another session for this project is still usin' the old one."
+        echo "Rebuildin' it now would pull the floor out from under that session."
+        echo "Close it down, then start me up again."
+        exit 1
+    fi
+
+    local unsaved
+    unsaved=$(list_unsaved_work_for_intermediary "$source_dir" "$intermediary_dir")
+    if [ -z "$unsaved" ]; then
+        return 0
+    fi
+
+    echo "These cages have work that hasn't made it back to source yet:"
+    local name reasons
+    while IFS='|' read -r name reasons; do
+        echo "  $name: $reasons"
+    done <<< "$unsaved"
+    echo "Rebuildin' wipes the active workspace and leaves the rest pointin' at"
+    echo "history that won't line up anymore."
+    if ! confirm_discard_work "Rebuild anyway?"; then
+        echo "Leavin' it all be. Get that work back to source (git push from the cage,"
+        echo "then claude-cage git-merge), then start me up again."
+        exit 1
+    fi
+    work_discard_confirmed=true
+}
+
 # Build commit mapping from fast-export/fast-import marks files
 # Joins source marks and import marks on mark ID to produce
 # <intermediary-hash> <source-hash> lines
@@ -2289,6 +2395,19 @@ create_intermediary_clone() {
 
     # Create/recreate work directory
     if [ -d "$work_dir" ]; then
+        local unsaved=""
+        if [ "$dry_run" != true ] && [ "${work_discard_confirmed:-false}" != true ]; then
+            unsaved=$(describe_unsaved_work "$work_dir")
+        fi
+        if [ -n "$unsaved" ]; then
+            echo ""
+            echo "Hold on now. The workspace has $unsaved, and settin' it up fresh would wipe 'em:"
+            echo "  $work_dir"
+            if ! confirm_discard_work "Wipe it anyway?"; then
+                echo "Leavin' it be. Grab what you need from there, then start me up again."
+                exit 1
+            fi
+        fi
         echo "  Cleanin' out the old workspace..."
         run rm -rf "$work_dir"
     fi

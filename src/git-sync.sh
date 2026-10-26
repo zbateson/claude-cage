@@ -500,6 +500,19 @@ check_cage_state() {
         return
     fi
 
+    # A work dir cloned from an earlier build of the intermediary tracks
+    # commits it no longer has; reusing it would only get pushes rejected.
+    if [ -d "$work_dir/.git" ]; then
+        local work_branch tracked
+        work_branch=$(git -C "$work_dir" branch --show-current 2>/dev/null)
+        if [ -n "$work_branch" ] \
+            && tracked=$(git -C "$work_dir" rev-parse --verify -q "origin/$work_branch" 2>/dev/null) \
+            && ! git -C "$intermediary_dir" cat-file -e "${tracked}^{commit}" 2>/dev/null; then
+            echo "stale_work"
+            return
+        fi
+    fi
+
     # Check if current branch exists in intermediary
     local branch_name
     branch_name=$(get_source_branch "$source_dir")

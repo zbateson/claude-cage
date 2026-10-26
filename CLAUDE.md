@@ -28,7 +28,7 @@ Source Project                    ~/.cache/.../intermediary        ~/.cache/.../
 The intermediary is created by `create_intermediary_clone()` using `git fast-export` with `:(exclude,glob)` pathspec piped into `git fast-import`. Key properties:
 - **1:1 commit mapping**: Every source commit maps to exactly one intermediary commit (or `0` for excluded-only commits)
 - **Incremental updates**: Existing intermediaries updated via `--import-marks`/`--export-marks`
-- **Exclude hash tracking**: Intermediary rebuilt automatically if exclude patterns change
+- **Exclude hash tracking**: Intermediary rebuilt automatically if exclude patterns change (see Rebuild Guards)
 
 Inside the sandbox, work directories are mounted at their original paths, intermediaries at `/run<intermediary-path>`.
 
@@ -112,6 +112,19 @@ Display layer: every user-facing surface (`Joinin'…`, dirty prompt, `claude-ca
 `add-launcher <cmd> [<name>]` (`src/config-builder.sh`) writes `~/.local/bin/<name>` (default `<cmd>-cage`, from the first word of `<cmd>` since it may be a whole shell line; the installed-command heads-up checks that word too): a `#!/bin/sh` script with the marker `# claude-cage launcher` on line 2 and `exec '<realpath of claude-cage>' --launch '<cmd>' "$@"`. The absolute path avoids depending on PATH order (and can't recurse into itself). `add-launcher` only overwrites, and `remove-launcher` only deletes, files carrying the marker (`is_cage_launcher`). Completions for `remove-launcher` use the same marker check. Launcher names are restricted to `[A-Za-z0-9][A-Za-z0-9._+-]*` (`valid_launcher_name`) since they're written unquoted into completion files.
 
 **Launcher completions.** bash-completion and zsh's compinit both look up completions by command name, so `copilot-cage` never loads `claude-cage`'s. `install_launcher_completion` writes a per-launcher file for each shell whose claude-cage completions are installed: bash gets `~/.local/share/bash-completion/completions/<name>` (eval the completion script, then `complete -F _claude_cage <name>`), zsh gets `~/.zsh/completions/_<name>` (`#compdef <name>` plus the same eval). Both carry `# claude-cage launcher completion`; only marked files are overwritten or removed. `remove-launcher` removes them (even when the launcher itself is already gone), and `install-completions` calls `hook_existing_launchers` so launchers created before completions were installed get hooked up. `install-completions` picks the shell from `$SHELL` only, since the script itself always runs under bash.
+
+### Rebuild Guards
+
+`main.sh` compares the intermediary's stored exclude hash against the current `cfg_exclude` on every start (`intermediary_excludes_changed`), before session selection. Comparing only inside `create_intermediary_clone` isn't enough: a reused cage (`in_sync`) never calls it, so a changed exclude would go unnoticed until some later start happened to need a work dir, and that start would then rebuild under whichever sessions were running.
+
+When the hash differs, `guard_exclude_rebuild` runs first:
+
+- **Another live session for this source** (`has_other_sessions`): refuse and exit. Rebuilding deletes the directory that session's `origin` points at, and the new intermediary's hashes wouldn't match its history anyway. Continuing on the stale intermediary isn't an option either, since a new exclude usually exists to keep something out of the cage.
+- **Cached work dirs on this intermediary with unsaved work** (`list_unsaved_work_for_intermediary`, via `describe_unsaved_work`: uncommitted changes and/or unpushed commits): list them and confirm; non-interactive runs refuse. A yes sets `work_discard_confirmed`.
+
+The guard runs before `select_session`, so a refused start leaves no claimed alternate slot or registered PID behind. Independently, `create_intermediary_clone` won't delete an existing work dir holding unsaved work without confirmation (unless `work_discard_confirmed` is set). That covers the other recreate paths, such as a missing intermediary or `needs_update`.
+
+**Stale work dirs.** A cage left over from before a rebuild (in practice, a dirty alternate the user agreed to orphan) would otherwise come back `in_sync`: the hash matches by then, and source HEAD is in the new commit map. `check_cage_state` returns `stale_work` when the work dir's `origin/<branch>` commit doesn't exist in the intermediary. `main.sh` then recreates the work dir through `create_intermediary_clone`, where the wipe guard prompts if the cage still holds unsaved work. If another session for the source is live, it joins as-is instead.
 
 ### Failed Patches
 
@@ -322,8 +335,9 @@ bash tests/run-all.sh
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 | test-session-naming.sh | session naming + allocation | 19 |
 | test-launch.sh | --launch, passthrough quoting, add/remove-launcher, launcher completions | 27 |
+| test-rebuild-guard.sh | exclude-change detection, rebuild and work-dir wipe guards, stale work dirs | 9 |
 
-**~443 assertions across 19 files.** bwrap tests skipped if user namespaces unavailable.
+**~452 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

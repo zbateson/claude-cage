@@ -10,6 +10,7 @@ show_help=false
 show_version=false
 for arg in "$@"; do
     case "$arg" in
+        --) break ;;
         --dry-run) dry_run=true ;;
         --verbose|-v) verbose=true ;;
         --debug) debug=true ;;
@@ -170,8 +171,11 @@ Subcommands:
   clean --all             Remove all cached sessions for this project
   completion SHELL        Output shell completion script (bash or zsh)
   install-completions     Install shell completions for current shell
+  add-launcher CMD [NAME] Create ~/.local/bin/NAME (default: CMD-cage) that runs CMD caged
+  remove-launcher NAME    Remove a launcher created by add-launcher
 
 Options:
+  --launch CMD            Run CMD instead of the configured launch command
   --test                  Drop into a shell for testing instead of launching
   --direct-mount          Mount source directly without git sync
   --scoped                Scope intermediary to CWD subdirectory only
@@ -185,7 +189,8 @@ Options:
   --help, -h              Show this help message
   --version               Show version number
 
-Arguments after -- are passed through to the launch command.
+Unrecognized arguments are passed through to the launch command. Arguments
+after -- are always passed through, even ones claude-cage would recognize.
 
 Config files (loaded in order, later values override):
   /etc/claude-cage.conf              System-wide config
@@ -197,6 +202,9 @@ Examples:
   claude-cage                        Start sandbox with configured launch command
   claude-cage --test                 Drop into a shell for testing
   claude-cage --resume               Pass --resume to the launch command
+  claude-cage -- --verbose           Pass --verbose to the launch command
+  claude-cage --launch copilot       Run copilot in the cage instead
+  claude-cage add-launcher copilot   Create ~/.local/bin/copilot-cage
   claude-cage --attach-session       Pick a session to attach to
   claude-cage --attach-session default     Attach to the shared default session
   claude-cage --attach-session isolated    Attach to this project's isolated session
@@ -220,8 +228,8 @@ _claude_cage() {
     local cur prev words cword
     _init_completion 2>/dev/null || return
 
-    local subcommands="git-merge clean completion install-completions"
-    local flags="--test --direct-mount --scoped --with-dirty --attach-session --all --force --dry-run --verbose -v --debug --help -h --version"
+    local subcommands="git-merge clean completion install-completions add-launcher remove-launcher"
+    local flags="--launch --test --direct-mount --scoped --with-dirty --attach-session --all --force --dry-run --verbose -v --debug --help -h --version"
 
     # Check if a subcommand is present in the command line
     local has_clean=false has_git_merge=false
@@ -258,6 +266,20 @@ _claude_cage() {
             ;;
         completion)
             COMPREPLY=($(compgen -W "bash zsh" -- "$cur"))
+            return
+            ;;
+        --launch|add-launcher)
+            COMPREPLY=($(compgen -c -- "$cur"))
+            return
+            ;;
+        remove-launcher)
+            local launchers=""
+            local f
+            for f in "$HOME/.local/bin/"*; do
+                [ -f "$f" ] || continue
+                [ "$(sed -n 2p "$f" 2>/dev/null)" = '# claude-cage launcher' ] && launchers="$launchers ${f##*/}"
+            done
+            COMPREPLY=($(compgen -W "$launchers" -- "$cur"))
             return
             ;;
     esac
@@ -335,9 +357,12 @@ _claude_cage() {
         'clean:Remove cached session(s) (interactive if no ID given)'
         'completion:Output shell completion script'
         'install-completions:Install shell completions for current shell'
+        'add-launcher:Create a ~/.local/bin launcher that runs a command caged'
+        'remove-launcher:Remove a launcher created by add-launcher'
     )
 
     flags=(
+        '--launch[Run this command instead of the configured one]:command:_command_names'
         '--test[Drop into a shell for testing]'
         '--direct-mount[Mount source directly without git sync]'
         '--scoped[Scope intermediary to CWD subdirectory only]'
@@ -361,6 +386,8 @@ _claude_cage() {
                 git-merge) _claude_cage_branches ;;
                 clean) _claude_cage_sessions ;;
                 completion) _values 'shell' bash zsh ;;
+                add-launcher) _command_names ;;
+                remove-launcher) _claude_cage_launchers ;;
             esac
             ;;
     esac
@@ -386,6 +413,15 @@ _claude_cage_branches() {
         branches+=('--force:Apply via 3-way merge even when source has diverged')
         _describe -t branches 'branch' branches
     fi
+}
+
+_claude_cage_launchers() {
+    local -a launchers=()
+    local f
+    for f in "$HOME/.local/bin/"*(N.); do
+        [ "$(sed -n 2p "$f" 2>/dev/null)" = '# claude-cage launcher' ] && launchers+=("${f:t}")
+    done
+    [ ${#launchers[@]} -gt 0 ] && _describe -t launchers 'launcher' launchers
 }
 
 _claude_cage_sessions() {

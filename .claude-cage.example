@@ -19,6 +19,8 @@ claude_cage {
     -- =========================================================================
     -- What to run inside the sandbox. Defaults to "claude".
     -- Can be any command: "aider", "cursor", a custom script, etc.
+    -- Override per run with --launch <cmd>, or create a shortcut with
+    -- claude-cage add-launcher <cmd> (writes ~/.local/bin/<cmd>-cage).
 
     launch = "claude",
 

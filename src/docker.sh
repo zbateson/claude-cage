@@ -458,7 +458,10 @@ exec script -q -c \"su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashr
 exec su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'
 ")
     else
-        # Command
+        # Command; quoted so the outer script hands it to su as one argument
+        local su_cmd running_msg
+        printf -v su_cmd '%q' "export PATH=\"\$HOME/.local/bin:\$PATH\"; $*"
+        printf -v running_msg '%q' "Running: $*"
         docker_args+=(/bin/bash -c "
 $tool_install_script
 
@@ -472,8 +475,8 @@ groupadd -g ${user_gid} -o cage 2>/dev/null || true
 useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cage 2>/dev/null || true
 
 # Drop privileges and run command
-debug_echo \"Running: $*\"
-exec su -s /bin/bash -c 'export PATH=\"\$HOME/.local/bin:\$PATH\"; $*' cage
+debug_echo $running_msg
+exec su -s /bin/bash -c $su_cmd cage
 ")
     fi
 

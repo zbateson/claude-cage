@@ -242,6 +242,13 @@ claude-cage
 claude-cage --continue
 claude-cage --resume
 
+# Run somethin' other than the configured launch command
+claude-cage --launch copilot
+
+# Create ~/.local/bin/copilot-cage so you can just type copilot-cage
+claude-cage add-launcher copilot
+claude-cage remove-launcher copilot-cage
+
 # Drop into a shell inside the sandbox (instead of launching claude)
 claude-cage --test
 
@@ -275,9 +282,52 @@ claude-cage clean session.2                      # Remove an alternate (or 'defa
 claude-cage clean --all                          # Remove all sessions
 ```
 
-**Note:** Anythin' claude-cage doesn't recognize gets passed straight through to the launch command. So `claude-cage --resume` runs `claude --resume` inside the sandbox.
+**Note:** Anythin' claude-cage doesn't recognize gets passed straight through to the launch command. So `claude-cage --resume` runs `claude --resume` inside the sandbox. Need to hand over a flag claude-cage would grab for itself, like `--verbose`? Put it after `--`: `claude-cage -- --verbose` runs `claude --verbose`.
 
 **Cleanup:** The `clean` command wipes out cached work/intermediary directories and `.caged/` symlinks. If a session's got uncommitted changes, you'll hear about it before anythin' gets deleted.
+
+## Other Launchers
+
+Claude ain't the only bird that can fly in this cage. Set `launch` in your config to change what runs by default, or pick it per run with `--launch`:
+
+```bash
+claude-cage --launch copilot
+claude-cage --launch aider --no-auto-commits   # extra args pass through like always
+```
+
+Got a tool you reach for all the time? Give it a launcher of its own:
+
+```bash
+claude-cage add-launcher copilot
+```
+
+That writes `~/.local/bin/copilot-cage`, a tiny script that runs claude-cage with `--launch copilot`. From then on it works anywhere claude-cage does, subcommands and all:
+
+```bash
+copilot-cage                             # copilot in the cage
+copilot-cage --resume                    # copilot --resume
+copilot-cage --attach-session session.2  # join an alternate
+copilot-cage git-merge                   # same sync as claude-cage
+```
+
+Want a different name? Pass it second:
+
+```bash
+claude-cage add-launcher aider pair      # creates ~/.local/bin/pair
+```
+
+Run `add-launcher` again with the same name to point it somewhere else, and `remove-launcher` to get rid of it:
+
+```bash
+claude-cage remove-launcher pair
+```
+
+A few things to know:
+
+- **The tool's gotta be reachable inside the sandbox.** Mount it in with `additionalMounts` (bwrap mode) or install it in your image (Docker mode), same as Claude. `add-launcher` gives you a heads-up if it can't find the command on your machine.
+- **`~/.local/bin` needs to be on your `PATH`.** You'll hear about it if it ain't.
+- **The launcher remembers where claude-cage lives.** Move claude-cage and the launcher's lost; run `add-launcher` again to fix it up.
+- **Launchers only touch their own kind.** `add-launcher` won't overwrite a file it didn't write, and `remove-launcher` won't delete one.
 
 ## Sessions
 

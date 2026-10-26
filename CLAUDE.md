@@ -105,6 +105,12 @@ Display layer: every user-facing surface (`Joinin'…`, dirty prompt, `claude-ca
 
 `--attach-session` keeps working in both forms: with no arg, it lists every attachable session (`default` + each on-disk alternate for this project) and prompts; with a name, it accepts `default` / `session.N` / legacy timestamp.
 
+### Launch Command and Launchers
+
+`cfg_launch` (config `launch`, or `--launch` which overrides it after `init_config`) is a shell command string. `main.sh` appends passthrough args with `printf %q` and hands the result to the sandbox as a single argument; bwrap and Docker both run it through `bash -c`, so args with spaces or shell metacharacters arrive intact. Docker re-quotes the whole command with `%q` for its `su -c` hop. Arguments after `--` always pass through; `helpers.sh`'s early flag scan also stops at `--`.
+
+`add-launcher <cmd> [<name>]` (`src/config-builder.sh`) writes `~/.local/bin/<name>` (default `<cmd>-cage`): a `#!/bin/sh` script with the marker `# claude-cage launcher` on line 2 and `exec '<realpath of claude-cage>' --launch '<cmd>' "$@"`. The absolute path avoids depending on PATH order (and can't recurse into itself). `add-launcher` only overwrites, and `remove-launcher` only deletes, files carrying the marker (`is_cage_launcher`). Completions for `remove-launcher` use the same marker check.
+
 ### Failed Patches
 
 When `git am` fails, patches are saved to `<source>/claude-cage-failed-patches/from-intermediary/<branch>/`. At next startup, an interactive prompt offers to apply, delete, or skip them.
@@ -200,7 +206,7 @@ claude_cage {
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `launch` | `"claude"` | Command to run inside sandbox |
+| `launch` | `"claude"` | Command to run inside sandbox. `--launch <cmd>` overrides it for one run. |
 | `exclude` | `{}` | Patterns to exclude from intermediary |
 | `carry` | `{}` | Gitignored files (or dirs) copied source→work at startup. On exit, the cage hashes each entry against a startup snapshot — files compare against a single hash; directories compare per-file across the tree (also detects added/removed files). Unchanged entries are announced as skipped; changed ones get deposited into `.caged/carry/<display-session>/<src_path>` (never back onto source — multiple sessions would collide). If `createCagedDir` is off, edits are lost and a heads-up fires at startup. String or `{ source, as/dest }` table. |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
@@ -231,6 +237,10 @@ Array options (`exclude`, `carry`, `allow`, `block`, `additionalMounts`, `docker
 ```bash
 ./claude-cage                                      # Basic usage
 ./claude-cage --resume                             # Pass args to launch command
+./claude-cage -- --verbose                         # Pass even recognized flags to launch command
+./claude-cage --launch <cmd>                       # Override the configured launch command
+./claude-cage add-launcher <cmd> [<name>]          # Write ~/.local/bin/<name> (default <cmd>-cage)
+./claude-cage remove-launcher <name>               # Remove a launcher written by add-launcher
 ./claude-cage --test                               # Shell inside sandbox
 ./claude-cage --direct-mount                       # Skip git sync
 ./claude-cage --with-dirty                         # Carry uncommitted source files into the cage
@@ -309,8 +319,9 @@ bash tests/run-all.sh
 | test-cross-session.sh | cross-project session sharing | 11 |
 | test-subdir-routing.sh | subdir auto-routing | 10 |
 | test-session-naming.sh | session naming + allocation | 19 |
+| test-launch.sh | --launch, passthrough quoting, add/remove-launcher | 19 |
 
-**~416 assertions across 18 files.** bwrap tests skipped if user namespaces unavailable.
+**~435 assertions across 19 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

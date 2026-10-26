@@ -188,6 +188,109 @@ ZSH_WRAPPER
     fi
 }
 
+LAUNCHER_MARKER="# claude-cage launcher"
+
+# True if $1 is a wrapper written by add_launcher (marker on line 2)
+is_cage_launcher() {
+    [ -f "$1" ] && [ "$(sed -n 2p "$1" 2>/dev/null)" = "$LAUNCHER_MARKER" ]
+}
+
+sh_single_quote() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+# Write ~/.local/bin/<name> that runs claude-cage --launch <cmd>
+add_launcher() {
+    local launch_cmd="$1"
+    local name="$2"
+
+    if [ -z "$launch_cmd" ]; then
+        echo "Usage: claude-cage add-launcher <command> [<name>]"
+        echo "Creates ~/.local/bin/<name> (default: <command>-cage) that runs <command> in the cage."
+        return 1
+    fi
+    if [ -z "$name" ]; then
+        name="$(basename "$launch_cmd")-cage"
+    fi
+    case "$name" in
+        */*|.|..)
+            echo "Hold on now. '$name' ain't a usable launcher name - no slashes."
+            return 1
+            ;;
+    esac
+
+    local bin_dir="$HOME/.local/bin"
+    local target="$bin_dir/$name"
+    if [ -e "$target" ] && ! is_cage_launcher "$target"; then
+        echo "Hold on now. $target already exists and it ain't one of mine. I'm not touchin' it."
+        return 1
+    fi
+
+    local existed=false
+    if [ -e "$target" ]; then
+        existed=true
+    fi
+
+    local self
+    self=$(realpath "$0")
+    mkdir -p "$bin_dir"
+    {
+        echo '#!/bin/sh'
+        echo "$LAUNCHER_MARKER"
+        echo "exec $(sh_single_quote "$self") --launch $(sh_single_quote "$launch_cmd") \"\$@\""
+    } > "$target"
+    chmod +x "$target"
+
+    if [ "$existed" = true ]; then
+        echo "Launcher updated: $target"
+    else
+        echo "Launcher's ready: $target"
+    fi
+    echo "Run '$name' anywhere you'd run claude-cage, and '$launch_cmd' goes in the cage."
+
+    if ! command -v "$launch_cmd" >/dev/null 2>&1; then
+        echo ""
+        echo "Heads up: I can't find '$launch_cmd' on this machine. It has to be reachable"
+        echo "inside the sandbox (or installed in the Docker image) to run."
+    fi
+    case ":$PATH:" in
+        *":$bin_dir:"*) ;;
+        *)
+            echo ""
+            echo "Heads up: $bin_dir ain't on your PATH. Add this to your shell profile:"
+            echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+            ;;
+    esac
+}
+
+remove_launcher() {
+    local name="$1"
+
+    if [ -z "$name" ]; then
+        echo "Usage: claude-cage remove-launcher <name>"
+        return 1
+    fi
+    case "$name" in
+        */*|.|..)
+            echo "Hold on now. '$name' ain't a usable launcher name - no slashes."
+            return 1
+            ;;
+    esac
+
+    local target="$HOME/.local/bin/$name"
+    if [ ! -e "$target" ]; then
+        echo "There's no launcher at $target."
+        return 1
+    fi
+    if ! is_cage_launcher "$target"; then
+        echo "Hold on now. $target ain't one of mine. I'm not touchin' it."
+        return 1
+    fi
+
+    rm -f "$target"
+    echo "Launcher's gone: $target"
+}
+
 config_builder_run() {
     local user_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/claude-cage"
     local user_config="$user_config_dir/config"

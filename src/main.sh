@@ -34,6 +34,16 @@ if [ "${1:-}" = "install-completions" ]; then
     exit $?
 fi
 
+if [ "${1:-}" = "add-launcher" ]; then
+    add_launcher "${2:-}" "${3:-}"
+    exit $?
+fi
+
+if [ "${1:-}" = "remove-launcher" ]; then
+    remove_launcher "${2:-}"
+    exit $?
+fi
+
 # Parse additional flags and subcommands
 # Arguments we don't recognize get passed through to the launch command
 test_mode=false
@@ -45,14 +55,30 @@ cli_scoped=false
 cli_bring_dirty=false
 cli_attach_session=""
 cli_attach_session_mode=false
+cli_launch=""
+launch_given=false
 passthrough_args=()
 skip_next=false
+expect_launch=false
+after_separator=false
 for i in "$@"; do
+    if [ "$after_separator" = true ]; then
+        passthrough_args+=("$i")
+        continue
+    fi
     if [ "$skip_next" = true ]; then
         skip_next=false
         continue
     fi
+    if [ "$expect_launch" = true ]; then
+        cli_launch="$i"
+        expect_launch=false
+        continue
+    fi
     case "$i" in
+        --) after_separator=true ;;
+        --launch) expect_launch=true; launch_given=true ;;
+        --launch=*) cli_launch="${i#--launch=}"; launch_given=true ;;
         --test) test_mode=true ;;
         --direct-mount) cli_direct_mount=true ;;
         --scoped) cli_scoped=true ;;
@@ -85,6 +111,11 @@ for i in "$@"; do
     esac
 done
 
+if [ "$launch_given" = true ] && [ -z "$cli_launch" ]; then
+    echo "Hold on now. --launch needs a command to run, like --launch copilot."
+    exit 1
+fi
+
 # If in clean mode, treat passthrough args as session IDs
 clean_sessions=()
 if [ "$clean_mode" = true ] && [ ${#passthrough_args[@]} -gt 0 ]; then
@@ -112,6 +143,10 @@ fi
 
 # Initialize and parse config
 init_config "$@"
+
+if [ -n "$cli_launch" ]; then
+    cfg_launch="$cli_launch"
+fi
 
 # Check for direct mount mode (CLI flag, config, or non-git directory)
 direct_mount_mode=false
@@ -497,21 +532,7 @@ echo ""
 echo "  Project:       $cfg_project"
 echo "  Source:        $cfg_source"
 echo "  Mode:          $cfg_mode"
-# Validate launch command against known-safe launchers
-_known_launchers="claude aider goose cline continue codex copilot"
-_launch_basename=$(basename "${cfg_launch%% *}")
-_launch_recognized=false
-for _launcher in $_known_launchers; do
-    if [ "$_launch_basename" = "$_launcher" ]; then
-        _launch_recognized=true
-        break
-    fi
-done
-if [ "$_launch_recognized" = true ]; then
-    echo "  Launch:        $cfg_launch"
-else
-    echo -e "  Launch:        ${_red}$cfg_launch${_reset}  ⚠️  unrecognized launch command"
-fi
+echo "  Launch:        $cfg_launch"
 if [ "$direct_mount_mode" = false ]; then
     echo "  Auto-sync:     $cfg_autoSync"
     echo "  Sync active:   $cfg_syncActiveBranch"
@@ -889,19 +910,20 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT INT TERM
 
 # Determine what to run
+launch_args=()
 if [ "$test_mode" = true ]; then
     # Test mode: drop into interactive shell
     launch_msg="Droppin' you into a shell for testing..."
-    launch_cmd=""
 else
-    # Normal mode: run the configured launch command with any passthrough args
+    # The sandbox runs this as one string through bash -c, so passthrough
+    # args are shell-quoted to reach the launch command intact.
+    launch_cmd="$cfg_launch"
     if [ ${#passthrough_args[@]} -gt 0 ]; then
-        launch_cmd="$cfg_launch ${passthrough_args[*]}"
-        launch_msg="Launchin': $launch_cmd"
-    else
-        launch_cmd="$cfg_launch"
-        launch_msg="Launchin': $cfg_launch"
+        printf -v quoted_args ' %q' "${passthrough_args[@]}"
+        launch_cmd+="$quoted_args"
     fi
+    launch_args=("$launch_cmd")
+    launch_msg="Launchin': $launch_cmd"
 fi
 
 echo "$launch_msg"
@@ -949,13 +971,13 @@ append_session_log "=== Sandbox launched at $(date '+%Y-%m-%d %H:%M:%S') ==="
 
 sandbox_launched=true
 if [ "$cfg_mode" = "docker" ]; then
-    run_in_docker "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+    run_in_docker "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" "${launch_args[@]}"
 else
     # Use network-isolated bwrap if network filtering is enabled
     if [ "$cfg_networkMode" != "disabled" ] && [ -n "$cfg_networkMode" ]; then
-        run_in_bwrap_with_network "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap_with_network "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" "${launch_args[@]}"
     else
-        run_in_bwrap "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" $launch_cmd
+        run_in_bwrap "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" "${launch_args[@]}"
     fi
 fi
 

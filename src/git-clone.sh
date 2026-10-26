@@ -1571,10 +1571,14 @@ if [ -n "$current_branch" ] && [ -n "$NEW_TIP" ]; then
     fi
 fi
 
-# Update commit mapping from marks
+# Update commit mapping from marks. Marks files hold every mark ever exported,
+# so only append unseen pairs.
 if [ -f "$SOURCE_MARKS" ] && [ -f "$IMPORT_MARKS" ]; then
-    awk 'NR==FNR { source[$1]=$2; next } { if ($1 in source) print $2, source[$1] }' \
-        "$SOURCE_MARKS" "$IMPORT_MARKS" >> "$COMMIT_MAP"
+    awk -v map="$COMMIT_MAP" '
+        BEGIN { while ((getline line < map) > 0) seen[line] = 1 }
+        NR==FNR { source[$1] = $2; next }
+        ($1 in source) { pair = $2 " " source[$1]; if (!(pair in seen)) { seen[pair] = 1; print pair } }
+    ' "$SOURCE_MARKS" "$IMPORT_MARKS" >> "$COMMIT_MAP"
 fi
 
 # If commit still not in mapping after marks join, record as excluded-only
@@ -1660,11 +1664,12 @@ build_commit_map_from_marks() {
     # Join marks on mark ID: source marks have :<id> <source-hash>,
     # import marks have :<id> <intermediary-hash>
     # Both files are in format: :<mark-id> <hash>
+    # Marks files hold every mark ever exported, so only append unseen pairs.
     if [ -f "$source_marks" ] && [ -f "$import_marks" ]; then
-        # Use awk to join on mark ID
-        awk '
+        awk -v map="$commit_map" '
+        BEGIN { while ((getline line < map) > 0) seen[line] = 1 }
         NR==FNR { source[$1] = $2; next }
-        { if ($1 in source) print $2, source[$1] }
+        ($1 in source) { pair = $2 " " source[$1]; if (!(pair in seen)) { seen[pair] = 1; print pair } }
         ' "$source_marks" "$import_marks" >> "$commit_map"
     fi
 
@@ -1687,6 +1692,21 @@ build_commit_map_from_marks() {
                 echo "0 $commit" >> "$commit_map"
             fi
         done
+    fi
+}
+
+# Drop duplicate lines from a commit map, keeping the first of each. Lookups
+# all take the first match, so this never changes what they return.
+# Arguments: $1 = commit_map_path
+compact_commit_map() {
+    local commit_map="$1"
+    [ -s "$commit_map" ] || return 0
+    local tmp="$commit_map.compact.$$"
+    if awk '!seen[$0]++' "$commit_map" > "$tmp" && ! cmp -s "$commit_map" "$tmp"; then
+        verbose_log "  Compacted commit map: $(wc -l < "$commit_map") -> $(wc -l < "$tmp") lines"
+        mv "$tmp" "$commit_map"
+    else
+        rm -f "$tmp"
     fi
 }
 
@@ -2219,6 +2239,9 @@ create_intermediary_clone() {
         echo ""
         echo "Intermediary exists, checkin' for updates..."
 
+        if [ "$dry_run" != true ]; then
+            compact_commit_map "$(get_commit_map_path "$intermediary_dir")"
+        fi
         catchup_intermediary_branches "$source_dir" "$intermediary_dir" || true
     fi
 

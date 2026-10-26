@@ -664,6 +664,31 @@ fi
 echo "  PASS: PR merges synced without failures, intermediary master at source HEAD"
 git -C "$SOURCE_PATH" branch -D upstream-sim pr1 pr2 pr3 --quiet
 
+echo "Test 17c: Commit map has no duplicate lines after hook syncs"
+dup_lines=$(sort "$local_commit_map" | uniq -d)
+if [ -n "$dup_lines" ]; then
+    echo "FAIL: Commit map has duplicate lines:"
+    echo "$dup_lines"
+    exit 1
+fi
+echo "  PASS: $(wc -l < "$local_commit_map") lines, all unique"
+
+echo "Test 17d: compact_commit_map drops duplicates, keeps first-occurrence order"
+compact_map="$TEST_TMP/compact-map"
+printf 'aaa s1\nbbb s2\naaa s1\n0 s3\nbbb s2\nccc s4\n' > "$compact_map"
+compact_commit_map "$compact_map"
+expected_compact=$(printf 'aaa s1\nbbb s2\n0 s3\nccc s4')
+if [ "$(cat "$compact_map")" != "$expected_compact" ]; then
+    echo "FAIL: Unexpected compacted map:"
+    cat "$compact_map"
+    exit 1
+fi
+if ls "$compact_map".compact.* >/dev/null 2>&1; then
+    echo "FAIL: compact_commit_map left a temp file behind"
+    exit 1
+fi
+echo "  PASS: Duplicates dropped, order kept"
+
 echo "Test 18: Post-merge hook skips squash merges"
 # Squash merges pass $1=1 to post-merge hook. The hook should skip and let
 # post-commit handle the eventual commit.

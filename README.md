@@ -476,6 +476,8 @@ claude-cage git-merge --force
 
 **Source fell behind?** If the cage already synced commits source somehow lost — a missed hook, a reset, whatever the reason — claude-cage figures out where source actually is and catches it up automatically. You'll see "Source was behind by N commit(s) — catchin' up." in the output. No `--force` needed.
 
+**Pushed from another open session?** Commits pushed while nobody was listenin' don't get left behind. The next sync walks back to the last commit source actually has and brings the whole lot home. You'll see "Source missed N earlier commit(s) - catchin' up."
+
 **Source wandered off?** When source has commits the cage never saw, or its HEAD is on a hash the cage doesn't recognize, claude-cage can't safely auto-recover and refuses to silently splice the cage's work on top via 3-way merge. It tells you where the gap is. Three ways out:
 - `claude-cage git-merge --force` — apply the cage's commits via 3-way merge anyway. Same lucky merge the old behavior gave you, but now you opted in.
 - `claude-cage clean --all` — nuke the cages and start fresh from source as it stands. The hammer for when the divergence is too tangled to reconcile.

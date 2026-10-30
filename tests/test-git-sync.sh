@@ -2647,4 +2647,77 @@ fi
 echo "  PASS: behind divergence still flagged when source HEAD has no commit_map entry"
 
 echo ""
+echo "Test 66: sync_to_source catches up commits pushed with no listener"
+
+# Two pushes never reach a listener, so their commits are unmapped. The next
+# push's oldrev is one of them, and all three commits must land on source.
+setup_test_cage "source66"
+
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" reset -q --hard "origin/$BRANCH_NAME"
+base66=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+for name in a b; do
+    echo "$name" > "$WORK_DIR/$name.txt"
+    git -C "$WORK_DIR" add "$name.txt"
+    git -C "$WORK_DIR" commit -q -m "Unsynced $name (66)"
+    git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+done
+unsynced66=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+echo "c" > "$WORK_DIR/c.txt"
+git -C "$WORK_DIR" add c.txt
+git -C "$WORK_DIR" commit -q -m "Listener saw this one (66)"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+
+catchup_out=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$unsynced66" 2>&1)
+if ! echo "$catchup_out" | grep -q "missed 2 earlier commit(s)"; then
+    echo "FAIL: expected catch-up message for 2 missed commits, got: $catchup_out"
+    exit 1
+fi
+for name in a b c; do
+    if [ ! -f "$SOURCE_PATH/$name.txt" ]; then
+        echo "FAIL: $name.txt missing - catch-up skipped a commit"
+        exit 1
+    fi
+done
+commit_map_66=$(get_commit_map_path "$INTERMEDIARY_DIR")
+if ! grep -q "^${unsynced66} " "$commit_map_66"; then
+    echo "FAIL: caught-up commit not recorded in the commit map"
+    exit 1
+fi
+echo "  PASS: unmapped oldrev walks back to its synced ancestor and syncs the gap"
+
+echo ""
+echo "Test 67: catch-up still bails when source moved independently"
+
+# Walking back must feed the divergence guard rather than bypass it.
+setup_test_cage "source67"
+
+git -C "$WORK_DIR" fetch -q origin
+git -C "$WORK_DIR" reset -q --hard "origin/$BRANCH_NAME"
+echo "a" > "$WORK_DIR/a.txt"
+git -C "$WORK_DIR" add a.txt
+git -C "$WORK_DIR" commit -q -m "Unsynced (67)"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+unsynced67=$(git -C "$INTERMEDIARY_DIR" rev-parse "refs/heads/$BRANCH_NAME")
+echo "b" > "$WORK_DIR/b.txt"
+git -C "$WORK_DIR" add b.txt
+git -C "$WORK_DIR" commit -q -m "Latest (67)"
+git -C "$WORK_DIR" push -q origin "$BRANCH_NAME" 2>/dev/null
+
+echo "own" > "$SOURCE_PATH/own.txt"
+git -C "$SOURCE_PATH" add own.txt
+CLAUDE_CAGE_SYNCING=1 git -C "$SOURCE_PATH" commit -q -m "Source's own work (67)"
+
+bail_out=$(sync_to_source "$SOURCE_PATH" "$INTERMEDIARY_DIR" "refs/heads/$BRANCH_NAME" "$unsynced67" 2>&1) || true
+if ! echo "$bail_out" | grep -q "diverged from the cage"; then
+    echo "FAIL: expected divergence message, got: $bail_out"
+    exit 1
+fi
+if [ -f "$SOURCE_PATH/a.txt" ] || [ -f "$SOURCE_PATH/b.txt" ]; then
+    echo "FAIL: cage commits landed on source despite independent source work"
+    exit 1
+fi
+echo "  PASS: walked-back base still goes through the divergence guard"
+
+echo ""
 echo "=== All git-sync tests passed! ==="

@@ -69,6 +69,8 @@ When `autoSync = true` (default): Claude commits + pushes → intermediary's `po
 - **Excluded-only gap.** If the gap between expected and actual source HEAD is composed entirely of commits already mapped to `0` in `commit_map` (excluded-only), the cage was told to ignore them — no real divergence.
 - **Strictly-behind auto-recovery.** When source is a strict ancestor of `commit_map[oldrev]` (source missed N commits the cage already synced once), the guard looks up source's actual HEAD via `_find_intermediary_for_source_head` — walks the intermediary branch's first-parent chain for a commit whose `commit_map` entry equals source HEAD. If found, that's the real base: `oldrev` is rewritten to it, the commits range is recomputed, and the sync proceeds with a "Source was behind by N commit(s) — catchin' up." note. If source HEAD has no `commit_map` entry, recovery can't safely guess a base and the guard still bails (`behind the cage (no map for source HEAD ...)`).
 
+**Unsynced oldrev.** A push made with no listener running (for example from another open session) leaves its commits unmapped, so the next push's `oldrev` has no `commit_map` entry to compare against. `_find_last_synced_ancestor` walks `oldrev`'s first-parent chain to the nearest commit with a real source equivalent. That commit becomes `oldrev` before the checks above run, so the skipped commits join the range ("Source missed N earlier commit(s)") and a source that moved independently still trips the guard. With no synced ancestor, nothing changes.
+
 Recovery paths when the guard fires: `claude-cage git-merge --force` (opts in to the `--3way` apply on top of source's actual HEAD) or `claude-cage clean --all` (start over). `--force` sets `cfg_forceMerge=true` which makes `sync_to_source` skip the guard. Independently, `_sync_branch_to_source` (the path `claude-cage git-merge` uses, force or not) prefers `_find_intermediary_for_source_head` over `_find_last_mapped_on_branch` when computing its base — without that, a drifted source would silently lose every commit between source's mapped HEAD and the latest-mapped commit on the branch.
 
 ### Inbound (Source → Intermediary)
@@ -323,7 +325,7 @@ bash tests/run-all.sh
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
 | test-git-hooks.sh | git-hooks.sh | 34 |
 | test-git-patches.sh | git-patches.sh | 13 |
-| test-git-sync.sh | git-sync.sh | 91 |
+| test-git-sync.sh | git-sync.sh | 93 |
 | test-network.sh | network.sh | 1 |
 | test-bwrap.sh | bwrap.sh | 15 |
 | test-docker.sh | docker.sh | 18 |
@@ -337,7 +339,7 @@ bash tests/run-all.sh
 | test-launch.sh | --launch, passthrough quoting, add/remove-launcher, launcher completions | 27 |
 | test-rebuild-guard.sh | exclude-change detection, rebuild and work-dir wipe guards, stale work dirs | 9 |
 
-**~457 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
+**~459 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

@@ -1002,6 +1002,26 @@ sync_to_source() {
         if [ -f "$commit_map_path" ]; then
             _expected_source=$(awk -v ih="$oldrev" '$1 == ih { print $2; exit }' "$commit_map_path")
         fi
+        # An oldrev with no source equivalent says nothing about where source
+        # is, and pushes made with no listener running leave it unmapped. Base
+        # the range and the checks below on its nearest synced ancestor so
+        # those commits aren't skipped.
+        if [ -z "$_expected_source" ] || [ "$_expected_source" = "0" ]; then
+            local _synced_base=""
+            _synced_base=$(_find_last_synced_ancestor "$intermediary_dir" "$oldrev" "$commit_map_path")
+            if [ -n "$_synced_base" ]; then
+                local _missed
+                _missed=$(git -C "$intermediary_dir" rev-list --first-parent "${_synced_base}..${oldrev}" 2>/dev/null \
+                    | grep -cvxFf <(awk '$1 != "0" { print $1 }' "$commit_map_path")) || true
+                if [ "${_missed:-0}" -gt 0 ]; then
+                    echo "Source missed ${_missed} earlier commit(s) - catchin' up."
+                    sync_log "$log_file" "$newrev_short" ">>source" "oldrev ${oldrev:0:8} never synced, rebased range on ${_synced_base:0:8} (missed=${_missed})"
+                fi
+                oldrev="$_synced_base"
+                commits=$(git -C "$intermediary_dir" rev-list --first-parent --topo-order --reverse "${oldrev}..${newrev}" 2>/dev/null)
+                _expected_source=$(awk -v ih="$oldrev" '$1 == ih { print $2; exit }' "$commit_map_path")
+            fi
+        fi
         if [ -n "$_expected_source" ] && [ "$_expected_source" != "0" ]; then
             local _source_branch_hash=""
             _source_branch_hash=$(git -C "$source_dir" rev-parse --verify "refs/heads/$branch_name" 2>/dev/null) || true
@@ -1535,6 +1555,29 @@ _find_last_mapped_on_branch() {
     local ancestor
     for ancestor in $(git -C "$intermediary_dir" rev-list --first-parent "$branch" 2>/dev/null); do
         if grep -q "^${ancestor} " "$commit_map_path" 2>/dev/null; then
+            echo "$ancestor"
+            return 0
+        fi
+    done
+}
+
+# Find the nearest first-parent ancestor of a commit (itself included) that has
+# a real source equivalent, skipping commits mapped to 0.
+# Arguments:
+#   $1 - intermediary_dir
+#   $2 - commit to start from
+#   $3 - commit_map_path
+# Outputs: intermediary hash, or empty if none found.
+_find_last_synced_ancestor() {
+    local intermediary_dir="$1"
+    local start="$2"
+    local commit_map_path="$3"
+
+    [ ! -f "$commit_map_path" ] && return 0
+
+    local ancestor
+    for ancestor in $(git -C "$intermediary_dir" rev-list --first-parent "$start" 2>/dev/null); do
+        if awk -v ih="$ancestor" '$1 == ih && $2 != "0" { found=1; exit } END { exit !found }' "$commit_map_path"; then
             echo "$ancestor"
             return 0
         fi

@@ -223,7 +223,7 @@ claude_cage {
 |--------|---------|-------------|
 | `launch` | `"claude"` | Command to run inside sandbox. `--launch <cmd>` overrides it for one run. |
 | `exclude` | `{}` | Patterns to exclude from intermediary |
-| `carry` | `{}` | Gitignored files (or dirs) copied source→work at startup. On exit, the cage hashes each entry against a startup snapshot — files compare against a single hash; directories compare per-file across the tree (also detects added/removed files). Unchanged entries are announced as skipped; changed ones get deposited into `.caged/carry/<display-session>/<src_path>` (never back onto source — multiple sessions would collide). If `createCagedDir` is off, edits are lost and a heads-up fires at startup. String or `{ source, as/dest }` table. |
+| `carry` | `{}` | Gitignored files (or dirs) copied source→work at startup. On exit, the cage hashes each entry against a startup snapshot — files compare against a single hash; directories compare per-file across the tree (also detects added/removed files). Unchanged entries are announced as skipped. Changed ones are written back to source when source's copy still matches the snapshot (the snapshot is then re-recorded from source); otherwise, or with no snapshot (attach mode), they're deposited into `.caged/carry/<display-session>/<src_path>`. Concurrent sessions can't clobber each other: the first to carry back changes source, so the rest deposit. If `createCagedDir` is off, deposits are lost and a heads-up fires at startup. String or `{ source, as/dest }` table. |
 | `mode` | `"bwrap"` | Sandbox mode: `"bwrap"` or `"docker"` |
 | `autoSync` | `true` | Real-time sync of non-active branches via named pipe |
 | `syncActiveBranch` | `false` | **EXPERIMENTAL** Also sync active branch (stash/apply/pop) |
@@ -233,7 +233,7 @@ claude_cage {
 | `isolated` | `false` | Route this project to its own sealed `<project-key>-isolated` session instead of the shared `default`. The isolated session never mounts default's work tree, and other projects in default never see the isolated one — works in both leak directions (sensitive content in *this* project shouldn't reach others, or sensitive content in *other* projects shouldn't reach this one). Sticky: once an isolated cache exists, the project keeps using it even if the flag is removed, until the cache is cleaned. |
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip confirmation prompt before entering sandbox |
-| `createCagedDir` | `false` | Create `.caged/` symlinks to session caches. Also enables carry-back deposits under `.caged/carry/<display-session>/`; without it, edits made to carry files inside the cage have nowhere to land on exit. |
+| `createCagedDir` | `false` | Create `.caged/` symlinks to session caches. Also enables carry-back deposits under `.caged/carry/<display-session>/`; without it, carry edits that can't go back to source (source changed too) have nowhere to land on exit. |
 | `additionalMounts` | `{}` | Extra mounts (`source`, `as`/`dest`, `mode: "ro"/"rw"`) |
 | `networkMode` | `"disabled"` | `"disabled"`, `"allowlist"`, or `"blocklist"` |
 | `allow` / `block` | `{}` | Network destinations (domains, ips, networks with optional ports) |
@@ -323,7 +323,7 @@ bash tests/run-all.sh
 | test-git-filter-stream.sh | pathspec exclude filtering | 23 |
 | test-git-hooks.sh | git-hooks.sh | 34 |
 | test-git-patches.sh | git-patches.sh | 13 |
-| test-git-sync.sh | git-sync.sh | 86 |
+| test-git-sync.sh | git-sync.sh | 91 |
 | test-network.sh | network.sh | 1 |
 | test-bwrap.sh | bwrap.sh | 15 |
 | test-docker.sh | docker.sh | 18 |
@@ -337,7 +337,7 @@ bash tests/run-all.sh
 | test-launch.sh | --launch, passthrough quoting, add/remove-launcher, launcher completions | 27 |
 | test-rebuild-guard.sh | exclude-change detection, rebuild and work-dir wipe guards, stale work dirs | 9 |
 
-**~452 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
+**~457 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

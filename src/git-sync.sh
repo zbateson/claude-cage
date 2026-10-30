@@ -286,6 +286,66 @@ _carry_lookup_snapshot() {
     awk -v key="$key" -F'\t' '$2 == key { print $1; exit }' "$manifest"
 }
 
+# Returns 0 when source's copy of a carry entry still matches the startup
+# snapshot, i.e. nothing (the user, or another session's carry-back) wrote it
+# while this cage ran, so the cage's version can replace it safely.
+# Arguments: $1 = manifest, $2 = cage_path, $3 = source_path, $4 = src_path
+_carry_source_unchanged() {
+    local manifest="$1" cage_path="$2" source_path="$3" src_path="$4"
+    if [ -d "$cage_path" ]; then
+        [ -d "$source_path" ] || return 1
+        _carry_dir_matches_manifest "$manifest" "$source_path" "$src_path"
+        return
+    fi
+    local snap current
+    snap=$(_carry_lookup_snapshot "$manifest" "$src_path")
+    current=$(_carry_hash_file "$source_path") || return 1
+    [ -n "$snap" ] && [ "$snap" = "$current" ]
+}
+
+# Replace source's copy of a carry entry with the cage's. For directories,
+# files the snapshot recorded that the cage has since removed are removed
+# from source too. The snapshot is then re-recorded from source: a reused
+# dirty work dir skips the startup carry, and its next exit must compare
+# against what source holds now.
+# Arguments: $1 = manifest, $2 = cage_path, $3 = source_path, $4 = src_path
+_carry_write_back() {
+    local manifest="$1" cage_path="$2" source_path="$3" src_path="$4"
+    local h k rel
+    if [ -d "$cage_path" ]; then
+        chmod -R u+w "$source_path" 2>/dev/null || true
+        cp -a "$cage_path/." "$source_path/"
+        while IFS=$'\t' read -r h k; do
+            case "$k" in
+                "$src_path"/*)
+                    rel="${k#"$src_path/"}"
+                    if [ ! -e "$cage_path/$rel" ] && [ ! -L "$cage_path/$rel" ]; then
+                        rm -f "$source_path/$rel"
+                    fi
+                    ;;
+            esac
+        done < "$manifest"
+    else
+        chmod u+w "$source_path" 2>/dev/null || true
+        cp -a "$cage_path" "$source_path"
+    fi
+
+    local tmp
+    tmp=$(mktemp) || return 0
+    awk -v key="$src_path" -F'\t' \
+        '$2 != key && index($2, key "/") != 1' "$manifest" > "$tmp"
+    if [ -d "$source_path" ]; then
+        _carry_hash_dir "$source_path" "$src_path" >> "$tmp"
+    else
+        h=$(_carry_hash_file "$source_path") || h=""
+        if [ -n "$h" ]; then
+            printf '%s\t%s\n' "$h" "$src_path" >> "$tmp"
+        fi
+    fi
+    cat "$tmp" > "$manifest"
+    rm -f "$tmp"
+}
+
 # Copy carry files between source and work dir (outside git).
 # Carry files are gitignored files that should persist across sessions
 # (e.g., CLAUDE.md). Git-tracked files are skipped — git handles those.
@@ -298,16 +358,16 @@ _carry_lookup_snapshot() {
 #   the cage actually edited.
 #
 # Direction "from_cage" (exit):
-#   Never touches source. For each carry entry:
-#     - Hash matches snapshot → file wasn't touched in the cage. Announce
+#   For each carry entry:
+#     - Cage's copy matches snapshot -> wasn't touched in the cage. Announce
 #       the skip so the user isn't left wondering.
-#     - Hash differs (or snapshot missing) → cage edited it. If the project
-#       has a .caged/ dir, deposit the cage's version at
-#       .caged/carry/<display-session>/<src_path>. If .caged/ isn't there
-#       (createCagedDir is off), say so out loud — those edits are lost.
-#   Directories skip the hash check (carry dirs can mix tracked/untracked
-#   entries with no reliable file-level hash) and always deposit when a
-#   .caged dir exists.
+#     - Cage edited it and source still matches the snapshot -> write the
+#       cage's version back to source. A concurrent session that carried
+#       back first changes source, so later ones fall through to a deposit.
+#     - Cage edited it but source changed too (or no snapshot) -> deposit
+#       the cage's version at .caged/carry/<display-session>/<src_path>. If
+#       .caged/ isn't there (createCagedDir is off), say so: edits are lost.
+#   Directories compare per-file against the snapshot on both sides.
 #
 # Arguments:
 #   $1 - direction: "to_work" or "from_cage"
@@ -324,7 +384,7 @@ copy_carry_files() {
 
     [ -z "$carry_str" ] && return 0
 
-    local -a entries carried_names=() unchanged_names=() lost_names=()
+    local -a entries carried_names=() deposited_names=() unchanged_names=() lost_names=()
     IFS='^' read -ra entries <<< "$carry_str"
 
     local manifest
@@ -429,7 +489,12 @@ copy_carry_files() {
             fi
         fi
 
-        # Cage modified the file/dir (or no snapshot to compare against).
+        if _carry_source_unchanged "$manifest" "$cage_path" "$source_path" "$src_path"; then
+            _carry_write_back "$manifest" "$cage_path" "$source_path" "$src_path"
+            carried_names+=("$src_path")
+            continue
+        fi
+
         if [ -z "$caged_carry_base" ]; then
             lost_names+=("$src_path")
             continue
@@ -445,7 +510,7 @@ copy_carry_files() {
             [ -f "$deposit_path" ] && chmod u+w "$deposit_path" 2>/dev/null || true
             cp -a "$cage_path" "$deposit_path"
         fi
-        carried_names+=("$src_path → .caged/carry/$display_label/$src_path")
+        deposited_names+=("$src_path -> .caged/carry/$display_label/$src_path")
     done
 
     if [ "$direction" = "to_work" ] && [ ${#carried_names[@]} -gt 0 ]; then
@@ -463,13 +528,19 @@ copy_carry_files() {
             echo "  $_n"
         done
     fi
+    if [ ${#deposited_names[@]} -gt 0 ]; then
+        echo "Source changed under these (or there's no startup snapshot), so the cage's version is parked in .caged:"
+        for _n in "${deposited_names[@]}"; do
+            echo "  $_n"
+        done
+    fi
     if [ ${#unchanged_names[@]} -gt 0 ]; then
         for _n in "${unchanged_names[@]}"; do
             echo "Skippin' $_n — wasn't touched in this cage."
         done
     fi
     if [ ${#lost_names[@]} -gt 0 ]; then
-        echo "Cage edited these carry files but .caged/ ain't set up — edits ain't bein' saved:"
+        echo "Source changed under these (or there's no startup snapshot), and .caged/ ain't set up - edits ain't bein' saved:"
         for _n in "${lost_names[@]}"; do
             echo "  $_n"
         done

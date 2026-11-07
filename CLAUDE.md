@@ -128,6 +128,12 @@ The guard runs before `select_session`, so a refused start leaves no claimed alt
 
 **Stale work dirs.** A cage left over from before a rebuild (in practice, a dirty alternate the user agreed to orphan) would otherwise come back `in_sync`: the hash matches by then, and source HEAD is in the new commit map. `check_cage_state` returns `stale_work` when the work dir's `origin/<branch>` commit doesn't exist in the intermediary. `main.sh` then recreates the work dir through `create_intermediary_clone`, where the wipe guard prompts if the cage still holds unsaved work. If another session for the source is live, it joins as-is instead.
 
+### Clipboard Sharing
+
+Claude Code on Linux copies via `wl-copy` when `WAYLAND_DISPLAY` is set, else `xclip`/`xsel`, and skips OSC 52 entirely on VTE terminals. bwrap doesn't clear the env, so `WAYLAND_DISPLAY`/`DISPLAY` leak in, but the sockets don't, and copies fail silently.
+
+With `clipboard = true`, `clipboard_wayland_socket` (`src/mounts.sh`) resolves `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` (or an absolute `WAYLAND_DISPLAY`) and, if it's a socket, `build_mount_specs` appends a read-only bind at the same path. It must be the last spec: anything before the `/run` tmpfs would be hidden by it. bwrap and Docker both set `WAYLAND_DISPLAY` to the absolute socket path (so Docker needs no `XDG_RUNTIME_DIR`); Docker also prepends `wl-clipboard` to the package list, as the first package is the install script's presence check. No socket → `warn_clipboard_unavailable` prints a heads-up and nothing is shared. In network mode, `cfg_clipboard` crosses into the slirp namespace as `BWRAP_CFG_CLIPBOARD`. X11 is deliberately unsupported (keylogging, screen capture).
+
 ### Failed Patches
 
 When `git am` fails, patches are saved to `<source>/claude-cage-failed-patches/from-intermediary/<branch>/`. At next startup, an interactive prompt offers to apply, delete, or skip them.
@@ -236,6 +242,7 @@ claude_cage {
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip confirmation prompt before entering sandbox |
 | `createCagedDir` | `false` | Create `.caged/` symlinks to session caches. Also enables carry-back deposits under `.caged/carry/<display-session>/`; without it, carry edits that can't go back to source (source changed too) have nowhere to land on exit. |
+| `clipboard` | `false` | Share the host Wayland socket so in-cage copies (`wl-copy`, Claude Code's fullscreen Ctrl+C) reach the real clipboard. Needed on terminals that ignore OSC 52 (GNOME Terminal/VTE). Grants clipboard read and window creation too. X11 is never shared. See Clipboard Sharing. |
 | `additionalMounts` | `{}` | Extra mounts (`source`, `as`/`dest`, `mode: "ro"/"rw"`) |
 | `networkMode` | `"disabled"` | `"disabled"`, `"allowlist"`, or `"blocklist"` |
 | `allow` / `block` | `{}` | Network destinations (domains, ips, networks with optional ports) |
@@ -327,8 +334,8 @@ bash tests/run-all.sh
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 93 |
 | test-network.sh | network.sh | 1 |
-| test-bwrap.sh | bwrap.sh | 15 |
-| test-docker.sh | docker.sh | 18 |
+| test-bwrap.sh | bwrap.sh, clipboard sharing | 18 |
+| test-docker.sh | docker.sh, clipboard sharing | 19 |
 | test-clean.sh | clean commands | 16 |
 | test-direct-mount.sh | direct mount mode | 8 |
 | test-scoped.sh | scoped intermediary | 70 |
@@ -339,7 +346,7 @@ bash tests/run-all.sh
 | test-launch.sh | --launch, passthrough quoting, add/remove-launcher, launcher completions | 27 |
 | test-rebuild-guard.sh | exclude-change detection, rebuild and work-dir wipe guards, stale work dirs | 9 |
 
-**~459 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
+**~463 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

@@ -317,5 +317,46 @@ if echo "$output" | grep -q "curl"; then
 fi
 echo "  PASS: Uses custom docker.packages"
 
+echo "Test 19: clipboard = true should share the Wayland socket"
+FAKE_RUNTIME="$TEST_TMP/xdg-runtime"
+mkdir -p "$FAKE_RUNTIME"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
+    "$FAKE_RUNTIME/wayland-test"
+sock="$FAKE_RUNTIME/wayland-test"
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "docker",
+    isolated = true,
+    clipboard = true,
+    docker = { packages = { "wget" } },
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+
+output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+    CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
+    XDG_RUNTIME_DIR="$FAKE_RUNTIME" WAYLAND_DISPLAY="wayland-test" \
+    bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
+if ! echo "$output" | grep -q -- "-v $sock:$sock:ro"; then
+    echo "FAIL: Should mount the Wayland socket read-only"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q -- "-e WAYLAND_DISPLAY=$sock"; then
+    echo "FAIL: Should point WAYLAND_DISPLAY at the shared socket"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+if ! echo "$output" | grep -q "wl-clipboard wget"; then
+    echo "FAIL: Should install wl-clipboard ahead of configured packages"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Shares the Wayland socket and installs wl-clipboard"
+
 echo ""
 echo "=== All docker tests passed! ==="

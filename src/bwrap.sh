@@ -141,6 +141,12 @@ run_in_bwrap() {
     bwrap_args+=(--setenv TERM "${TERM:-xterm-256color}")
     bwrap_args+=(--setenv LANG "${LANG:-C.UTF-8}")
     [ -n "${LC_ALL}" ] && bwrap_args+=(--setenv LC_ALL "$LC_ALL")
+    local _wl_sock
+    _wl_sock=$(clipboard_wayland_socket)
+    if [ -n "$_wl_sock" ]; then
+        bwrap_args+=(--setenv WAYLAND_DISPLAY "$_wl_sock")
+    fi
+    warn_clipboard_unavailable
 
     # User namespace with current user's UID/GID
     bwrap_args+=(--unshare-user)
@@ -242,6 +248,7 @@ run_in_bwrap_with_network() {
     export BWRAP_VERBOSE="$verbose"
     export BWRAP_START_SUBDIR="${cage_start_subdir:-}"
     export BWRAP_CFG_ISOLATED="${cfg_isolated:-}"
+    export BWRAP_CFG_CLIPBOARD="${cfg_clipboard:-}"
 
     # Capture real UID/GID before entering namespace (where we become root)
     export BWRAP_REAL_UID="$(id -u)"
@@ -283,6 +290,7 @@ run_in_bwrap_with_network() {
             verbose="$BWRAP_VERBOSE"
             cage_start_subdir="$BWRAP_START_SUBDIR"
             cfg_isolated="$BWRAP_CFG_ISOLATED"
+            cfg_clipboard="$BWRAP_CFG_CLIPBOARD"
             # Restore cfg arrays
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
             IFS="^" read -ra cfg_bwrap_system_mounts <<< "$BWRAP_SYSTEM_MOUNTS"
@@ -302,6 +310,7 @@ run_in_bwrap_with_network() {
             verbose="$BWRAP_VERBOSE"
             cage_start_subdir="$BWRAP_START_SUBDIR"
             cfg_isolated="$BWRAP_CFG_ISOLATED"
+            cfg_clipboard="$BWRAP_CFG_CLIPBOARD"
             # Restore cfg arrays
             IFS="^" read -ra cfg_mounts <<< "$BWRAP_MOUNTS"
             IFS="^" read -ra cfg_bwrap_system_mounts <<< "$BWRAP_SYSTEM_MOUNTS"

@@ -295,6 +295,8 @@ local hideConfirmationPrompt = config.hideConfirmationPrompt
 if hideConfirmationPrompt == nil then hideConfirmationPrompt = false end
 local createCagedDir = config.createCagedDir
 if createCagedDir == nil then createCagedDir = false end
+local clipboard = config.clipboard
+if clipboard == nil then clipboard = false end
 
 -- Non-git directory support (nil = unset, true = allow, false = disallow)
 local allowNonGit = config.allowNonGit
@@ -355,6 +357,7 @@ print(docker_image)
 print(launch)
 print(tostring(hideConfirmationPrompt))
 print(tostring(createCagedDir))
+print(tostring(clipboard))
 -- allowNonGit: nil = "unset", true = "true", false = "false"
 if allowNonGit == nil then
     print("unset")
@@ -484,6 +487,7 @@ LUAEOF
         read -r cfg_launch
         read -r cfg_hideConfirmationPrompt
         read -r cfg_createCagedDir
+        read -r cfg_clipboard
         read -r cfg_allowNonGit
         read -r cfg_directMount
         read -r cfg_docker_packages

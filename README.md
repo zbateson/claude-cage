@@ -169,6 +169,9 @@ claude_cage {
     -- Sandbox mode: "bwrap" or "docker"
     mode = "bwrap",
 
+    -- Let copies inside the cage reach your real clipboard (Wayland only)
+    -- clipboard = false,
+
     -- Auto-sync non-active branches back to source in real-time
     autoSync = true,
     -- EXPERIMENTAL: Also sync to active branch (stash/apply/pop)
@@ -603,6 +606,14 @@ bwrap = {
 
 Docker containers use the image's own `/etc`, `/usr`, and friends — your host's sensitive files ain't exposed in the first place. Host paths only enter the container through explicit `additionalMounts`. So there's no equivalent `bwrap` config needed for Docker mode.
 
+### Copyin' Out of the Cage: `clipboard = true`
+
+By default the cage can't touch your clipboard. Some terminals (kitty, WezTerm, Alacritty, foot, Ghostty) take copies through the terminal itself (OSC 52), and that works fine from in here. Others, like GNOME Terminal, don't. There, a tool like Claude Code's fullscreen Ctrl+C has to hand the text to `wl-copy`, and `wl-copy` needs your Wayland session's socket, which the cage keeps out.
+
+Set `clipboard = true` and claude-cage shares that one socket (read-only bind, `WAYLAND_DISPLAY` pointed at it). In Docker mode it also installs `wl-clipboard` in the container.
+
+Know what you're handin' over: with the socket, anything in the cage can **read** your clipboard too, and open windows on your desktop. That's why it's off by default. X11 never gets shared — an X11 socket would let the cage log your keystrokes and read your screen, and I ain't doin' that. If you're on an X11-only session, you're outta luck. If there's no Wayland socket to find, you'll get a heads-up at startup and the cage carries on without it.
+
 ## Docker Mode
 
 If you prefer Docker — or you're on macOS where bwrap ain't an option:
@@ -895,6 +906,10 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 **DNS not working inside sandbox**
 
 The sandbox uses slirp4netns DNS at 10.0.2.3. If you're filterin' network access, make sure DNS is allowed — it's handled automatically in allowlist mode, so if it ain't workin' you probably touched somethin' you shouldn't have.
+
+**Copyin' inside the cage doesn't reach my clipboard**
+
+Your terminal probably ignores OSC 52 (GNOME Terminal does). Set `clipboard = true` — see [Copyin' Out of the Cage](#copyin-out-of-the-cage-clipboard--true).
 
 
 ## Contributing

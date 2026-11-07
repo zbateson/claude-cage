@@ -83,6 +83,13 @@ claude_cage {
     --     packages = { "curl", "iputils-ping" },  -- installed as root before dropping privileges
     -- },
 
+    -- Share your Wayland session's socket so copies inside the cage (e.g.
+    -- Claude Code's fullscreen Ctrl+C, wl-copy) reach your real clipboard.
+    -- Needed on terminals like GNOME Terminal that ignore OSC 52. The cage
+    -- can then also read your clipboard and open windows. Wayland only;
+    -- X11 is never shared. Docker mode also installs wl-clipboard.
+    -- clipboard = false,
+
     -- =========================================================================
     -- SYNC OPTIONS
     -- =========================================================================

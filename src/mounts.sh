@@ -189,6 +189,37 @@ build_mount_specs() {
     if [ -n "$intermediary_dir" ] && [ -p "$pipe_path" ]; then
         CAGE_MOUNTS+=("pipe|$pipe_path|/tmp/claude-cage/pipe|rw")
     fi
+
+    # Must come after the /run tmpfs, which would otherwise hide it
+    local _wl_sock
+    _wl_sock=$(clipboard_wayland_socket)
+    if [ -n "$_wl_sock" ]; then
+        CAGE_MOUNTS+=("bind|$_wl_sock|$_wl_sock|ro")
+    fi
+}
+
+# Print the host Wayland socket to share when clipboard = true, or nothing.
+# Wayland only: an X11 socket would also expose keystrokes and the screen.
+clipboard_wayland_socket() {
+    [ "${cfg_clipboard:-false}" = "true" ] || return 0
+    [ -n "${WAYLAND_DISPLAY:-}" ] || return 0
+    local sock="$WAYLAND_DISPLAY"
+    if [[ "$sock" != /* ]]; then
+        [ -n "${XDG_RUNTIME_DIR:-}" ] || return 0
+        sock="$XDG_RUNTIME_DIR/$sock"
+    fi
+    if [ -S "$sock" ]; then
+        echo "$sock"
+    fi
+    return 0
+}
+
+# Warn when clipboard = true but there's no Wayland socket to hand over
+warn_clipboard_unavailable() {
+    [ "${cfg_clipboard:-false}" = "true" ] || return 0
+    [ -z "$(clipboard_wayland_socket)" ] || return 0
+    echo -e "${_yellow}Clipboard's on, but I can't find a Wayland socket to share." \
+        "Copies ain't gettin' outta this cage.${_reset}" >&2
 }
 
 # Convert mount spec to bwrap argument

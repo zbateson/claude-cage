@@ -547,6 +547,7 @@ if [ "$direct_mount_mode" = false ]; then
     fi
 fi
 echo "  Network mode:  $cfg_networkMode"
+echo "  Clipboard:     $cfg_clipboard"
 
 if [ "$direct_mount_mode" = false ] && [ ${#cfg_display_lines[@]} -gt 0 ]; then
     echo ""

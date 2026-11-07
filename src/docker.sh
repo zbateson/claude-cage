@@ -411,12 +411,22 @@ run_in_docker() {
     [ "$verbose" = true ] && docker_args+=(-e "CAGE_VERBOSE=1")
     [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")
 
+    local packages="$cfg_docker_packages"
+    local _wl_sock
+    _wl_sock=$(clipboard_wayland_socket)
+    if [ -n "$_wl_sock" ]; then
+        docker_args+=(-e "WAYLAND_DISPLAY=$_wl_sock")
+        # First package is the install script's presence check, so lead with it
+        packages="wl-clipboard${packages:+|$packages}"
+    fi
+    warn_clipboard_unavailable
+
     # Image
     docker_args+=("$image")
 
     # Generate setup scripts
     local tool_install_script
-    tool_install_script=$(generate_docker_tool_install_script "$cfg_docker_packages")
+    tool_install_script=$(generate_docker_tool_install_script "$packages")
 
     local iptables_script=""
     if [ "$network_enabled" = true ]; then

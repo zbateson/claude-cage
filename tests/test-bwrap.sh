@@ -233,74 +233,83 @@ fi
 echo "  PASS: Sets caged hostname"
 
 echo ""
-echo "=== Testing bwrap clipboard sharing ==="
+echo "=== Testing bwrap clipboard go-between ==="
 
-FAKE_RUNTIME="$TEST_TMP/xdg-runtime"
-mkdir -p "$FAKE_RUNTIME"
-python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
-    "$FAKE_RUNTIME/wayland-test"
+# Stub clipboard tools so the host looks like a Wayland desktop
+CLIP_STUB="$TEST_TMP/clip-stub"
+mkdir -p "$CLIP_STUB"
+printf '#!/bin/sh\nexit 0\n' > "$CLIP_STUB/wl-copy"
+cp "$CLIP_STUB/wl-copy" "$CLIP_STUB/wl-paste"
+chmod +x "$CLIP_STUB"/*
 
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
     isolated = true,
-    clipboard = true,
     showBanner = false,
     hideConfirmationPrompt = true
 }
 EOF
 
-echo "Test 10b: clipboard = true should share the Wayland socket"
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+echo "Test 10b: Default clipboard settings mount the go-between, not a socket"
+output=$(env -i PATH="$CLIP_STUB:/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    XDG_RUNTIME_DIR="$FAKE_RUNTIME" WAYLAND_DISPLAY="wayland-test" \
+    WAYLAND_DISPLAY="wayland-test" DISPLAY=":9" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
 
-sock="$FAKE_RUNTIME/wayland-test"
-if ! echo "$output" | grep -q -- "--ro-bind-try $sock $sock"; then
-    echo "FAIL: Should bind the Wayland socket read-only"
+for expected in \
+    "--ro-bind-try [^ ]*/cage /run/claude-cage/clipboard " \
+    "--bind [^ ]*/inbox /run/claude-cage/clipboard-inbox" \
+    "--setenv PATH /run/claude-cage/clipboard/bin:" \
+    "--setenv WAYLAND_DISPLAY claude-cage" \
+    "--unsetenv DISPLAY"; do
+    if ! echo "$output" | grep -q -- "$expected"; then
+        echo "FAIL: Expected '$expected'"
+        echo "Output was:"
+        echo "$output"
+        exit 1
+    fi
+done
+if echo "$output" | grep -q "wayland-test"; then
+    echo "FAIL: The host's Wayland display should never reach the cage"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-if ! echo "$output" | grep -q -- "--setenv WAYLAND_DISPLAY $sock"; then
-    echo "FAIL: Should point WAYLAND_DISPLAY at the shared socket"
-    echo "Output was:"
-    echo "$output"
-    exit 1
-fi
-# The socket bind must land after the /run tmpfs or it gets hidden
+# The go-between mounts must land after the /run tmpfs or they get hidden
 run_tmpfs_pos=$(echo "$output" | grep -o -b -- "--tmpfs /run" | head -1 | cut -d: -f1)
-sock_pos=$(echo "$output" | grep -o -b -- "--ro-bind-try $sock" | head -1 | cut -d: -f1)
-if [ -z "$run_tmpfs_pos" ] || [ "$sock_pos" -lt "$run_tmpfs_pos" ]; then
-    echo "FAIL: Wayland socket bind should come after the /run tmpfs"
+clip_pos=$(echo "$output" | grep -o -b -- "/run/claude-cage/clipboard " | head -1 | cut -d: -f1)
+if [ -z "$run_tmpfs_pos" ] || [ "$clip_pos" -lt "$run_tmpfs_pos" ]; then
+    echo "FAIL: Clipboard mounts should come after the /run tmpfs"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Shares the Wayland socket after the /run tmpfs"
+echo "  PASS: Mounts the go-between after the /run tmpfs"
 
-echo "Test 10c: clipboard = true without a Wayland socket should warn"
-output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
+echo "Test 10c: Denying both sides leaves the go-between out"
+cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
+claude_cage {
+    mode = "bwrap",
+    isolated = true,
+    clipboard = { write = "deny", read = "deny" },
+    showBanner = false,
+    hideConfirmationPrompt = true
+}
+EOF
+output=$(env -i PATH="$CLIP_STUB:/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    XDG_RUNTIME_DIR="$FAKE_RUNTIME" WAYLAND_DISPLAY="wayland-missing" \
+    WAYLAND_DISPLAY="wayland-test" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
-
-if ! echo "$output" | grep -q "can't find a Wayland socket"; then
-    echo "FAIL: Should warn that no Wayland socket was found"
+if echo "$output" | grep -q "/run/claude-cage/clipboard"; then
+    echo "FAIL: Go-between mounted with both sides denied"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-if echo "$output" | grep -q -- "WAYLAND_DISPLAY"; then
-    echo "FAIL: Should not set WAYLAND_DISPLAY without a socket"
-    echo "Output was:"
-    echo "$output"
-    exit 1
-fi
-echo "  PASS: Warns and shares nothing without a socket"
+echo "  PASS: Nothing mounted"
 
-echo "Test 10d: clipboard off should not share the Wayland socket"
+echo "Test 10d: No clipboard tool on the host quietly leaves it out"
 cat > "$TEST_TMP/source/.claude-cage" << 'EOF'
 claude_cage {
     mode = "bwrap",
@@ -311,16 +320,20 @@ claude_cage {
 EOF
 output=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_TMP" \
     CLAUDE_CAGE_CACHE="$CLAUDE_CAGE_CACHE" CLAUDE_CAGE_RUNTIME="$CLAUDE_CAGE_RUNTIME" CLAUDE_CAGE_MOUNTED_PIPE="$CLAUDE_CAGE_MOUNTED_PIPE" \
-    XDG_RUNTIME_DIR="$FAKE_RUNTIME" WAYLAND_DISPLAY="wayland-test" \
     bash -c 'cd "$1" && "$2" --test --dry-run 2>&1' _ "$TEST_TMP/source" "$CAGE_DIR/dist/claude-cage")
-
-if echo "$output" | grep -q -- "$sock"; then
-    echo "FAIL: Should not share the Wayland socket when clipboard is off"
+if echo "$output" | grep -q "/run/claude-cage/clipboard"; then
+    echo "FAIL: Go-between mounted with no clipboard tool"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Leaves the Wayland socket out by default"
+if echo "$output" | grep -qi "clipboard tool"; then
+    echo "FAIL: Default settings should not warn"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Left out without a warning"
 
 echo ""
 echo "=== Testing actual bwrap execution (--test mode) ==="

@@ -182,6 +182,11 @@ local function merge_config(base, override)
             for subkey, subval in pairs(v) do
                 result.git[subkey] = subval
             end
+        elseif k == "clipboard" and type(v) == "table" then
+            result.clipboard = result.clipboard or {}
+            for subkey, subval in pairs(v) do
+                result.clipboard[subkey] = subval
+            end
         else
             result[k] = v
         end
@@ -251,6 +256,32 @@ local function safe_load_config(filepath, config_handler)
     return true, nil
 end
 
+local clipboard_modes = {
+    write = { allow = true, notify = true, confirm = true, deny = true },
+    read = { allow = true, confirm = true, deny = true },
+}
+
+-- Returns an error message, or nil when cfg.clipboard is absent or valid
+local function check_clipboard(cfg)
+    local cb = cfg.clipboard
+    if cb == nil then return nil end
+    local usage = 'clipboard = { write = "allow|notify|confirm|deny", '
+        .. 'read = "allow|confirm|deny" }'
+    if type(cb) ~= "table" then
+        return "clipboard must be a table: " .. usage
+    end
+    for k, v in pairs(cb) do
+        local modes = clipboard_modes[k]
+        if not modes then
+            return "clipboard has no '" .. tostring(k) .. "' setting: " .. usage
+        end
+        if type(v) ~= "string" or not modes[v] then
+            return "clipboard." .. k .. " can't be '" .. tostring(v) .. "': " .. usage
+        end
+    end
+    return nil
+end
+
 -- Load configs in order (system, user, includeIf matches, local)
 for _, filepath in ipairs(config_files) do
     local f = io.open(filepath, "r")
@@ -264,6 +295,11 @@ for _, filepath in ipairs(config_files) do
         end
         for i = before_count + 1, #configs do
             track_excludes(filepath, configs[i])
+            local cb_err = check_clipboard(configs[i])
+            if cb_err then
+                io.stderr:write("Error loading config: " .. filepath .. "\n" .. cb_err .. "\n")
+                os.exit(1)
+            end
         end
     end
 end
@@ -295,8 +331,12 @@ local hideConfirmationPrompt = config.hideConfirmationPrompt
 if hideConfirmationPrompt == nil then hideConfirmationPrompt = false end
 local createCagedDir = config.createCagedDir
 if createCagedDir == nil then createCagedDir = false end
-local clipboard = config.clipboard
-if clipboard == nil then clipboard = false end
+-- "explicit" lets the shell warn only about modes the user actually chose
+local clipboard = config.clipboard or {}
+local clipboard_write = clipboard.write or "notify"
+local clipboard_read = clipboard.read or "confirm"
+local clipboard_write_set = clipboard.write and "explicit" or "default"
+local clipboard_read_set = clipboard.read and "explicit" or "default"
 
 -- Non-git directory support (nil = unset, true = allow, false = disallow)
 local allowNonGit = config.allowNonGit
@@ -357,7 +397,8 @@ print(docker_image)
 print(launch)
 print(tostring(hideConfirmationPrompt))
 print(tostring(createCagedDir))
-print(tostring(clipboard))
+print(clipboard_write .. "|" .. clipboard_read .. "|"
+    .. clipboard_write_set .. "|" .. clipboard_read_set)
 -- allowNonGit: nil = "unset", true = "true", false = "false"
 if allowNonGit == nil then
     print("unset")
@@ -487,7 +528,8 @@ LUAEOF
         read -r cfg_launch
         read -r cfg_hideConfirmationPrompt
         read -r cfg_createCagedDir
-        read -r cfg_clipboard
+        IFS='|' read -r cfg_clipboard_write cfg_clipboard_read \
+            cfg_clipboard_write_set cfg_clipboard_read_set
         read -r cfg_allowNonGit
         read -r cfg_directMount
         read -r cfg_docker_packages

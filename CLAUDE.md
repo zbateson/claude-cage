@@ -46,6 +46,7 @@ Inside the sandbox, work directories are mounted at their original paths, interm
 | `src/git-patches.sh` | Failed patch recovery: save, list, interactive apply |
 | `src/git-sync.sh` | `sync_to_source()`, `copy_carry_files()`, pipe listener, manual merge |
 | `src/network.sh` | Network isolation via slirp4netns/iptables |
+| `src/clipboard.sh` | Clipboard go-between: mode resolution, cage-side stand-ins, host listener |
 | `src/mounts.sh` | Shared mount logic for bwrap and docker |
 | `src/bwrap.sh` | `run_in_bwrap()` — bubblewrap sandbox |
 | `src/docker.sh` | `run_in_docker()` — Docker container sandbox |
@@ -130,9 +131,16 @@ The guard runs before `select_session`, so a refused start leaves no claimed alt
 
 ### Clipboard Sharing
 
-Claude Code on Linux copies via `wl-copy` when `WAYLAND_DISPLAY` is set, else `xclip`/`xsel`, and skips OSC 52 entirely on VTE terminals. bwrap doesn't clear the env, so `WAYLAND_DISPLAY`/`DISPLAY` leak in, but the sockets don't, and copies fail silently.
+Claude Code on Linux copies via `wl-copy` when `WAYLAND_DISPLAY` is set (else `xclip`/`xsel`), and skips OSC 52 when a native tool ran on a VTE terminal. Image paste runs `wl-paste -l` (types only) then `wl-paste --type image/png`, with no timeout. A plain-text read happens only when pasted text looks like a relative image filename. Normal text paste goes through the terminal.
 
-With `clipboard = true`, `clipboard_wayland_socket` (`src/mounts.sh`) resolves `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` (or an absolute `WAYLAND_DISPLAY`) and, if it's a socket, `build_mount_specs` appends a read-only bind at the same path. It must be the last spec: anything before the `/run` tmpfs would be hidden by it. bwrap and Docker both set `WAYLAND_DISPLAY` to the absolute socket path (so Docker needs no `XDG_RUNTIME_DIR`); Docker also prepends `wl-clipboard` to the package list, as the first package is the install script's presence check. No socket → `warn_clipboard_unavailable` prints a heads-up and nothing is shared. In network mode, `cfg_clipboard` crosses into the slirp namespace as `BWRAP_CFG_CLIPBOARD`. X11 is deliberately unsupported (keylogging, screen capture).
+No display socket ever enters the cage (a Wayland socket allows clipboard reads and window creation; X11 also allows keylogging and screen capture). Instead, `src/clipboard.sh` runs a go-between:
+
+- **Config.** `clipboard = { write = allow|notify|confirm|deny, read = allow|confirm|deny }`, defaults `notify`/`confirm`, merged per key in `merge_config`, validated per file by `check_clipboard`. Config emits `cfg_clipboard_{write,read}` plus `_set` (`explicit`/`default`).
+- **Resolution.** `resolve_clipboard_modes` picks the host backend (`wayland` → `wl-copy`/`wl-paste`, `x11` → `xclip`, `macos` → `pbcopy`/`pbpaste`, text only), dialog (`zenity`/`kdialog`/`osascript`) and notifier (`notify-send`/`osascript`). Missing dialog → `confirm` becomes `deny`; missing notifier → `notify` becomes `allow`; no backend → both `deny`. Warnings only for `explicit` settings, so headless/SSH starts stay quiet. Both `deny` → nothing is set up.
+- **Layout.** `$CLAUDE_CAGE_RUNTIME/clipboard/<session>/<pid>/` holds `cage/` (ro at `/run/claude-cage/clipboard`: `bin/` stand-ins, `replies/`, `busy`), `inbox/` (rw at `/run/claude-cage/clipboard-inbox`: `tmp/`, `queue/`), and `private/` (never mounted). Mounts are appended last in `build_mount_specs` (after the `/run` tmpfs). Replies sit in the ro mount so the cage can't plant symlinks where the listener writes.
+- **Cage env.** PATH gets `/run/claude-cage/clipboard/bin` first, `WAYLAND_DISPLAY=claude-cage` (dummy, so Claude Code picks `wl-copy`), `DISPLAY` unset. Docker passes `CAGE_PATH_PREFIX` since `su` resets PATH. In network mode `clipboard_base` crosses as `BWRAP_CLIPBOARD_BASE`.
+- **Stand-ins** (POSIX sh). A request is a dir built in `inbox/tmp/` and renamed into `inbox/queue/`. `wl-copy` is fire-and-forget and drops `--primary` (Claude Code copies to both; handling both would double every notification). `wl-paste` waits for pickup (gives up after ~3s unless `busy` exists) then for `replies/<id>/status`.
+- **Listener.** A polling loop (0.1s; a FIFO would hang stand-ins when the listener dies, and polling also works over Docker Desktop file sharing), exiting when the claude-cage PID is gone. `_clipboard_take_request` copies each request with `cp -RP` into `private/` and rejects anything non-regular, so symlinks/FIFOs can't point it at host files. IDs and MIME types are regex-checked; writes over 10 MB are dropped. `list` never prompts; empty reads reply `empty` without prompting. `_clipboard_pass` shows at most one prompt; requests needing another, including ones that arrived while it was open, are denied (second pass with prompting off). Decisions go to the session log. Started after the confirmation prompt (skipped in dry-run), stopped and removed first thing in `cleanup_on_exit`.
 
 ### Failed Patches
 
@@ -242,7 +250,7 @@ claude_cage {
 | `showBanner` | `true` | Show ASCII banner |
 | `hideConfirmationPrompt` | `false` | Skip confirmation prompt before entering sandbox |
 | `createCagedDir` | `false` | Create `.caged/` symlinks to session caches. Also enables carry-back deposits under `.caged/carry/<display-session>/`; without it, carry edits that can't go back to source (source changed too) have nowhere to land on exit. |
-| `clipboard` | `false` | Share the host Wayland socket so in-cage copies (`wl-copy`, Claude Code's fullscreen Ctrl+C) reach the real clipboard. Needed on terminals that ignore OSC 52 (GNOME Terminal/VTE). Grants clipboard read and window creation too. X11 is never shared. See Clipboard Sharing. |
+| `clipboard` | `{ write = "notify", read = "confirm" }` | Clipboard policy for the go-between. `write`: `allow`/`notify`/`confirm`/`deny`; `read`: `allow`/`confirm`/`deny`. Missing keys take the default; keys merge across levels; anything else fails config load. See Clipboard Sharing. |
 | `additionalMounts` | `{}` | Extra mounts (`source`, `as`/`dest`, `mode: "ro"/"rw"`) |
 | `networkMode` | `"disabled"` | `"disabled"`, `"allowlist"`, or `"blocklist"` |
 | `allow` / `block` | `{}` | Network destinations (domains, ips, networks with optional ports) |
@@ -334,8 +342,8 @@ bash tests/run-all.sh
 | test-git-patches.sh | git-patches.sh | 13 |
 | test-git-sync.sh | git-sync.sh | 93 |
 | test-network.sh | network.sh | 1 |
-| test-bwrap.sh | bwrap.sh, clipboard sharing | 18 |
-| test-docker.sh | docker.sh, clipboard sharing | 19 |
+| test-bwrap.sh | bwrap.sh, clipboard mounts | 18 |
+| test-docker.sh | docker.sh, clipboard mounts | 19 |
 | test-clean.sh | clean commands | 16 |
 | test-direct-mount.sh | direct mount mode | 8 |
 | test-scoped.sh | scoped intermediary | 70 |
@@ -345,8 +353,9 @@ bash tests/run-all.sh
 | test-session-naming.sh | session naming + allocation | 19 |
 | test-launch.sh | --launch, passthrough quoting, add/remove-launcher, launcher completions | 27 |
 | test-rebuild-guard.sh | exclude-change detection, rebuild and work-dir wipe guards, stale work dirs | 9 |
+| test-clipboard.sh | clipboard config, mode resolution, go-between with stub tools | 22 |
 
-**~463 assertions across 20 files.** bwrap tests skipped if user namespaces unavailable.
+**~485 assertions across 21 files.** bwrap tests skipped if user namespaces unavailable.
 
 ## Documentation surfaces
 

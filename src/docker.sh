@@ -411,22 +411,18 @@ run_in_docker() {
     [ "$verbose" = true ] && docker_args+=(-e "CAGE_VERBOSE=1")
     [ "$debug" = true ] && docker_args+=(-e "CAGE_DEBUG=1")
 
-    local packages="$cfg_docker_packages"
-    local _wl_sock
-    _wl_sock=$(clipboard_wayland_socket)
-    if [ -n "$_wl_sock" ]; then
-        docker_args+=(-e "WAYLAND_DISPLAY=$_wl_sock")
-        # First package is the install script's presence check, so lead with it
-        packages="wl-clipboard${packages:+|$packages}"
+    if [ -n "${clipboard_base:-}" ]; then
+        # The dummy WAYLAND_DISPLAY makes clipboard-aware tools pick wl-copy
+        docker_args+=(-e "WAYLAND_DISPLAY=claude-cage")
+        docker_args+=(-e "CAGE_PATH_PREFIX=$CAGE_CLIPBOARD_DIR/bin:")
     fi
-    warn_clipboard_unavailable
 
     # Image
     docker_args+=("$image")
 
     # Generate setup scripts
     local tool_install_script
-    tool_install_script=$(generate_docker_tool_install_script "$packages")
+    tool_install_script=$(generate_docker_tool_install_script "$cfg_docker_packages")
 
     local iptables_script=""
     if [ "$network_enabled" = true ]; then
@@ -457,7 +453,7 @@ useradd -u ${user_uid} -g ${user_gid} -o -m -d \"${user_home}\" -s /bin/bash cag
 cat > /tmp/.cage-bashrc << 'RCEOF'
 [ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
 [ -f ~/.bashrc ] 2>/dev/null && . ~/.bashrc
-export PATH=\"\$HOME/.local/bin:\$PATH\"
+export PATH=\"\${CAGE_PATH_PREFIX:-}\$HOME/.local/bin:\$PATH\"
 # Cage prompt - red user@caged with bunny (Con Air style)
 PS1=\"\[\e[1;31m\]\u@caged\[\e[0m\] 🐰 \w\\\$ \"
 RCEOF
@@ -470,7 +466,7 @@ exec su -s /bin/bash cage -c 'exec bash --rcfile /tmp/.cage-bashrc'
     else
         # Command; quoted so the outer script hands it to su as one argument
         local su_cmd running_msg
-        printf -v su_cmd '%q' "export PATH=\"\$HOME/.local/bin:\$PATH\"; $*"
+        printf -v su_cmd '%q' "export PATH=\"\${CAGE_PATH_PREFIX:-}\$HOME/.local/bin:\$PATH\"; $*"
         printf -v running_msg '%q' "Running: $*"
         docker_args+=(/bin/bash -c "
 $tool_install_script

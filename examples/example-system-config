@@ -96,6 +96,13 @@ claude_cage {
     -- },
 
     -- =========================================================================
+    -- CLIPBOARD (optional)
+    -- =========================================================================
+    -- Defaults are write = "notify", read = "confirm". A stricter base for
+    -- everyone; user and project configs can still override each key.
+    -- clipboard = { read = "deny" },
+
+    -- =========================================================================
     -- ORGANIZATION-WIDE NETWORK RESTRICTIONS (optional)
     -- =========================================================================
 

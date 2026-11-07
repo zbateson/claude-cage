@@ -169,8 +169,8 @@ claude_cage {
     -- Sandbox mode: "bwrap" or "docker"
     mode = "bwrap",
 
-    -- Let copies inside the cage reach your real clipboard (Wayland only)
-    -- clipboard = false,
+    -- Clipboard access from inside the cage (these are the defaults)
+    -- clipboard = { write = "notify", read = "confirm" },
 
     -- Auto-sync non-active branches back to source in real-time
     autoSync = true,
@@ -606,13 +606,29 @@ bwrap = {
 
 Docker containers use the image's own `/etc`, `/usr`, and friends — your host's sensitive files ain't exposed in the first place. Host paths only enter the container through explicit `additionalMounts`. So there's no equivalent `bwrap` config needed for Docker mode.
 
-### Copyin' Out of the Cage: `clipboard = true`
+### The Clipboard: Passin' Notes Through the Bars
 
-By default the cage can't touch your clipboard. Some terminals (kitty, WezTerm, Alacritty, foot, Ghostty) take copies through the terminal itself (OSC 52), and that works fine from in here. Others, like GNOME Terminal, don't. There, a tool like Claude Code's fullscreen Ctrl+C has to hand the text to `wl-copy`, and `wl-copy` needs your Wayland session's socket, which the cage keeps out.
+The cage never gets your display. No Wayland socket, no X11 socket — an X11 socket alone would let it log your keystrokes and read your screen. But Claude Code still wants a clipboard: fullscreen Ctrl+C copies out, and Ctrl+V pastes screenshots in. Some terminals (kitty, WezTerm, Alacritty, foot, Ghostty, Windows Terminal) carry copies themselves (OSC 52), but GNOME Terminal and its VTE cousins don't, so the copy has to go through a clipboard tool.
 
-Set `clipboard = true` and claude-cage shares that one socket (read-only bind, `WAYLAND_DISPLAY` pointed at it). In Docker mode it also installs `wl-clipboard` in the container.
+So claude-cage runs a go-between. Inside the cage, `wl-copy` and `wl-paste` are stand-ins that pass notes to a listener on your side of the wall. The listener checks every note against your rules and only then touches the real clipboard, with `wl-copy`/`wl-paste` on Wayland, `xclip` on X11, or `pbcopy`/`pbpaste` on macOS.
 
-Know what you're handin' over: with the socket, anything in the cage can **read** your clipboard too, and open windows on your desktop. That's why it's off by default. X11 never gets shared — an X11 socket would let the cage log your keystrokes and read your screen, and I ain't doin' that. If you're on an X11-only session, you're outta luck. If there's no Wayland socket to find, you'll get a heads-up at startup and the cage carries on without it.
+```lua
+clipboard = {
+    write = "notify",   -- "allow" | "notify" | "confirm" | "deny"
+    read  = "confirm",  -- "allow" | "confirm" | "deny"
+},
+```
+
+Those are the defaults, and you don't need to write 'em out:
+
+- **Copyin' out (`write`)**: goes through, and you get a desktop notification sayin' what was copied. Why bother? Somethin' in the cage could quietly swap what's on your clipboard, and you'd paste it into a real terminal without lookin'. The notification means it never happens silent.
+- **Readin' in (`read`)**: every read pops a dialog sayin' what's bein' asked for (type and size), and it defaults to Deny. Checkin' *whether* there's an image to paste doesn't ask — that only reveals type names — so in practice you'll see one popup per screenshot you paste. Plain text paste goes through your terminal and never touches any of this.
+
+Only one dialog shows at a time; anything else askin' while it's open gets denied, so nothin' can bury you in popups. Set a side to `"allow"` if you ain't worried about it, or `"deny"` to shut it. Settings merge key by key, so a project can tighten one side without touchin' the other. Deny both and the go-between doesn't start at all.
+
+Needs a little help from your desktop: `zenity` or `kdialog` for the dialogs and `notify-send` for notifications (macOS uses `osascript` for both). If they're missin', the defaults step down quietly — reads get denied, copies go through without the heads-up. If you *wrote* a setting that can't be honoured, you'll get told at startup. No clipboard tool at all, or no display (SSH, headless)? The go-between stays home.
+
+Two things it can't do. On a terminal that handles OSC 52 itself, Claude Code also copies straight through the terminal, so `write = "deny"` and notifications can't stop those. And on Windows, Claude Code in WSL talks to `powershell.exe` instead of `wl-copy`, so the go-between isn't involved — Windows Terminal handles copyin' fine on its own.
 
 ## Docker Mode
 
@@ -909,7 +925,7 @@ The sandbox uses slirp4netns DNS at 10.0.2.3. If you're filterin' network access
 
 **Copyin' inside the cage doesn't reach my clipboard**
 
-Your terminal probably ignores OSC 52 (GNOME Terminal does). Set `clipboard = true` — see [Copyin' Out of the Cage](#copyin-out-of-the-cage-clipboard--true).
+Check the `Clipboard:` line in the startup summary. If it says `copy=deny`, either you set it that way, or claude-cage couldn't find a clipboard tool on your side (`wl-copy`/`wl-paste`, `xclip`, or `pbcopy`) or a display to use it with. See [The Clipboard](#the-clipboard-passin-notes-through-the-bars).
 
 
 ## Contributing

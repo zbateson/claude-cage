@@ -41,9 +41,9 @@ claude_cage {
     -- Create .caged/ directory with symlinks to cache directories
     -- createCagedDir = false,
 
-    -- Share the Wayland socket so copies in the cage reach your clipboard
-    -- (the cage can read it too). Wayland only, X11 is never shared.
-    -- clipboard = false,
+    -- Clipboard access from inside the cage (defaults shown). write: "allow",
+    -- "notify", "confirm" or "deny"; read: "allow", "confirm" or "deny".
+    -- clipboard = { write = "notify", read = "confirm" },
 
     -- =========================================================================
     -- CARRY FILES (copied outside git at startup/exit)

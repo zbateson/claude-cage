@@ -547,7 +547,8 @@ if [ "$direct_mount_mode" = false ]; then
     fi
 fi
 echo "  Network mode:  $cfg_networkMode"
-echo "  Clipboard:     $cfg_clipboard"
+resolve_clipboard_modes
+echo "  Clipboard:     $(describe_clipboard_modes)"
 
 if [ "$direct_mount_mode" = false ] && [ ${#cfg_display_lines[@]} -gt 0 ]; then
     echo ""
@@ -832,6 +833,8 @@ cleanup_on_exit() {
     [ -c /dev/tty ] && stty echo icanon </dev/tty 2>/dev/null || true
     # Skip cleanup if sandbox never launched (user quit at confirmation)
     [ "${sandbox_launched:-false}" = false ] && exit $exit_code
+    stop_clipboard_listener
+    cleanup_clipboard_dir
     # Only run cleanup for git mode
     if [ "$direct_mount_mode" = false ]; then
         # Carry edits back to source, or to .caged/carry/<session>/ when
@@ -983,6 +986,12 @@ append_session_log ""
 append_session_log "=== Sandbox launched at $(date '+%Y-%m-%d %H:%M:%S') ==="
 
 sandbox_launched=true
+if clipboard_enabled; then
+    setup_clipboard_dir
+    if [ "$dry_run" != true ]; then
+        start_clipboard_listener
+    fi
+fi
 if [ "$cfg_mode" = "docker" ]; then
     run_in_docker "$intermediary_root" "$session_work_root" "$intermediary_dir" "$work_dir" "$pipe_path" "$project_path" "${launch_args[@]}"
 else

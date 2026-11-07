@@ -58,6 +58,7 @@ run_test "$SCRIPT_DIR/test-subdir-routing.sh"
 run_test "$SCRIPT_DIR/test-session-naming.sh"
 run_test "$SCRIPT_DIR/test-launch.sh"
 run_test "$SCRIPT_DIR/test-rebuild-guard.sh"
+run_test "$SCRIPT_DIR/test-clipboard.sh"
 
 # Summary
 echo "========================================"

@@ -32,6 +32,8 @@ The intermediary is created by `create_intermediary_clone()` using `git fast-exp
 
 Inside the sandbox, work directories are mounted at their original paths, intermediaries at `/run<intermediary-path>`.
 
+bwrap unshares the user, PID, IPC and UTS namespaces. The user namespace maps to the real UID, so without the PID namespace the cage could read and signal every host process the user owns. bwrap stays PID 1 (no `--as-pid-1`). An interactive shell inside can't see claude-cage's process group, so it can't hand the terminal back on exit; `cleanup_on_exit` ignores SIGTTOU so its `stty` isn't stopped from the background. The network namespace is only unshared in `allowlist`/`blocklist` mode: `disabled` shares the host's, including localhost services and abstract Unix sockets, which no mount can hide.
+
 ## Source Files
 
 | File | Purpose |

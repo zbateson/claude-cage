@@ -546,6 +546,11 @@ Network filterin' uses iptables to control what Claude can reach. Works in both 
 - **bwrap mode** — Uses slirp4netns to create an isolated network namespace. No sudo required.
 - **Docker mode** — Configures iptables inside the container, then drops privileges before runnin' your command.
 
+**Disabled mode (the default)** — No filterin'. Claude gets the same network you've got. In bwrap mode that means the cage shares your host's network namespace, and that's more than just the internet: services listenin' on your localhost, and abstract Unix sockets (the ones named `@something`, like your X server's or some IDE helpers'), are all within reach. Files can be masked; those can't. Anything behind them that trusts your user ID instead of askin' for a password or cookie will take the cage's call. Want your own namespace without givin' up any internet? Use blocklist mode with nothin' on the list:
+```lua
+networkMode = "blocklist",
+```
+
 **Allowlist mode** — Lock it all down. Only what you say gets through:
 ```lua
 networkMode = "allowlist",
@@ -590,6 +595,8 @@ Your host system directories (`/etc`, `/usr`, `/bin`, `/lib`, `/lib64`, `/sbin`)
 | `/etc/krb5.keytab` | Kerberos keytab |
 | `/etc/machine-id` | Unique machine fingerprint |
 
+The cage also gets its own process list. Inside, `ps` shows the cage and nothin' else, so Claude can't read your other programs' command lines or send 'em signals. When the session ends, anything still runnin' in there goes down with it.
+
 Both lists are fully configurable via `bwrap.systemMounts` and `bwrap.maskPaths` in your config. Defaults are written out on first run by the config builder, and arrays merge across config levels — so a system admin can set a base list and you can add more.
 
 ```lua
@@ -608,7 +615,7 @@ Docker containers use the image's own `/etc`, `/usr`, and friends — your host'
 
 ### The Clipboard: Passin' Notes Through the Bars
 
-The cage never gets your display. No Wayland socket, no X11 socket — an X11 socket alone would let it log your keystrokes and read your screen. But Claude Code still wants a clipboard: fullscreen Ctrl+C copies out, and Ctrl+V pastes screenshots in. Some terminals (kitty, WezTerm, Alacritty, foot, Ghostty, Windows Terminal) carry copies themselves (OSC 52), but GNOME Terminal and its VTE cousins don't, so the copy has to go through a clipboard tool.
+The cage never gets your display. No Wayland socket, no X11 socket — an X11 socket alone would let it log your keystrokes and read your screen. (One catch: in bwrap's default `disabled` network mode, the X server's abstract socket is still reachable. Your X auth cookie never enters the cage, so it's a locked door, unless `xhost` lets in anybody runnin' as you. See [Network Filtering](#network-filtering).) But Claude Code still wants a clipboard: fullscreen Ctrl+C copies out, and Ctrl+V pastes screenshots in. Some terminals (kitty, WezTerm, Alacritty, foot, Ghostty, Windows Terminal) carry copies themselves (OSC 52), but GNOME Terminal and its VTE cousins don't, so the copy has to go through a clipboard tool.
 
 So claude-cage runs a go-between. Inside the cage, `wl-copy` and `wl-paste` are stand-ins that pass notes to a listener on your side of the wall. The listener checks every note against your rules and only then touches the real clipboard, with `wl-copy`/`wl-paste` on Wayland, `xclip` on X11, or `pbcopy`/`pbpaste` on macOS.
 

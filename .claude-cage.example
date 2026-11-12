@@ -192,6 +192,11 @@ claude_cage {
     -- "disabled" (default) - No filtering, full network access
     -- "allowlist" - Block everything except specified destinations
     -- "blocklist" - Allow everything except specified destinations
+    --
+    -- In bwrap mode, "disabled" shares the host's network namespace: host
+    -- localhost services and abstract Unix sockets (@name) are reachable.
+    -- "blocklist" with an empty block list gives the cage its own namespace
+    -- while keeping full internet access.
 
     networkMode = "disabled",
 

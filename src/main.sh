@@ -829,6 +829,7 @@ fi
 # Set up cleanup handler for signals
 cleanup_on_exit() {
     local exit_code=$?
+    reclaim_terminal
     # Ensure terminal is usable if interrupted during confirmation prompt
     [ -c /dev/tty ] && stty echo icanon </dev/tty 2>/dev/null || true
     # Skip cleanup if sandbox never launched (user quit at confirmation)

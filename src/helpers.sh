@@ -70,6 +70,22 @@ make_temp_file() {
     mktemp 2>/dev/null || echo "/tmp/claude-cage-${1:-tmp}.$$"
 }
 
+# Take the terminal back if its foreground group has died. A shell in the
+# cage's PID namespace can't see our group to hand it back, and touching the
+# tty from the background stops us. Bash has no tcsetpgrp, so use perl.
+reclaim_terminal() {
+    if ! command -v perl >/dev/null 2>&1; then
+        return 0
+    fi
+    { perl -MPOSIX -e '
+        $SIG{TTOU} = "IGNORE";
+        my $fg = tcgetpgrp(0);
+        exit 0 if $fg <= 0 || $fg == getpgrp();
+        exit 0 if kill(0, -$fg) || $!{EPERM};
+        tcsetpgrp(0, getpgrp());
+    ' </dev/tty; } 2>/dev/null || true
+}
+
 # Log a message to stderr if verbose mode is enabled
 verbose_log() {
     if [ "$verbose" = true ]; then

@@ -142,6 +142,7 @@ run_in_bwrap() {
         bwrap_args+=(--setenv PATH "$CAGE_CLIPBOARD_DIR/bin:/usr/local/bin:/usr/bin:/bin:$user_home/.local/bin")
         bwrap_args+=(--setenv WAYLAND_DISPLAY "claude-cage")
         bwrap_args+=(--unsetenv DISPLAY)
+        bwrap_args+=(--unsetenv XAUTHORITY)
     else
         bwrap_args+=(--setenv PATH "/usr/local/bin:/usr/bin:/bin:$user_home/.local/bin")
     fi
@@ -158,9 +159,11 @@ run_in_bwrap() {
     bwrap_args+=(--unshare-uts)
     bwrap_args+=(--hostname "$cage_hostname")
 
-    # Note: We intentionally don't use --unshare-pid for interactive shells
-    # PID namespace makes the shell PID 1, which has special signal handling
-    # that breaks Ctrl+C. User namespace already prevents accessing host processes.
+    # The user namespace maps to the real UID, so without these the cage can
+    # see, signal and inspect every host process running as this user. bwrap
+    # stays PID 1 itself (no --as-pid-1), so the shell keeps normal signals.
+    bwrap_args+=(--unshare-pid)
+    bwrap_args+=(--unshare-ipc)
 
     # Cleanup on parent exit
     bwrap_args+=(--die-with-parent)

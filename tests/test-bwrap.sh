@@ -107,14 +107,21 @@ if ! echo "$output" | grep -q "\-\-unshare-user"; then
 fi
 echo "  PASS: Unshares user namespace"
 
-echo "Test 6: Should NOT include PID namespace (breaks Ctrl+C)"
-if echo "$output" | grep -q "\-\-unshare-pid"; then
-    echo "FAIL: Should NOT unshare PID namespace (causes signal handling issues)"
+echo "Test 6: Should unshare PID and IPC namespaces"
+if ! echo "$output" | grep -q "\-\-unshare-pid" \
+    || ! echo "$output" | grep -q "\-\-unshare-ipc"; then
+    echo "FAIL: Should unshare PID and IPC namespaces (host processes visible)"
     echo "Output was:"
     echo "$output"
     exit 1
 fi
-echo "  PASS: Does not unshare PID namespace"
+if echo "$output" | grep -q "\-\-as-pid-1"; then
+    echo "FAIL: Should not use --as-pid-1 (shell would lose default signals)"
+    echo "Output was:"
+    echo "$output"
+    exit 1
+fi
+echo "  PASS: Unshares PID and IPC namespaces"
 
 echo "Test 7: Should set working directory to project path"
 if ! echo "$output" | grep -q "\-\-chdir.*source"; then
@@ -262,7 +269,8 @@ for expected in \
     "--bind [^ ]*/inbox /run/claude-cage/clipboard-inbox" \
     "--setenv PATH /run/claude-cage/clipboard/bin:" \
     "--setenv WAYLAND_DISPLAY claude-cage" \
-    "--unsetenv DISPLAY"; do
+    "--unsetenv DISPLAY" \
+    "--unsetenv XAUTHORITY"; do
     if ! echo "$output" | grep -q -- "$expected"; then
         echo "FAIL: Expected '$expected'"
         echo "Output was:"
